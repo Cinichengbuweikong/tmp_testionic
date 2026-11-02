@@ -33,3 +33,9 @@ dist-ssr
 android/key
 *.keystore
 *.jks
+
+# 调试用的临时截图 / 布局 dump
+/.shot-*.png
+/.sb*.png
+/.p[0-9]*.png
+/.ui*.xml
