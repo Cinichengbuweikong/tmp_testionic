@@ -1,0 +1,107 @@
+name: iOS
+
+# 没有 Mac 时，用 GitHub 的 macOS runner 编译 + 在 iOS 模拟器里真实运行。
+# 触发：手动、push 到 main/master、以及 PR。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode & simulator runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # VITE_AUTOTEST=1：App 启动后自动跳到插件测试页并把用例跑完
+      - name: Build web assets (autotest build)
+        env:
+          VITE_AUTOTEST: '1'
+        run: npm run build
+
+      - name: Sync iOS project
+        run: npx cap sync ios
+
+      - name: Static checks (plugin wiring)
+        run: npm run verify:ios
+
+      - name: Build app for simulator (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/ios \
+            -quiet \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Run app in simulator and verify plugin (fail on error)
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices[][] | select(.name | test("iPhone"))][0].udid')
+          echo "Simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+          APP=$(find build/ios/Build/Products -name "App.app" -maxdepth 3 | head -n 1)
+          echo "App bundle: $APP"
+          xcrun simctl install "$UDID" "$APP"
+
+          # --console-pty 会接管 App 的 stdout，Capacitor 把 JS console.log 转发到原生 print
+          xcrun simctl launch --console-pty "$UDID" com.myapp.testionic > sim-console.log 2>&1 &
+          LAUNCH_PID=$!
+          sleep 45
+
+          xcrun simctl io "$UDID" screenshot ios-launch.png || true
+          kill "$LAUNCH_PID" 2>/dev/null || true
+
+          echo "----- simulator console (tail) -----"
+          tail -n 100 sim-console.log || true
+          echo "------------------------------------"
+
+          if ! grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
+            echo "::error::autotest marker not found in simulator console"
+            exit 1
+          fi
+          if ! grep -q '"ok":true' sim-console.log; then
+            echo "::error::autotest reported a failure"
+            exit 1
+          fi
+          echo "autotest passed:"
+          grep -o 'PLUGIN_AUTOTEST_RESULT .*' sim-console.log | head -n 1
+
+      - name: Upload simulator artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator
+          path: |
+            ios-launch.png
+            sim-console.log
+          if-no-files-found: warn

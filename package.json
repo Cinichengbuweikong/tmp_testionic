@@ -1,0 +1,29 @@
+{
+  "name": "testionic",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "android:sync": "cap sync android",
+    "android:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-android.ps1",
+    "verify:android": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-android.ps1",
+    "verify:ios": "node scripts/verify-ios.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/ios": "^8.6.0",
+    "@capacitor/status-bar": "^8.0.4",
+    "capacitor-native-basics": "file:plugins/capacitor-native-basics",
+    "vue": "^2.7.7",
+    "vue-router": "^3.5.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
+    "@vitejs/plugin-legacy": "^2.0.0",
+    "@vitejs/plugin-vue2": "^1.1.2",
+    "terser": "^5.14.2",
+    "vite": "^3.0.2"
+  }
+}
