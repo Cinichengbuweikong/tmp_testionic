@@ -3,6 +3,9 @@
 结论：**能，但本机（Windows）永远只能“写”不能“编译”**。iOS 的编译链（Xcode / iOS SDK）只在 macOS 上存在，这点绕不过去。
 所以现实的做法是：在 Windows 上写代码 → 把编译/运行交给云端或借来的 Mac。
 
+> **当前状态（2026-11-02）**：GitHub Actions 已跑通。`macos-26` 上编译通过，App 在 iOS 模拟器里启动，插件 `echo` / `showToast` / `getDeviceInfo` 全部自动跑通（autotest 断言通过）。
+> 仓库：`https://github.com/Cinichengbuweikong/tmp_testionic`（公开）。
+
 ## 方案对比
 
 | 方案 | 成本 | 能做什么 | 适合 |

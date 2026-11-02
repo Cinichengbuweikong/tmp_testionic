@@ -109,3 +109,18 @@ jobs:
             ios-launch.png
             sim-console.log
           if-no-files-found: warn
+
+      - name: Publish autotest result to job summary
+        if: always()
+        run: |
+          {
+            echo "## iOS 模拟器自动验证"
+            echo ''
+            if [ -f sim-console.log ] && grep -q 'PLUGIN_AUTOTEST_RESULT' sim-console.log; then
+              echo '```json'
+              grep -o 'PLUGIN_AUTOTEST_RESULT .*' sim-console.log | head -n 1 | sed 's/^PLUGIN_AUTOTEST_RESULT //'
+              echo '```'
+            else
+              echo '没有找到 autotest 结果，请查看 sim-console.log 工件。'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
