@@ -117,6 +117,9 @@ public class NativeStatusBarPlugin extends Plugin {
     /** 自绘的状态栏色块；null 表示当前没有色块（未设置颜色或颜色是 transparent）。 */
     private View overlayView = null;
 
+    /** JS 是否调用过 setStyle —— 没调用过就不要去动 App 原本的状态栏样式。 */
+    private boolean styleApplied = false;
+
     /**
      * 设置状态栏背景色。
      *
@@ -156,6 +159,11 @@ public class NativeStatusBarPlugin extends Plugin {
         });
     }
 
+    /**
+     * 设置状态栏图标/文字样式（light / dark / default）。
+     *
+     * 与 setBackgroundColor 一样，View 操作必须在主线程执行。
+     */
     @PluginMethod
     public void setStyle(PluginCall call) {
         String value = call.getString("style", STYLE_DEFAULT);
@@ -173,6 +181,7 @@ public class NativeStatusBarPlugin extends Plugin {
 
         activity.runOnUiThread(() -> {
             currentStyle = normalized;
+            styleApplied = true;
             applyStyle();
             call.resolve();
         });
@@ -202,7 +211,10 @@ public class NativeStatusBarPlugin extends Plugin {
         });
     }
 
-    /** App 回到前台时补一次：有些 ROM 会在后台/切前台时重置系统栏状态。 */
+    /**
+     * App 回到前台时补一次：有些 ROM 会在后台/切前台时重置系统栏状态。
+     * 只在 JS 确实调用过对应方法后才补，避免插件"自作主张"改动 App 原本的样式。
+     */
     @Override
     protected void handleOnStart() {
         super.handleOnStart();
@@ -210,7 +222,9 @@ public class NativeStatusBarPlugin extends Plugin {
             if (currentColor != null) {
                 applyBackgroundColor();
             }
-            applyStyle();
+            if (styleApplied) {
+                applyStyle();
+            }
         });
     }
 
@@ -222,7 +236,7 @@ public class NativeStatusBarPlugin extends Plugin {
             if (currentColor != null) {
                 applyBackgroundColor();
             }
-            if (STYLE_DEFAULT.equals(currentStyle)) {
+            if (styleApplied && STYLE_DEFAULT.equals(currentStyle)) {
                 applyStyle();
             }
         });
