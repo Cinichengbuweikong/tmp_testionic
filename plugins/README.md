@@ -7,6 +7,8 @@
 | 插件 | Android | iOS | Web | 说明 |
 | --- | --- | --- | --- | --- |
 | [capacitor-native-basics](./capacitor-native-basics/) | ✅ 已验证 | 🟡 已实现，待 CI 编译验证 | ✅ | 原生 Toast、设备信息、echo 自检（参考实现） |
+| [capacitor-native-statusbar](./capacitor-native-statusbar/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 状态栏背景色 + 图标亮暗（绕过 Android 15+/MIUI 的 setStatusBarColor 失效） |
+| [capacitor-dark-mode](./capacitor-dark-mode/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 关闭有问题的 forceDark，注入 data-theme/color-scheme 并派发主题变化事件 |
 
 ## 新增插件的标准流程
 

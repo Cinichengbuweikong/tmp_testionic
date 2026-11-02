@@ -96,9 +96,13 @@ for (const entry of entries) {
   }
 
   // exported TS methods vs pluginMethods array
+  // addListener / removeListener 是 Capacitor 桥内置的，不需要出现在 pluginMethods 里
+  const BUILTIN_METHODS = new Set(['addListener', 'removeListener', 'removeAllListeners']);
   const definitionsTs = await read(path.join(dir, 'src', 'definitions.ts'));
   const interfaceBody = definitionsTs.split(/export interface \w+Plugin\s*\{/)[1]?.split('\n}')[0] ?? '';
-  const tsMethods = [...interfaceBody.matchAll(/^\s{2}(\w+)\s*\(/gm)].map((m) => m[1]);
+  const tsMethods = [...interfaceBody.matchAll(/^\s{2}(\w+)\s*\(/gm)]
+    .map((m) => m[1])
+    .filter((m) => !BUILTIN_METHODS.has(m));
   const swiftMethods = [...swiftSource.matchAll(/CAPPluginMethod\(name:\s*"(\w+)"/g)].map((m) => m[1]);
 
   const missingInSwift = tsMethods.filter((m) => !swiftMethods.includes(m));

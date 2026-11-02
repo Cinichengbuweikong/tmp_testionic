@@ -100,6 +100,7 @@ import java.util.Locale;
  * - 颜色支持 `#RGB` / `#RRGGBB` / `#AARRGGBB`（ARGB，与 Android 一致）/ `transparent`；
  * - `height` 返回的是 dp（≈ CSS px），方便 Web 层做布局；
  * - `transparent` 会移除色块，恢复"内容直接透出"的效果。
+ * - 注意 forceDark 的问题  例如在一些 ROM 上 例如 红米 K30S Ultra MIUI12 Android10 上 因 MIUI 的 forceDark 逻辑 **可能**导致状态最终看起来和设置的不是一个颜色 要稍暗些
  */
 @CapacitorPlugin(name = "NativeStatusBar")
 public class NativeStatusBarPlugin extends Plugin {

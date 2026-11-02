@@ -27,6 +27,32 @@
       </div>
     </section>
 
+    <section class="card">
+      <h2>DarkMode</h2>
+      <div class="actions">
+        <button @click="applyTheme('system')">跟随系统</button>
+        <button @click="applyTheme('light')">强制亮色</button>
+        <button @click="applyTheme('dark')">强制暗色</button>
+        <button @click="loadDarkInfo">主题信息</button>
+      </div>
+      <div class="actions">
+        <button @click="toggleForceDark(true)">forceDark ON</button>
+        <button @click="toggleForceDark(false)">forceDark OFF</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>配色样例（用来看 forceDark 是否把颜色搞坏）</h2>
+      <div class="swatches">
+        <div class="swatch" style="background: #f44336">#F44336</div>
+        <div class="swatch" style="background: #4caf50">#4CAF50</div>
+        <div class="swatch" style="background: #ffeb3b; color: #333">#FFEB3B</div>
+        <div class="swatch" style="background: #2196f3">#2196F3</div>
+        <div class="swatch" style="background: #ffffff; color: #333">#FFFFFF</div>
+        <div class="swatch" style="background: #212121">#212121</div>
+      </div>
+    </section>
+
     <pre class="output">{{ output }}</pre>
   </div>
 </template>
@@ -35,6 +61,7 @@
 import { Capacitor } from '@capacitor/core';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
+import { DarkMode } from 'capacitor-dark-mode';
 
 export default {
   data() {
@@ -93,6 +120,18 @@ export default {
         results.ok = info.color === '#FFFF5722' && info.style === 'dark' && info.height > 0;
         if (!results.ok) {
           results.reason = `unexpected status bar info: ${JSON.stringify(info)}`;
+        }
+
+        // DarkMode：注入 data-theme + 关掉 forceDark
+        await DarkMode.setTheme({ theme: 'dark' });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        results.darkMode = {
+          info: await DarkMode.getInfo(),
+          dataTheme: document.documentElement.getAttribute('data-theme'),
+        };
+        if (results.darkMode.dataTheme !== 'dark') {
+          results.ok = false;
+          results.reason = `dark mode injection failed: ${JSON.stringify(results.darkMode)}`;
         }
       } catch (err) {
         results.ok = false;
@@ -158,6 +197,42 @@ export default {
         this.error('getInfo', err);
       }
     },
+
+    async applyTheme(theme) {
+      try {
+        const info = await DarkMode.setTheme({ theme });
+        this.print(`setTheme ${theme}`, {
+          ...info,
+          dataTheme: document.documentElement.getAttribute('data-theme'),
+          prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+        });
+      } catch (err) {
+        this.error('DarkMode.setTheme', err);
+      }
+    },
+
+    async toggleForceDark(enabled) {
+      try {
+        await DarkMode.setForceDark({ enabled });
+        const info = await DarkMode.getInfo();
+        this.print(`setForceDark ${enabled}`, info);
+      } catch (err) {
+        this.error('DarkMode.setForceDark', err);
+      }
+    },
+
+    async loadDarkInfo() {
+      try {
+        const info = await DarkMode.getInfo();
+        this.print('DarkMode.getInfo', {
+          ...info,
+          dataTheme: document.documentElement.getAttribute('data-theme'),
+          prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+        });
+      } catch (err) {
+        this.error('DarkMode.getInfo', err);
+      }
+    },
   },
 };
 </script>
@@ -186,6 +261,20 @@ export default {
 .card h2 {
   font-size: 1rem;
   margin: 0.25rem 0 0.75rem;
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+
+.swatch {
+  border-radius: 8px;
+  padding: 0.75rem 0.5rem;
+  color: #fff;
+  font-size: 0.75rem;
+  text-align: center;
 }
 
 .actions {
