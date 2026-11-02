@@ -84,12 +84,17 @@ const info = await NativeStatusBar.getInfo();
 
 ## 已知问题 / TODO
 
-1. **MIUI 上颜色偏深**：真机（Redmi K30S Ultra / MIUI 12）设置 `#FF5722` 后状态栏实际渲染约 `#D83200`，
-   怀疑是 MIUI 在状态栏上叠了一层 scrim，或与其 forceDark 注入有关，待排查。
+1. **MIUI 会按状态栏背景色自动决定图标明暗，并覆盖显式设置**（真机 Redmi K30S Ultra / MIUI 12 实测）：
+   - 蓝色背景（`#2196F3`）→ 图标自动变白
+   - 白色背景（`#FFFFFF`）→ 图标自动变深
+   - 此时调用 `setStyle('light' | 'dark')` 均无效；`dumpsys window` 确认 `LIGHT_STATUS_BAR` 标志**已经**正确设置，
+     是 MIUI 的 SystemUI 没有采纳。
+   - 对照实验：在同一个 App、同一状态下直接调用官方 `@capacitor/status-bar` 的 `setStyle`，同样无效（像素级比对一致）。
+   - 结论：这是 MIUI 的「对比度自适应」行为，插件侧暂时无法强制覆盖；在对比度正常的组合下（浅底配深图标、深底配浅图标），
+     自动结果与期望一致。
 2. **MIUI 劫持 WebView 的 forceDark**：同一台机器上网页 `getComputedStyle(body).backgroundColor` 是
-   `rgb(255,255,255)`，但屏幕显示为近黑色，说明 MIUI 在 WebView 渲染层做了强制反色。
-   后续可以尝试 `WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView, false)` /
-   `View.setForceDarkAllowed(false)`，看 MIUI 是否尊重该开关。
+   `rgb(255,255,255)`，但屏幕显示为近黑色。插件里已对窗口关闭 `setForceDarkAllowed(false)`（API 29+），
+   实测页面会恢复正常颜色；如果不需要这个副作用可以去掉。
 
 ## 平台实现
 

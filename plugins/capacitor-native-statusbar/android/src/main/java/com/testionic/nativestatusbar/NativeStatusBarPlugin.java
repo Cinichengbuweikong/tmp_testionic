@@ -3,6 +3,7 @@ package com.testionic.nativestatusbar;
 import android.app.Activity;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -172,7 +173,6 @@ public class NativeStatusBarPlugin extends Plugin {
         // 通道 1：系统 API。Android 15 以下、窗口没有铺进状态栏时，这一步就够了；
         // 但 Android 15+ 对 targetSdk 35+ 的应用会忽略它，MIUI 等 OEM 也可能忽略。
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        window.setStatusBarColor(currentColor == null ? Color.TRANSPARENT : currentColor);
 
         // 通道 2：自绘色块。窗口本身从屏幕 y=0 开始（内容区被内边距顶到状态栏下方），
         // 所以把色块画在窗口顶部、用负 margin 抵掉内边距，就能盖住状态栏那一条。
@@ -180,6 +180,12 @@ public class NativeStatusBarPlugin extends Plugin {
             removeOverlay();
         } else {
             showOverlay(decorView, currentColor);
+        }
+
+        // 有自绘色块时不要再调 setStatusBarColor：实测 MIUI 会因此触发"按背景色重新自适应图标"，
+        // 把用户设置的图标样式覆盖掉。只有在没画出色块（极端情况）时才退回系统 API。
+        if (overlayView == null) {
+            window.setStatusBarColor(currentColor == null ? Color.TRANSPARENT : currentColor);
         }
     }
 
@@ -225,16 +231,55 @@ public class NativeStatusBarPlugin extends Plugin {
         overlayView = null;
     }
 
+    @Override
+    public void load() {
+        super.load();
+        // 实验：关掉本窗口的 forceDark，验证 MIUI 是否因此放开状态栏图标颜色控制
+        Activity activity = getActivity();
+        if (activity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            activity.runOnUiThread(() -> activity.getWindow().getDecorView().setForceDarkAllowed(false));
+        }
+    }
+
     // ---------------------------------------------------------------- 样式
 
+    private final Runnable reapplyStyleRunnable = this::applyStyleFlags;
+
     private void applyStyle() {
+        if (getActivity() == null) {
+            return;
+        }
+        applyStyleFlags();
+
+        // 部分 ROM（MIUI）会在状态栏颜色变化后按背景色重新自适应图标颜色，
+        // 把我们的设置覆盖掉，所以延迟再压一次。
+        View decorView = getActivity().getWindow().getDecorView();
+        decorView.removeCallbacks(reapplyStyleRunnable);
+        decorView.postDelayed(reapplyStyleRunnable, 350);
+    }
+
+    private void applyStyleFlags() {
         Activity activity = getActivity();
         if (activity == null) {
             return;
         }
+
         Window window = activity.getWindow();
-        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, window.getDecorView());
-        controller.setAppearanceLightStatusBars(useDarkIcons());
+        View decorView = window.getDecorView();
+        boolean darkIcons = useDarkIcons();
+
+        // 标准做法
+        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, decorView);
+        controller.setAppearanceLightStatusBars(darkIcons);
+
+        // 兼容做法：MIUI 等国产 ROM 只认旧的 systemUiVisibility 标志
+        int flags = decorView.getSystemUiVisibility();
+        if (darkIcons) {
+            flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        } else {
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        }
+        decorView.setSystemUiVisibility(flags);
     }
 
     /** true 表示用深色图标（适合浅色背景）。 */
