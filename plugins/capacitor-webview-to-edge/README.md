@@ -95,11 +95,31 @@ const handle = await WebViewToEdge.addListener('insetsChanged', (i) => {
 - 把系统栏 insets 清零后再传给 WebView（和 Capacitor 的做法一致），安全区统一走插件注入的 CSS 变量；
 - 旋转 / 分屏等导致 insets 变化时重新注入并派发 `insetsChanged`。
 
-### iOS
+### iOS 侧说明
 
-- `enable` → `contentInsetAdjustmentBehavior = .never`；`disable` → `.automatic`；
-- 用隐藏视图监听 `layoutSubviews`，在旋转/布局变化时重新注入 CSS 变量；
-- 安全区来自 `viewController.view.safeAreaInsets`。
+**前提：Capacitor 在 iOS 上本来就是贴边的。**
+
+`CAPBridgeViewController` 把 WKWebView 的 `contentInsetAdjustmentBehavior` 默认设成了 `.never`
+（可用 `ios.contentInset` 配置修改），所以 WKWebView 本身就铺满整屏，页面只要写了
+`viewport-fit=cover`，`env(safe-area-inset-*)` 就能拿到刘海/Home Indicator 的数值。
+
+因此插件在 iOS 上做的是"语义对齐 + 统一变量"，而不是像 Android 那样去改写布局：
+
+| 调用 | iOS 实际行为 |
+| --- | --- |
+| `enable()` | 确保 `contentInsetAdjustmentBehavior = .never`（内容贴边，延伸进安全区） |
+| `disable()` | 改成 `.automatic`（系统按安全区调整内容，语义与 Android 的"让出系统栏"对齐） |
+| `getInsets()` | 返回 `viewController.view.safeAreaInsets`（单位 pt，等价 CSS px） |
+
+- 安全区数值同样会写进页面的 `--safe-area-inset-top/right/bottom/left`，和 Android 用同一套 CSS；
+- 旋转、分屏、前后台切换：用一个隐藏视图监听 `layoutSubviews`，配合
+  `UIApplication.didBecomeActiveNotification`，重新注入变量并在数值变化时派发 `insetsChanged`；
+- iOS 没有 Android 的 forceDark / 算法反色，本插件也不处理状态栏图标颜色（那是
+  `capacitor-native-statusbar` / `capacitor-set-force-dark` 的职责）；
+- 验证方式：iOS 模拟器（GitHub Actions）里跑 `enable() → getInsets() → disable()` 的自动断言。
+
+> 注意：因为 iOS 默认就是贴边的，`disable()` 只是把内容交给系统按安全区调整，
+> 和 Android 的"padding 恢复系统栏高度"在滚动行为上可能有细微差异，详见下文「取舍与注意事项」第 4 条。
 
 ## 已验证环境
 
