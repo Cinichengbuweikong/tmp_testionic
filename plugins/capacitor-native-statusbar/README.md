@@ -13,7 +13,7 @@
 - 但 App 的窗口本身是从屏幕 `y=0` 开始的，DecorView 只是用内边距把内容顶到状态栏下方；
 - 状态栏那一条由窗口/主题绘制（默认深灰 `#303030`）；
 - `window.setStatusBarColor()` 在 Android 15+（targetSdk 35+）会被系统直接忽略；
-  在 MIUI（小米/红米）上也实测无效——这就是官方插件"设了颜色但没反应"的原因。
+  在 MIUI 12（Redmi K30S Ultra / Android 10）上也实测无效——这就是官方插件"设了颜色但没反应"的原因。
 
 官方插件 `getInfo()` 里的 `overlays` 字段只是读了 `SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN` 这个旧 flag，
 并不代表 WebView 真的铺到了状态栏下面，别被它误导。
@@ -84,9 +84,13 @@ const info = await NativeStatusBar.getInfo();
 
 ## 已知问题 / 设计取舍
 
-### 1. MIUI 的「对比度自适应」会覆盖图标亮暗（已确认，非本插件 bug）
+> **测试环境**：以下结论全部基于 **Redmi K30S Ultra / Android 10 / MIUI 12**（另有一台 Pixel 6 模拟器 / Android 16 做对照）。
+> MIUI 每个大版本都可能重写系统栏实现，换到 MIUI 14/15、HyperOS 或其它 Android 版本后如果行为变了，
+> 请按下面的步骤重新实测，再判断是改代码还是更新结论。
 
-真机 Redmi K30S Ultra / MIUI 12 实测：
+### 1. MIUI 12 的「对比度自适应」会覆盖图标亮暗（已确认，非本插件 bug）
+
+真机 Redmi K30S Ultra（Android 10 / MIUI 12）实测：
 
 | 状态栏背景 | MIUI 实际渲染的图标 |
 | --- | --- |
@@ -106,10 +110,10 @@ const info = await NativeStatusBar.getInfo();
 强行要求低对比度组合（如浅底配白图标）时 MIUI 会拒绝，这在可用性上反而是合理的。
 所以在 MIUI 上「图标亮暗」表现为"跟随背景色自动切换"。
 
-### 2. MIUI 劫持 WebView 的 forceDark（已处理）
+### 2. MIUI 12（Android 10）劫持 WebView 的 forceDark（已处理）
 
 同一台机器上网页 `getComputedStyle(document.body).backgroundColor` 是 `rgb(255,255,255)`，
-但屏幕显示为近黑色——MIUI 向 WebView 注入了强制反色。
+但屏幕显示为近黑色——MIUI 12 向 WebView 注入了强制反色。
 插件在 `load()` 里对窗口调用了 `setForceDarkAllowed(false)`（API 29+），实测页面恢复成 CSS 的真实颜色。
 如果不需要这个副作用，删掉 `load()` 里那一行即可。
 

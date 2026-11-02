@@ -43,9 +43,9 @@ import java.util.Locale;
  *
  * 2) 为什么不用现成的 `window.setStatusBarColor()`：
  *    - Android 15+（targetSdk 35+）系统会忽略这个调用（官方文档已标注 deprecated）；
- *    - 在 MIUI 上实测同样无效：调用后 `getInfo()` 能读到颜色，`dumpsys window` 里也确实是新颜色，
- *      但屏幕上那条依旧是主题默认的深灰——这就是官方 @capacitor/status-bar 插件
- *      "设了背景色但没有效果"的根因。
+ *    - 在 **Redmi K30S Ultra / Android 10 / MIUI 12** 上实测同样无效：调用后 `getInfo()` 能读到颜色，
+ *      `dumpsys window` 里也确实是新颜色，但屏幕上那条依旧是主题默认的深灰——这就是官方
+ *      @capacitor/status-bar 插件"设了背景色但没有效果"的根因。
  *
  * 3) 所以这里的做法：在 DecorView 顶部加一条与状态栏等高的色块（overlay），
  *    用**负的 topMargin** 抵消 DecorView 的内边距、并关闭 `clipToPadding`
@@ -60,7 +60,7 @@ import java.util.Locale;
  *     CalledFromWrongThreadException: Only the original thread that created a view hierarchy can touch its views
  * 并且是**直接崩溃整个 App**（不是 reject 一个调用）。首版就在真机上这样崩过一次。
  *
- * ============================ 三、图标亮暗：标准做法 + MIUI 的限制 ============================
+ * ============================ 三、图标亮暗：标准做法 + MIUI 12 的限制 ============================
  *
  * 标准做法（已实现）：
  *   1. `WindowInsetsControllerCompat.setAppearanceLightStatusBars(darkIcons)`
@@ -69,7 +69,7 @@ import java.util.Locale;
  *      兼容只认旧 flag 的 ROM；
  *   3. 350ms 后再压一次，防止某些 ROM 在状态栏重绘后把标志覆盖掉。
  *
- * MIUI 的实测限制（**重要，别当成 bug 再查一遍**）：
+ * MIUI 12（Android 10，测试机 Redmi K30S Ultra）的实测限制（**重要，别当成 bug 再查一遍**）：
  *   - MIUI 会按「状态栏实际背景色」自动决定图标明暗，并**无视**我们设置的标志位：
  *       蓝色背景 #2196F3 → 图标自动变白
  *       白色背景 #FFFFFF → 图标自动变深
@@ -77,20 +77,25 @@ import java.util.Locale;
  *       vsysui=LAYOUT_STABLE LAYOUT_FULLSCREEN LIGHT_STATUS_BAR   （传入 dark 样式时）
  *       vsysui=LAYOUT_STABLE LAYOUT_FULLSCREEN                    （传入 light 样式时）
  *     但屏幕上图标一个像素都不变。
- *   - 对照实验：在同一个 App、同一状态下直接调用**官方插件** `@capacitor/status-bar` 的
- *     `setStyle({style: 'LIGHT'})` / `'DARK'`，两张截图逐像素比对，
- *     右上角信号/电池图标区域差异 **0 / 5320**——说明官方插件在这台机器上同样改不了图标。
- *   - 结论：这不是本插件的实现问题，而是 MIUI 的「对比度自适应」行为。
+ *   - 对照实验（同一台 MIUI 12 / Android 10 机器）：在同一个 App、同一状态下直接调用
+ *     **官方插件** `@capacitor/status-bar` 的 `setStyle({style: 'LIGHT'})` / `'DARK'`，
+ *     两张截图逐像素比对，右上角信号/电池图标区域差异 **0 / 5320**——官方插件同样改不了图标。
+ *   - 结论：这不是本插件的实现问题，而是 MIUI 12 的「对比度自适应」行为。
  *     在对比度正常的组合下（浅底配深图标、深底配浅图标），自动结果与用户期望一致；
  *     强行要求低对比度组合（如浅底配白图标）时 MIUI 会拒绝。
  *   - 如果以后要突破，方向是"骗过 MIUI 的采样"或使用 MIUI 私有接口，目前未实现。
  *
- * ============================ 四、MIUI 的 forceDark 注入 ============================
+ * ⚠️ 版本提醒：以上结论全部基于 **MIUI 12 / Android 10**。MIUI 每个大版本都可能改系统栏实现，
+ *    如果换成 MIUI 14/15、HyperOS 或其它 Android 版本后行为变了，**先按第三节的步骤重新实测**
+ *    （dumpsys 看标志位 + 官方插件做对照 + 像素比对），再决定是改代码还是更新这份注释。
  *
- * 同一台真机上网页 `getComputedStyle(document.body).backgroundColor` 是 `rgb(255,255,255)`，
- * 但屏幕显示为近黑色——MIUI 在 WebView 渲染层注入了强制反色（forceDark）。
+ * ============================ 四、MIUI 12（Android 10）对 WebView 的 forceDark 注入 ============================
+ *
+ * 在 Redmi K30S Ultra（Android 10 / MIUI 12）上，网页 `getComputedStyle(document.body).backgroundColor`
+ * 是 `rgb(255,255,255)`，但屏幕显示为近黑色——MIUI 在 WebView 渲染层注入了强制反色（forceDark）。
  * 本插件在 `load()` 里对窗口调用 `setForceDarkAllowed(false)`（API 29+），实测可以关掉它，
  * 页面会恢复成 CSS 里真正的颜色。如果不需要这个副作用，删掉 `load()` 里的那行即可。
+ * 同样提醒：这是 MIUI 12 的行为，新版本可能不同。
  *
  * ============================ 五、其它 ============================
  *
@@ -202,8 +207,8 @@ public class NativeStatusBarPlugin extends Plugin {
     /**
      * 插件加载时做一些一次性处理。
      *
-     * 这里的 setForceDarkAllowed(false) 是为了干掉 MIUI 的强制反色：
-     * 实测同一台真机上网页算出 `rgb(255,255,255)` 却被显示成近黑色，
+     * 这里的 setForceDarkAllowed(false) 是为了干掉 MIUI 12（Android 10）的强制反色：
+     * 在 Redmi K30S Ultra 上实测网页算出 `rgb(255,255,255)` 却被显示成近黑色，
      * 关掉之后页面恢复成 CSS 里真正的颜色。不需要这个行为可以删掉本方法。
      */
     @Override
@@ -258,8 +263,8 @@ public class NativeStatusBarPlugin extends Plugin {
      *  2) 自绘色块：主要通道。窗口从 y=0 开始，内容被内边距顶到状态栏下方，
      *     所以在窗口顶部盖一条等高的 View 就能当成状态栏背景。
      *
-     * 注意：一旦色块存在，就**不要**再调 setStatusBarColor —— 实测 MIUI 会因此触发
-     * "按背景色重新自适应图标"，把用户刚设置的图标亮暗覆盖掉。
+     * 注意：一旦色块存在，就**不要**再调 setStatusBarColor —— 在 MIUI 12 / Android 10 上实测，
+     * 这会触发"按背景色重新自适应图标"，把用户刚设置的图标亮暗覆盖掉。
      */
     private void applyBackgroundColor() {
         Activity activity = getActivity();
@@ -349,8 +354,8 @@ public class NativeStatusBarPlugin extends Plugin {
      * 除了立即设置，还会在 350ms 后再压一次：部分 ROM 会在系统栏重绘后
      * 把我们的标志位改回去（MIUI 尤其明显）。
      *
-     * ⚠️ 已知限制：MIUI 最终仍会按状态栏背景色做「对比度自适应」，
-     * 深色底强制白图标、浅色底强制深图标，显式 light/dark 会被它覆盖。
+     * ⚠️ 已知限制：MIUI 12 / Android 10（Redmi K30S Ultra）上，MIUI 最终仍会按状态栏背景色做
+     * 「对比度自适应」，深色底强制白图标、浅色底强制深图标，显式 light/dark 会被它覆盖。
      * 详细实测数据见类头注释第三节；这不是本插件能绕过的。
      */
     private void applyStyle() {

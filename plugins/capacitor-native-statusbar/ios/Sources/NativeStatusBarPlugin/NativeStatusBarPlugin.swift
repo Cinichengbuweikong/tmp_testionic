@@ -24,8 +24,8 @@ import Capacitor
  *   default -> .default      （跟随系统）
  * 调用后 Capacitor 内部会触发 setNeedsStatusBarAppearanceUpdate() 并带 0.2s 动画。
  *
- * 与 Android 的差异：iOS 不会像 MIUI 那样按背景色强制覆盖图标颜色，
- * 这里设置的样式就是最终结果。（Android 上 MIUI 的限制见 Java 类的头部注释。）
+ * 与 Android 的差异：iOS 不会像 MIUI 12（Android 10）那样按背景色强制覆盖图标颜色，
+ * 这里设置的样式就是最终结果。（Android 侧 MIUI 12 的限制见 Java 类头部注释第三节。）
  *
  * ============================ 三、线程 ============================
  *
