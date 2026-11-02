@@ -36,6 +36,10 @@ Write-Host "[info] target device: $Device" -ForegroundColor Cyan
 Push-Location $root
 try {
     if (-not $SkipWeb) {
+        Write-Host "[step] build plugins" -ForegroundColor Cyan
+        npm run build:plugins | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "plugin build failed" }
+
         Write-Host "[step] vite build" -ForegroundColor Cyan
         npm run build | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "web build failed" }

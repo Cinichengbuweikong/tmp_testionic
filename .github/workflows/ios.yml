@@ -34,6 +34,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # 插件的 dist/ 不入库，必须先构建插件，否则 Vite 解析不到入口
+      - name: Build local plugins
+        run: npm run build:plugins
+
       # VITE_AUTOTEST=1：App 启动后自动跳到插件测试页并把用例跑完
       - name: Build web assets (autotest build)
         env:

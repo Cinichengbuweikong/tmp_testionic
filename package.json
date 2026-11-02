@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:plugins": "node scripts/build-plugins.mjs",
     "preview": "vite preview --port 4173",
     "android:sync": "cap sync android",
     "android:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-android.ps1",
