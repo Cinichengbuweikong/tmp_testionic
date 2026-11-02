@@ -110,12 +110,15 @@ const info = await NativeStatusBar.getInfo();
 强行要求低对比度组合（如浅底配白图标）时 MIUI 会拒绝，这在可用性上反而是合理的。
 所以在 MIUI 上「图标亮暗」表现为"跟随背景色自动切换"。
 
-### 2. MIUI 12（Android 10）劫持 WebView 的 forceDark（已处理）
+### 2. 职责边界：WebView 的 forceDark 不归本插件管
 
-同一台机器上网页 `getComputedStyle(document.body).backgroundColor` 是 `rgb(255,255,255)`，
-但屏幕显示为近黑色——MIUI 12 向 WebView 注入了强制反色。
-插件在 `load()` 里对窗口调用了 `setForceDarkAllowed(false)`（API 29+），实测页面恢复成 CSS 的真实颜色。
-如果不需要这个副作用，删掉 `load()` 里那一行即可。
+MIUI 12 会向 WebView 注入 forceDark（同一台机器上 `getComputedStyle(document.body).backgroundColor`
+算出来是 `rgb(255,255,255)`，屏幕却显示成近黑色）。这是**页面/WebView 层**的问题，不是状态栏的问题。
+
+本插件只负责「状态栏背景色 + 图标样式」两件事，因此**不处理** forceDark，也不会去调
+`setForceDarkAllowed()` 这类会影响整个窗口的全局开关。
+（开发过程中曾短暂加过这段代码用于定位问题，整理时已移除；如果以后需要处理，应该单独做一个
+WebView 相关的插件或配置项。）
 
 ### 3. 其它已知边界
 

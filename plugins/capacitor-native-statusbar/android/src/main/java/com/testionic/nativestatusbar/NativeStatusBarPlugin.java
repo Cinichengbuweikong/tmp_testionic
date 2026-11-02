@@ -3,7 +3,6 @@ package com.testionic.nativestatusbar;
 import android.app.Activity;
 import android.content.res.Configuration;
 import android.graphics.Color;
-import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -89,13 +88,12 @@ import java.util.Locale;
  *    如果换成 MIUI 14/15、HyperOS 或其它 Android 版本后行为变了，**先按第三节的步骤重新实测**
  *    （dumpsys 看标志位 + 官方插件做对照 + 像素比对），再决定是改代码还是更新这份注释。
  *
- * ============================ 四、MIUI 12（Android 10）对 WebView 的 forceDark 注入 ============================
+ * ============================ 四、职责边界 ============================
  *
- * 在 Redmi K30S Ultra（Android 10 / MIUI 12）上，网页 `getComputedStyle(document.body).backgroundColor`
- * 是 `rgb(255,255,255)`，但屏幕显示为近黑色——MIUI 在 WebView 渲染层注入了强制反色（forceDark）。
- * 本插件在 `load()` 里对窗口调用 `setForceDarkAllowed(false)`（API 29+），实测可以关掉它，
- * 页面会恢复成 CSS 里真正的颜色。如果不需要这个副作用，删掉 `load()` 里的那行即可。
- * 同样提醒：这是 MIUI 12 的行为，新版本可能不同。
+ * 本插件只做两件事：设置状态栏背景色、设置状态栏图标/文字的亮暗样式。
+ * 不处理 WebView 内容相关的问题——例如 MIUI 12 会向 WebView 注入 forceDark
+ * （把网页白色渲染成近黑色），那属于 App/WebView 层的事情，本插件不碰，
+ * 也不应该在这里调用 setForceDarkAllowed() 之类的全局开关。
  *
  * ============================ 五、其它 ============================
  *
@@ -202,22 +200,6 @@ public class NativeStatusBarPlugin extends Plugin {
             ret.put("usingOverlay", overlayView != null);
             call.resolve(ret);
         });
-    }
-
-    /**
-     * 插件加载时做一些一次性处理。
-     *
-     * 这里的 setForceDarkAllowed(false) 是为了干掉 MIUI 12（Android 10）的强制反色：
-     * 在 Redmi K30S Ultra 上实测网页算出 `rgb(255,255,255)` 却被显示成近黑色，
-     * 关掉之后页面恢复成 CSS 里真正的颜色。不需要这个行为可以删掉本方法。
-     */
-    @Override
-    public void load() {
-        super.load();
-        Activity activity = getActivity();
-        if (activity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            activity.runOnUiThread(() -> activity.getWindow().getDecorView().setForceDarkAllowed(false));
-        }
     }
 
     /** App 回到前台时补一次：有些 ROM 会在后台/切前台时重置系统栏状态。 */
