@@ -117,7 +117,7 @@ html[data-theme='light'] {
 > 插件注入的映射只处理**页面加载时已存在**的样式表，并且是对 `@media (prefers-color-scheme: dark)`
 > 的静态复制；运行时动态插入的样式不会被自动映射。新项目建议直接用 `html[data-theme]` 写。
 
-## API
+## API 一览
 
 | 方法 | 参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
@@ -129,6 +129,109 @@ html[data-theme='light'] {
 
 `ThemeState`：`{ requestedTheme, isDark, isForced }`
 `ForceDarkInfo`：`ThemeState & { forceDarkEnabled, themeInjected, webViewUserAgent }`
+
+## API 行为详解
+
+### `setTheme()` 到底做了什么
+
+它不只是改一个属性，而是一次完整的"应用主题"动作，按顺序做 5 件事：
+
+| 步骤 | Android | iOS | Web |
+| --- | --- | --- | --- |
+| ① 记录 `requestedTheme` | ✅ | ✅ | ✅ |
+| ② 解析实际 `isDark` | `dark`→true / `light`→false / `system`→读 Activity 的 `Configuration.uiMode` | 同左，读 `traitCollection` | 同左，读 `matchMedia` |
+| ③ 注入页面 | `evaluateJavascript` 写 `data-theme` + `color-scheme` | 同左 | 同左 |
+| ④ 首次注入时打补丁 | 扫描样式表，把 `@media (prefers-color-scheme: dark)` 复制成 `html[data-theme="dark"]` | 同左 | 同左 |
+| ⑤ 派发 `themeChanged` 并 resolve | ✅ | ✅ | ✅ |
+
+注入脚本实际做的事：
+
+```js
+document.documentElement.setAttribute('data-theme', 'dark'); // 或 light
+document.documentElement.style.colorScheme = 'dark';
+
+// 只有第一次会执行，结果插到 <style id="cap-force-dark-patch">
+for (const sheet of document.styleSheets) {
+  for (const rule of sheet.cssRules) {
+    if (mediaMatches(rule, 'prefers-color-scheme: dark')) {
+      copyRuleWithSelector('html[data-theme="dark"]');
+    }
+  }
+}
+window.__capForceDarkPatched = true;
+```
+
+两个容易忽略的细节：
+
+- **iOS 会真的改变 `prefers-color-scheme`**：因为 iOS 端额外设置了 `overrideUserInterfaceStyle`
+  （作用在 viewController 和 WKWebView 上），媒体查询本身会翻转；
+  Android 上 MIUI 的 WebView 不吃这套，只能靠注入 + 补丁。
+- **不会动系统设置**：不调用 `AppCompatDelegate`，也不改系统深色模式开关，
+  只影响这个 WebView 里的页面。
+
+### `getTheme()` 返回的字段
+
+```js
+const theme = await SetForceDark.getTheme();
+// { requestedTheme: 'system', isDark: true, isForced: false }
+```
+
+| 字段 | 含义 | 取值 |
+| --- | --- | --- |
+| `requestedTheme` | 你**最后一次**通过 `setTheme` 请求的主题（默认 `'system'`） | `'system' \| 'light' \| 'dark'` |
+| `isDark` | **解析后**实际该不该用深色 | `boolean` |
+| `isForced` | 是否处于"强制"状态（`requestedTheme !== 'system'`） | `boolean` |
+
+三个例子：
+
+```js
+// 系统深色 + 跟随系统
+{ requestedTheme: 'system', isDark: true,  isForced: false }
+
+// 系统深色，但强制亮色
+{ requestedTheme: 'light',  isDark: false, isForced: true }
+
+// 系统亮色 + 跟随系统
+{ requestedTheme: 'system', isDark: false, isForced: false }
+```
+
+`getInfo()` 在此基础上多三个调试字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `forceDarkEnabled` | WebView 的算法暗色当前是否开启（默认 `false`） |
+| `themeInjected` | `data-theme` 是否已经写进页面 |
+| `webViewUserAgent` | WebView 的 UA（排查 ROM/WebView 版本） |
+
+> 注意：`getTheme()` 有副作用——它会**顺手再注入一次**页面，保证页面状态和返回值一致。
+> 所以在启动时调一次是安全的。
+
+### `addListener('themeChanged')` 的触发时机
+
+只有两种情况会触发：
+
+| 触发场景 | 条件 | 说明 |
+| --- | --- | --- |
+| **调用 `setTheme()`** | 任意值 | 即使设成和当前一样的值也会触发一次 |
+| **系统深浅色切换** | 且 `requestedTheme === 'system'` | Android 走 `onConfigurationChanged`，iOS 走 `traitCollection` 变化，Web 走 `matchMedia` 变化 |
+
+**不会**触发的场景：
+
+- 调用 `getTheme()` / `setForceDark()`；
+- 页面刷新（这时是插件自动注入，不发事件）；
+- `requestedTheme` 是 `light` / `dark`（强制的）时，系统深浅色变化不会派发——结果没变。
+
+回调参数和 `getTheme()` 的返回值完全一样：
+
+```js
+const handle = await SetForceDark.addListener('themeChanged', (theme) => {
+  // { requestedTheme, isDark, isForced }
+  document.body.classList.toggle('dark', theme.isDark);
+});
+```
+
+> Android 上 `onConfigurationChanged` 也会因旋转、字体大小等触发，插件内部做了去重：
+> **只有 `isDark` 真的变化时才派发**，不会因为转屏发无意义的事件。
 
 ## 各平台行为
 
