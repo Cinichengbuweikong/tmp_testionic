@@ -82,6 +82,15 @@ const info = await NativeStatusBar.getInfo();
 4. 深色 / 浅色样式在 Android 上依赖 `WindowInsetsControllerCompat`，最低支持到 API 23；
    iOS 用 `CAPBridgeViewController.setStatusBarStyle`。
 
+## 已知问题 / TODO
+
+1. **MIUI 上颜色偏深**：真机（Redmi K30S Ultra / MIUI 12）设置 `#FF5722` 后状态栏实际渲染约 `#D83200`，
+   怀疑是 MIUI 在状态栏上叠了一层 scrim，或与其 forceDark 注入有关，待排查。
+2. **MIUI 劫持 WebView 的 forceDark**：同一台机器上网页 `getComputedStyle(body).backgroundColor` 是
+   `rgb(255,255,255)`，但屏幕显示为近黑色，说明 MIUI 在 WebView 渲染层做了强制反色。
+   后续可以尝试 `WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView, false)` /
+   `View.setForceDarkAllowed(false)`，看 MIUI 是否尊重该开关。
+
 ## 平台实现
 
 | 平台 | 背景色 | 样式 |
