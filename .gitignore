@@ -39,3 +39,7 @@ android/key
 /.sb*.png
 /.p[0-9]*.png
 /.ui*.xml
+
+# 根目录下都是调试截图，不入库
+/*.png
+/*.jpg
