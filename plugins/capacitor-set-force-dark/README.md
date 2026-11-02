@@ -60,6 +60,37 @@ const handle = await SetForceDark.addListener('themeChanged', (t) => {
 const info = await SetForceDark.getInfo();
 ```
 
+## 页面里拿到的 `data-theme`（重要）
+
+`setTheme()` 最终会往 `<html>` 上写 `data-theme`，**值永远是 `"light"` 或 `"dark"` 两种之一**——
+亮色时是 `data-theme="light"`，**不是"没有属性"**。
+
+| 调用 | 当前系统 | `<html>` 上 | `color-scheme` |
+| --- | --- | --- | --- |
+| `setTheme({ theme: 'light' })` | 任意 | `data-theme="light"` | `light` |
+| `setTheme({ theme: 'dark' })` | 任意 | `data-theme="dark"` | `dark` |
+| `setTheme({ theme: 'system' })` | 深色 | `data-theme="dark"` | `dark` |
+| `setTheme({ theme: 'system' })` | 亮色 | `data-theme="light"` | `light` |
+
+为什么不做成"亮色时没有属性"：
+
+1. 两种主题都显式，`html[data-theme='light']` / `html[data-theme='dark']` 都能直接命中；
+2. 没被覆盖到的元素仍然走 CSS 默认值，两种写法可以混用；
+3. 和媒体查询补丁一致——补丁映射出来的是 `html[data-theme="dark"]`，亮色时自然不命中。
+
+> ⚠️ **首屏例外**：注入是异步的（页面加载后几十~几百毫秒；Android 上还会在 200/800/2000ms 补发一次），
+> 所以页面刚出现的一瞬间 `data-theme` 可能还不存在。建议 CSS 默认值按亮色写，
+> 这样"还没注入"时是正常的亮色，不会闪烁。
+
+判断当前是否深色，**不要**用"有没有属性"，用：
+
+```js
+const { isDark } = await SetForceDark.getTheme();
+
+// 或者注入完成后同步读取
+const isDarkNow = document.documentElement.dataset.theme === 'dark';
+```
+
 ## 页面怎么写样式
 
 两种写法都支持：
@@ -74,6 +105,12 @@ const info = await SetForceDark.getInfo();
 html[data-theme='dark'] {
   --bg: #121212;
   --text: #eee;
+}
+
+/* 也可以两种主题都显式写 */
+html[data-theme='light'] {
+  --bg: #ffffff;
+  --text: #222;
 }
 ```
 

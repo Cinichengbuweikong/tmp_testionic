@@ -109,6 +109,9 @@ public class SetForceDarkPlugin extends Plugin {
     /** 主题是否已经注入过页面。 */
     private boolean themeInjected = false;
 
+    /** 上一次派发 themeChanged 时的深浅色，用来避免旋转等配置变化造成重复事件。 */
+    private Boolean lastNotifiedDark = null;
+
     private WebViewListener pageListener;
 
     // ---------------------------------------------------------------- 生命周期
@@ -157,10 +160,15 @@ public class SetForceDarkPlugin extends Plugin {
     protected void handleOnConfigurationChanged(Configuration newConfig) {
         super.handleOnConfigurationChanged(newConfig);
 
-        // 系统深浅色切换：只有"跟随系统"时才需要重新注入
+        // 系统深浅色切换：只有"跟随系统"时才需要重新注入。
+        // 注意 onConfigurationChanged 也会因旋转、字体大小等触发，
+        // 所以这里只在 isDark 真正变化时才派发 themeChanged（避免无意义的事件噪音）。
         if (THEME_SYSTEM.equals(requestedTheme)) {
+            boolean dark = isDark();
             injectTheme();
-            notifyThemeChanged();
+            if (lastNotifiedDark == null || lastNotifiedDark != dark) {
+                notifyThemeChanged();
+            }
         }
     }
 
@@ -315,6 +323,7 @@ public class SetForceDarkPlugin extends Plugin {
     }
 
     private void notifyThemeChanged() {
+        lastNotifiedDark = isDark();
         notifyListeners("themeChanged", toTheme().toJSObject());
     }
 
