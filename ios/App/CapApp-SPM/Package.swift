@@ -15,7 +15,8 @@ let package = Package(
         .package(name: "CapacitorStatusBar", path: "../../../node_modules/@capacitor/status-bar"),
         .package(name: "CapacitorNativeBasics", path: "../../../plugins/capacitor-native-basics"),
         .package(name: "CapacitorNativeStatusbar", path: "../../../plugins/capacitor-native-statusbar"),
-        .package(name: "CapacitorSetForceDark", path: "../../../plugins/capacitor-set-force-dark")
+        .package(name: "CapacitorSetForceDark", path: "../../../plugins/capacitor-set-force-dark"),
+        .package(name: "CapacitorWebviewToEdge", path: "../../../plugins/capacitor-webview-to-edge")
     ],
     targets: [
         .target(
@@ -26,7 +27,8 @@ let package = Package(
                 .product(name: "CapacitorStatusBar", package: "CapacitorStatusBar"),
                 .product(name: "CapacitorNativeBasics", package: "CapacitorNativeBasics"),
                 .product(name: "CapacitorNativeStatusbar", package: "CapacitorNativeStatusbar"),
-                .product(name: "CapacitorSetForceDark", package: "CapacitorSetForceDark")
+                .product(name: "CapacitorSetForceDark", package: "CapacitorSetForceDark"),
+                .product(name: "CapacitorWebviewToEdge", package: "CapacitorWebviewToEdge")
             ]
         )
     ]

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="plugin-test">
     <h1>插件自检</h1>
     <p class="hint">当前平台：{{ platform }} · 原生可用：{{ isNative }}</p>
@@ -42,6 +42,19 @@
     </section>
 
     <section class="card">
+      <h2>WebViewToEdge</h2>
+      <div class="actions">
+        <button @click="setToEdge(true)">铺满整屏</button>
+        <button @click="setToEdge(false)">恢复默认</button>
+        <button @click="loadToEdgeInfo">安全区信息</button>
+      </div>
+      <p class="hint">
+        开启后页面会铺到状态栏下面；给这个卡片加个
+        <code>padding-top: var(--safe-area-inset-top)</code> 就能看到效果。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>配色样例（用来看 forceDark 是否把颜色搞坏）</h2>
       <div class="swatches">
         <div class="swatch" style="background: #f44336">#F44336</div>
@@ -62,6 +75,7 @@ import { Capacitor } from '@capacitor/core';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
 import { SetForceDark } from 'capacitor-set-force-dark';
+import { WebViewToEdge } from 'capacitor-webview-to-edge';
 
 export default {
   data() {
@@ -132,6 +146,17 @@ export default {
         if (results.setForceDark.dataTheme !== 'dark') {
           results.ok = false;
           results.reason = `setForceDark injection failed: ${JSON.stringify(results.setForceDark)}`;
+        }
+
+        // WebViewToEdge：开 → 读安全区 → 关
+        const toEdgeOn = await WebViewToEdge.setEnabled({ enabled: true });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const toEdgeInsets = await WebViewToEdge.getInsets();
+        await WebViewToEdge.setEnabled({ enabled: false });
+        results.toEdge = { state: toEdgeOn, insets: toEdgeInsets };
+        if (!toEdgeOn.enabled || typeof toEdgeInsets.top !== 'number') {
+          results.ok = false;
+          results.reason = `webview-to-edge failed: ${JSON.stringify(results.toEdge)}`;
         }
       } catch (err) {
         results.ok = false;
@@ -231,6 +256,30 @@ export default {
         });
       } catch (err) {
         this.error('SetForceDark.getInfo', err);
+      }
+    },
+
+    async setToEdge(enabled) {
+      try {
+        const state = await WebViewToEdge.setEnabled({ enabled });
+        const cssTop = getComputedStyle(document.documentElement)
+          .getPropertyValue('--safe-area-inset-top')
+          .trim();
+        this.print(`WebViewToEdge ${enabled ? '开启' : '关闭'}`, {
+          ...state,
+          cssVarTop: cssTop,
+        });
+      } catch (err) {
+        this.error('WebViewToEdge.setEnabled', err);
+      }
+    },
+
+    async loadToEdgeInfo() {
+      try {
+        const [insets, enabled] = await Promise.all([WebViewToEdge.getInsets(), WebViewToEdge.isEnabled()]);
+        this.print('WebViewToEdge 状态', { ...enabled, insets });
+      } catch (err) {
+        this.error('WebViewToEdge.getInsets', err);
       }
     },
   },

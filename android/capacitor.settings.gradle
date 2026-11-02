@@ -13,3 +13,6 @@ project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacit
 
 include ':capacitor-set-force-dark'
 project(':capacitor-set-force-dark').projectDir = new File('../plugins/capacitor-set-force-dark/android')
+
+include ':capacitor-webview-to-edge'
+project(':capacitor-webview-to-edge').projectDir = new File('../plugins/capacitor-webview-to-edge/android')

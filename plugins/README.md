@@ -9,6 +9,7 @@
 | [capacitor-native-basics](./capacitor-native-basics/) | ✅ 已验证 | 🟡 已实现，待 CI 编译验证 | ✅ | 原生 Toast、设备信息、echo 自检（参考实现） |
 | [capacitor-native-statusbar](./capacitor-native-statusbar/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 状态栏背景色 + 图标亮暗（绕过 Android 15+/MIUI 的 setStatusBarColor 失效） |
 | [capacitor-set-force-dark](./capacitor-set-force-dark/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 设置/关闭 WebView 的 forceDark，注入 data-theme/color-scheme 并派发主题变化事件 |
+| [capacitor-webview-to-edge](./capacitor-webview-to-edge/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 运行时开关：WebView 内容铺满整屏（延伸进状态栏），并提供安全区 insets |
 
 ## 新增插件的标准流程
 

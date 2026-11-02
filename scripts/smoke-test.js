@@ -50,6 +50,12 @@
   out.forceDarkInfo = await click('主题信息');
   await click('跟随系统');
 
+  // WebViewToEdge：铺满整屏 → 读安全区 → 恢复默认
+  await click('铺满整屏');
+  await sleep(400);
+  out.toEdgeInfo = await click('安全区信息');
+  await click('恢复默认');
+
   // 复原，避免把设备状态栏留在橙色
   await click('透明');
   await click('默认');
@@ -68,6 +74,9 @@
   }
   if (!out.forceDarkInfo.includes('requestedTheme') || !out.forceDarkInfo.includes('"isDark": true')) {
     failures.push('setForceDarkInfo');
+  }
+  if (!out.toEdgeInfo.includes('"insets"') || !out.toEdgeInfo.includes('"top"')) {
+    failures.push('webViewToEdgeInsets');
   }
 
   out.dataTheme = dataTheme;
