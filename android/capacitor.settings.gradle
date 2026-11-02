@@ -5,11 +5,11 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 include ':capacitor-status-bar'
 project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacitor/status-bar/android')
 
-include ':capacitor-dark-mode'
-project(':capacitor-dark-mode').projectDir = new File('../plugins/capacitor-dark-mode/android')
-
 include ':capacitor-native-basics'
 project(':capacitor-native-basics').projectDir = new File('../plugins/capacitor-native-basics/android')
 
 include ':capacitor-native-statusbar'
 project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacitor-native-statusbar/android')
+
+include ':capacitor-set-force-dark'
+project(':capacitor-set-force-dark').projectDir = new File('../plugins/capacitor-set-force-dark/android')

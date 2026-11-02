@@ -1,7 +1,7 @@
 {
-  "name": "capacitor-dark-mode",
+  "name": "capacitor-set-force-dark",
   "version": "0.1.0",
-  "description": "修复 Android/WebView 暗色模式：关闭有问题的 forceDark，把系统颜色模式注入页面（data-theme + color-scheme），并提供主题查询与变化监听",
+  "description": "设置 WebView 的 forceDark / 算法暗色（关闭 ROM 的强制反色），并把应用主题注入页面、提供主题查询与变化监听",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -15,9 +15,9 @@
   "keywords": [
     "capacitor",
     "plugin",
-    "dark-mode",
-    "forcdark",
-    "webview"
+    "webview",
+    "force-dark",
+    "algorithmic-darkening"
   ],
   "license": "MIT",
   "scripts": {

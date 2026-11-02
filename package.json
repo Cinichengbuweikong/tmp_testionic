@@ -16,9 +16,9 @@
     "@capacitor/core": "^8.6.0",
     "@capacitor/ios": "^8.6.0",
     "@capacitor/status-bar": "^8.0.4",
-    "capacitor-dark-mode": "file:plugins/capacitor-dark-mode",
     "capacitor-native-basics": "file:plugins/capacitor-native-basics",
     "capacitor-native-statusbar": "file:plugins/capacitor-native-statusbar",
+    "capacitor-set-force-dark": "file:plugins/capacitor-set-force-dark",
     "vue": "^2.7.7",
     "vue-router": "^3.5.4"
   },

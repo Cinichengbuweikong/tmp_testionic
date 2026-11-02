@@ -43,10 +43,11 @@
   out.statusBarStyle = await click('暗色图标');
   out.statusBarInfo = await click('getInfo');
 
-  // 暗色模式：强制暗色 → 检查 data-theme → 恢复跟随系统
+  // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
   await click('强制暗色');
   await sleep(400);
   const dataTheme = document.documentElement.getAttribute('data-theme');
+  out.forceDarkInfo = await click('主题信息');
   await click('跟随系统');
 
   // 复原，避免把设备状态栏留在橙色
@@ -63,7 +64,10 @@
     failures.push('statusBarColor');
   }
   if (dataTheme !== 'dark') {
-    failures.push(`darkMode(data-theme=${dataTheme})`);
+    failures.push(`setForceDark(data-theme=${dataTheme})`);
+  }
+  if (!out.forceDarkInfo.includes('requestedTheme') || !out.forceDarkInfo.includes('"isDark": true')) {
+    failures.push('setForceDarkInfo');
   }
 
   out.dataTheme = dataTheme;

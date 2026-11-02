@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="plugin-test">
     <h1>插件自检</h1>
     <p class="hint">当前平台：{{ platform }} · 原生可用：{{ isNative }}</p>
@@ -28,7 +28,7 @@
     </section>
 
     <section class="card">
-      <h2>DarkMode</h2>
+      <h2>SetForceDark</h2>
       <div class="actions">
         <button @click="applyTheme('system')">跟随系统</button>
         <button @click="applyTheme('light')">强制亮色</button>
@@ -61,7 +61,7 @@
 import { Capacitor } from '@capacitor/core';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
-import { DarkMode } from 'capacitor-dark-mode';
+import { SetForceDark } from 'capacitor-set-force-dark';
 
 export default {
   data() {
@@ -122,16 +122,16 @@ export default {
           results.reason = `unexpected status bar info: ${JSON.stringify(info)}`;
         }
 
-        // DarkMode：注入 data-theme + 关掉 forceDark
-        await DarkMode.setTheme({ theme: 'dark' });
+        // SetForceDark：注入 data-theme + 关掉 forceDark
+        await SetForceDark.setTheme({ theme: 'dark' });
         await new Promise((resolve) => setTimeout(resolve, 300));
-        results.darkMode = {
-          info: await DarkMode.getInfo(),
+        results.setForceDark = {
+          info: await SetForceDark.getInfo(),
           dataTheme: document.documentElement.getAttribute('data-theme'),
         };
-        if (results.darkMode.dataTheme !== 'dark') {
+        if (results.setForceDark.dataTheme !== 'dark') {
           results.ok = false;
-          results.reason = `dark mode injection failed: ${JSON.stringify(results.darkMode)}`;
+          results.reason = `setForceDark injection failed: ${JSON.stringify(results.setForceDark)}`;
         }
       } catch (err) {
         results.ok = false;
@@ -200,37 +200,37 @@ export default {
 
     async applyTheme(theme) {
       try {
-        const info = await DarkMode.setTheme({ theme });
+        const info = await SetForceDark.setTheme({ theme });
         this.print(`setTheme ${theme}`, {
           ...info,
           dataTheme: document.documentElement.getAttribute('data-theme'),
           prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
         });
       } catch (err) {
-        this.error('DarkMode.setTheme', err);
+        this.error('SetForceDark.setTheme', err);
       }
     },
 
     async toggleForceDark(enabled) {
       try {
-        await DarkMode.setForceDark({ enabled });
-        const info = await DarkMode.getInfo();
+        await SetForceDark.setForceDark({ enabled });
+        const info = await SetForceDark.getInfo();
         this.print(`setForceDark ${enabled}`, info);
       } catch (err) {
-        this.error('DarkMode.setForceDark', err);
+        this.error('SetForceDark.setForceDark', err);
       }
     },
 
     async loadDarkInfo() {
       try {
-        const info = await DarkMode.getInfo();
-        this.print('DarkMode.getInfo', {
+        const info = await SetForceDark.getInfo();
+        this.print('SetForceDark.getInfo', {
           ...info,
           dataTheme: document.documentElement.getAttribute('data-theme'),
           prefersDark: window.matchMedia('(prefers-color-scheme: dark)').matches,
         });
       } catch (err) {
-        this.error('DarkMode.getInfo', err);
+        this.error('SetForceDark.getInfo', err);
       }
     },
   },

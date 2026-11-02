@@ -58,11 +58,20 @@ const send = (method, params) =>
     ws.send(JSON.stringify({ id, method, params }));
   });
 
-const response = await send('Runtime.evaluate', {
-  expression,
-  awaitPromise: true,
-  returnByValue: true,
-  userGesture: true,
+const response = await Promise.race([
+  send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  }),
+  new Promise((_, reject) => {
+    // 防止 WebView 进程被杀 / 页面卡死时一直挂着（注意不要 unref，否则事件循环空了会提前退出）
+    setTimeout(() => reject(new Error('CDP evaluate timeout (30s)')), 30000);
+  }),
+]).catch((err) => {
+  console.error(String(err && err.message ? err.message : err));
+  process.exit(4);
 });
 
 ws.close();

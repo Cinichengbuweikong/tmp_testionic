@@ -1,4 +1,4 @@
-package com.testionic.darkmode;
+package com.testionic.setforcedark;
 
 import android.app.Activity;
 import android.content.res.Configuration;
@@ -21,55 +21,93 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.util.Locale;
 
 /**
- * 暗色模式插件（Android 侧）。
+ * SetForceDark 插件（Android 侧，jsName = "SetForceDark"）。
  *
- * ============================ 一、要解决的问题 ============================
+ * ============================ 插件职责（别和"系统深色模式"搞混） ============================
+ *
+ * 本插件解决的是「WebView 里这个页面显示成什么样」的问题：
+ *   - 设置 / 关闭 WebView 的 forceDark（算法暗色），避免 ROM 把页面颜色反坏；
+ *   - 把 App 期望的主题告诉页面（data-theme / color-scheme）；
+ *   - 提供主题查询与变化监听。
+ *
+ * 它**不会**去改系统的深色模式开关，也不会影响系统 UI 或其它 App。
+ *
+ * ============================ 一、要解决的问题（实测） ============================
  *
  * 背景：Android 10 起系统提供 Force Dark（算法暗色）——App 没做深色适配时，
- * 系统会把界面“反色”成深色。WebView 也支持这套东西。
+ * 系统会把界面"反色"成深色，WebView 也支持这套机制。
  *
  * 实测环境：Redmi K30S Ultra / Android 10 / MIUI 12 / WebView 87（系统为深色模式）
  *
- *   - 原生侧：Activity 的 Configuration 里确实是 `night`（说明 App 已进入深色模式）；
+ *   - 原生侧：Activity 的 Configuration 里确实是 `night`（App 已进入深色模式）；
  *   - WebView 里：`matchMedia('(prefers-color-scheme: dark)').matches` === **false**；
- *   - 于是页面按亮色渲染，MIUI 再对它做一层强制反色 → 颜色全错（白底变黑、配色错乱）；
- *   - 调 `decorView.setForceDarkAllowed(false)` 后，反色消失，页面恢复成 CSS 真实颜色。
+ *   - 于是页面按亮色渲染，MIUI 再对它做一层强制反色 → 颜色全错（白底变黑、红/黄/绿严重偏色）；
+ *   - 调 `setForceDarkAllowed(false)` 后，反色消失，页面恢复成 CSS 的真实颜色。
  *
- * 结论：**不能指望 MIUI 的 WebView 报告 prefers-color-scheme**，所以本插件改为：
+ * 结论：**不能指望 MIUI 的 WebView 报告 prefers-color-scheme**。所以本插件：
  *
- *   1. 默认关掉 WebView 的算法暗色（forceDark / algorithmic darkening），消灭"颜色被反掉"；
- *   2. 由插件把「当前应该是什么主题」直接注入页面：
+ *   1. 默认关掉 WebView 的算法暗色（forceDark / algorithmic darkening）；
+ *   2. 由插件把「当前应该是什么主题」注入页面：
  *        document.documentElement.dataset.theme = 'dark' | 'light'
  *        document.documentElement.style.colorScheme = 'dark' | 'light'
  *   3. 兼容老 CSS：把页面里 `@media (prefers-color-scheme: dark)` 的规则**重写**成
- *      `html[data-theme="dark"]` 选择器（只做一次，见注入脚本），这样页面不用改 CSS
+ *      `html[data-theme="dark"]` 选择器（首次注入时做一次），这样页面不用改 CSS
  *      也能在 MIUI 上正确变深色；
  *   4. 监听系统深浅色变化（onConfigurationChanged），重新注入并派发 themeChanged 事件。
  *
  * ⚠️ 版本提醒：以上 MIUI 相关结论基于 **MIUI 12 / Android 10 / WebView 87**。
- *    换 ROM 或 WebView 大版本后如果行为变了，先用 getInfo() 看 prefers-color-scheme
- *    与 forceDark 状态，再决定是否调整这套策略。
+ *    换 ROM 或 WebView 大版本后如果行为变了，先用 getInfo() 看 forceDark 的状态，
+ *    再决定是否调整策略。
  *
- * ============================ 二、线程 ============================
+ * ============================ 二、JS 侧用法 ============================
+ *
+ * <pre>
+ *   import { SetForceDark } from 'capacitor-set-force-dark';
+ *
+ *   // 关闭 WebView 的算法暗色（插件加载时默认就是关的，这里只是显式声明）
+ *   await SetForceDark.setForceDark({ enabled: false });
+ *
+ *   // 让 WebView 跟随系统深浅色
+ *   await SetForceDark.setTheme({ theme: 'system' });
+ *
+ *   // 强制亮色 / 暗色
+ *   await SetForceDark.setTheme({ theme: 'light' });
+ *
+ *   // 读取当前状态：requestedTheme / isDark / isForced
+ *   const theme = await SetForceDark.getTheme();
+ *
+ *   // 监听变化
+ *   const handle = await SetForceDark.addListener('themeChanged', (t) => {
+ *     console.log(t.isDark);
+ *   });
+ * </pre>
+ *
+ * 页面里推荐直接用属性选择器（插件会把 data-theme 写到 html 上）：
+ *
+ * <pre>
+ *   html[data-theme='dark'] body { background: #121212; color: #eee; }
+ * </pre>
+ *
+ * ============================ 三、线程 ============================
  *
  * 与所有 Capacitor 插件一样，方法体运行在 "CapacitorPlugins" 后台线程，
  * 所有 WebView / View 操作都要切到主线程（webView.post）。
  */
-@CapacitorPlugin(name = "DarkMode")
-public class DarkModePlugin extends Plugin {
+@CapacitorPlugin(name = "SetForceDark")
+public class SetForceDarkPlugin extends Plugin {
 
-    private static final String MODE_SYSTEM = "system";
-    private static final String MODE_LIGHT = "light";
-    private static final String MODE_DARK = "dark";
+    private static final String THEME_SYSTEM = "system";
+    private static final String THEME_LIGHT = "light";
+    private static final String THEME_DARK = "dark";
 
-    /** system | light | dark */
-    private String mode = MODE_SYSTEM;
+    /** 当前请求的主题：system | light | dark。 */
+    private String requestedTheme = THEME_SYSTEM;
 
     /** 是否允许 WebView 的算法暗色，默认关闭（见类头的实测说明）。 */
     private boolean forceDarkEnabled = false;
 
-    /** 页面是否已经收到过注入。 */
-    private boolean injected = false;
+    /** 主题是否已经注入过页面。 */
+    private boolean themeInjected = false;
 
     private WebViewListener pageListener;
 
@@ -119,8 +157,8 @@ public class DarkModePlugin extends Plugin {
     protected void handleOnConfigurationChanged(Configuration newConfig) {
         super.handleOnConfigurationChanged(newConfig);
 
-        // 系统深浅色切换：只有跟随系统时才需要重新注入
-        if (MODE_SYSTEM.equals(mode)) {
+        // 系统深浅色切换：只有"跟随系统"时才需要重新注入
+        if (THEME_SYSTEM.equals(requestedTheme)) {
             injectTheme();
             notifyThemeChanged();
         }
@@ -128,27 +166,37 @@ public class DarkModePlugin extends Plugin {
 
     // ---------------------------------------------------------------- 对外方法
 
+    /**
+     * 设置 WebView 主题（system / light / dark）。
+     * 会立即注入页面并派发 themeChanged。
+     */
     @PluginMethod
     public void setTheme(PluginCall call) {
-        String value = call.getString("theme", MODE_SYSTEM);
-        final String normalized = normalizeMode(value);
+        String value = call.getString("theme", THEME_SYSTEM);
+        final String normalized = normalizeTheme(value);
         if (normalized == null) {
             call.reject("theme must be one of: system, light, dark");
             return;
         }
 
-        mode = normalized;
+        requestedTheme = normalized;
         injectTheme();
         notifyThemeChanged();
-        call.resolve(toThemeInfo().toJSObject());
+        call.resolve(toTheme().toJSObject());
     }
 
+    /** 读取当前 WebView 主题状态（不是系统设置）。 */
     @PluginMethod
     public void getTheme(PluginCall call) {
         injectTheme();
-        call.resolve(toThemeInfo().toJSObject());
+        call.resolve(toTheme().toJSObject());
     }
 
+    /**
+     * 开关 WebView 的 forceDark / 算法暗色，默认关闭。
+     *
+     * 打开后 ROM 可能会对页面做算法反色 —— 在 MIUI 12 上会严重偏色，不建议开。
+     */
     @PluginMethod
     public void setForceDark(PluginCall call) {
         Boolean enabled = call.getBoolean("enabled", false);
@@ -157,27 +205,46 @@ public class DarkModePlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * 调试信息：主题、forceDark 状态、是否已注入、UA。
+     *
+     * 注意：`WebView.getSettings()` 也必须在主线程调用，否则会抛
+     * "All WebView methods must be called on the same thread" 直接把 App 崩掉，
+     * 所以这里把 resolve 也放进 webView.post 里。
+     */
     @PluginMethod
     public void getInfo(PluginCall call) {
         injectTheme();
-        ThemeInfo info = toThemeInfo();
-        JSObject ret = info.toJSObject();
-        ret.put("forceDarkEnabled", forceDarkEnabled);
-        ret.put("injected", injected);
 
-        WebView webView = getBridge() != null ? getBridge().getWebView() : null;
-        ret.put("userAgent", webView != null ? webView.getSettings().getUserAgentString() : "");
-        call.resolve(ret);
+        final JSObject ret = toTheme().toJSObject();
+        ret.put("forceDarkEnabled", forceDarkEnabled);
+        ret.put("themeInjected", themeInjected);
+
+        final WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+        if (webView == null) {
+            ret.put("webViewUserAgent", "");
+            call.resolve(ret);
+            return;
+        }
+
+        webView.post(() -> {
+            try {
+                ret.put("webViewUserAgent", webView.getSettings().getUserAgentString());
+            } catch (Exception ex) {
+                ret.put("webViewUserAgent", "");
+            }
+            call.resolve(ret);
+        });
     }
 
     // ---------------------------------------------------------------- 内部实现
 
-    /** 当前实际是否深色。 */
+    /** 解析后实际是否深色。 */
     private boolean isDark() {
-        if (MODE_DARK.equals(mode)) {
+        if (THEME_DARK.equals(requestedTheme)) {
             return true;
         }
-        if (MODE_LIGHT.equals(mode)) {
+        if (THEME_LIGHT.equals(requestedTheme)) {
             return false;
         }
         return isSystemDark();
@@ -199,7 +266,7 @@ public class DarkModePlugin extends Plugin {
      *   1. 写 data-theme / color-scheme；
      *   2. 首次注入时把 @media (prefers-color-scheme: dark) 的规则复制成 html[data-theme="dark"]，
      *      让没改过 CSS 的项目也能正确变深色；
-     *   3. 记录 __capDarkModePatched，避免重复插入样式。
+     *   3. 记录 __capForceDarkPatched，避免重复插入样式。
      */
     private void injectTheme() {
         if (getBridge() == null) {
@@ -215,7 +282,7 @@ public class DarkModePlugin extends Plugin {
 
         webView.post(() -> {
             webView.evaluateJavascript(js, null);
-            injected = true;
+            themeInjected = true;
         });
     }
 
@@ -248,29 +315,29 @@ public class DarkModePlugin extends Plugin {
     }
 
     private void notifyThemeChanged() {
-        notifyListeners("themeChanged", toThemeInfo().toJSObject());
+        notifyListeners("themeChanged", toTheme().toJSObject());
     }
 
-    private ThemeInfo toThemeInfo() {
-        ThemeInfo info = new ThemeInfo();
-        info.mode = mode;
-        info.isDark = isDark();
-        info.overridden = !MODE_SYSTEM.equals(mode);
-        return info;
+    private ThemeState toTheme() {
+        ThemeState state = new ThemeState();
+        state.requestedTheme = requestedTheme;
+        state.isDark = isDark();
+        state.isForced = !THEME_SYSTEM.equals(requestedTheme);
+        return state;
     }
 
-    private String normalizeMode(String value) {
+    private String normalizeTheme(String value) {
         if (value == null) {
-            return MODE_SYSTEM;
+            return THEME_SYSTEM;
         }
         switch (value.trim().toLowerCase(Locale.ROOT)) {
-            case MODE_LIGHT:
-                return MODE_LIGHT;
-            case MODE_DARK:
-                return MODE_DARK;
-            case MODE_SYSTEM:
+            case THEME_LIGHT:
+                return THEME_LIGHT;
+            case THEME_DARK:
+                return THEME_DARK;
+            case THEME_SYSTEM:
             case "":
-                return MODE_SYSTEM;
+                return THEME_SYSTEM;
             default:
                 return null;
         }
@@ -278,17 +345,17 @@ public class DarkModePlugin extends Plugin {
 
     // ---------------------------------------------------------------- 数据结构
 
-    private static class ThemeInfo {
+    private static class ThemeState {
 
-        String mode;
+        String requestedTheme;
         boolean isDark;
-        boolean overridden;
+        boolean isForced;
 
         JSObject toJSObject() {
             JSObject ret = new JSObject();
-            ret.put("mode", mode);
+            ret.put("requestedTheme", requestedTheme);
             ret.put("isDark", isDark);
-            ret.put("overridden", overridden);
+            ret.put("isForced", isForced);
             return ret;
         }
     }
@@ -305,7 +372,7 @@ public class DarkModePlugin extends Plugin {
         "  if (!root) { return; }\n" +
         "  root.setAttribute('data-theme', theme);\n" +
         "  root.style.colorScheme = theme;\n" +
-        "  if (window.__capDarkModePatched) { return; }\n" +
+        "  if (window.__capForceDarkPatched) { return; }\n" +
         "  var css = [];\n" +
         "  try {\n" +
         "    var sheets = document.styleSheets || [];\n" +
@@ -334,9 +401,9 @@ public class DarkModePlugin extends Plugin {
         "  } catch (e) { /* 跨域样式表读不到，忽略 */ }\n" +
         "  if (!css.length) { return; }\n" +
         "  var style = document.createElement('style');\n" +
-        "  style.id = 'cap-dark-mode-patch';\n" +
+        "  style.id = 'cap-force-dark-patch';\n" +
         "  style.textContent = css.join('\\n');\n" +
         "  (document.head || document.documentElement).appendChild(style);\n" +
-        "  window.__capDarkModePatched = true;\n" +
+        "  window.__capForceDarkPatched = true;\n" +
         "})();\n";
 }

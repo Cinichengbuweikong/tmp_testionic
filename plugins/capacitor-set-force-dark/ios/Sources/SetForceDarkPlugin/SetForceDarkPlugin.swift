@@ -3,28 +3,38 @@ import UIKit
 import Capacitor
 
 /**
- * 暗色模式插件（iOS 侧）。
+ * SetForceDark 插件（iOS 侧，jsName = "SetForceDark"）。
  *
  * ============================ 一、iOS 这边其实没那么多事 ============================
  *
- * 和 Android 不同，iOS / WKWebView 对 `prefers-color-scheme` 的支持是正常的：
- * 系统切深色，页面里的 `@media (prefers-color-scheme: dark)` 就会命中。
- * 所以本插件在 iOS 上主要做三件事：
+ * iOS 没有 Android 那种 forceDark / 算法反色，WKWebView 对 `prefers-color-scheme`
+ * 的支持也是正常的：系统切深色，页面里的 `@media (prefers-color-scheme: dark)` 就会命中。
  *
- *   1. 统一两端行为：把当前主题写进 `document.documentElement.dataset.theme`
- *      和 `color-scheme`，这样同一份 CSS（用 [data-theme] 写的）在 iOS/Android 都能用；
- *   2. 提供 setTheme / getTheme / themeChanged；强制亮/暗是通过
- *      `overrideUserInterfaceStyle` 实现的（同时作用在 viewController 和 WKWebView 上，
- *      这样 prefers-color-scheme 也会跟着被覆盖）；
- *   3. 监听 traitCollection 变化（用一个隐藏的 UIView 子类重写 traitCollectionDidChange），
- *      系统深浅色切换时派发 themeChanged。
+ * 所以本插件在 iOS 上做的是"对齐两端行为"：
  *
- * 注意：iOS 没有 Android 那种 forceDark / 算法反色，所以 setForceDark 在 iOS 上是空操作。
+ *   1. 把当前主题写进 `document.documentElement.dataset.theme` 和 `color-scheme`，
+ *      这样同一份 `html[data-theme='dark']` 的 CSS 在 iOS/Android 都能用；
+ *   2. setTheme / getTheme / themeChanged：强制亮暗通过 `overrideUserInterfaceStyle`
+ *      实现（同时作用在 viewController 和 WKWebView 上，prefers-color-scheme 也会跟着变）；
+ *   3. 用隐藏的 UIView 子类监听 `traitCollection` 变化，系统深浅色切换时派发事件。
+ *
+ * 注意：setForceDark 在 iOS 上是空操作（没有对应机制），保留它只是为了两端 API 一致。
+ *
+ * ============================ 二、JS 侧用法 ============================
+ *
+ * <pre>
+ *   import { SetForceDark } from 'capacitor-set-force-dark';
+ *
+ *   await SetForceDark.setForceDark({ enabled: false }); // iOS 上是空操作
+ *   await SetForceDark.setTheme({ theme: 'system' });
+ *   const { isDark } = await SetForceDark.getTheme();
+ *   const handle = await SetForceDark.addListener('themeChanged', (t) => console.log(t.isDark));
+ * </pre>
  */
-@objc(DarkModePlugin)
-public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
-    public let identifier = "DarkModePlugin"
-    public let jsName = "DarkMode"
+@objc(SetForceDarkPlugin)
+public class SetForceDarkPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "SetForceDarkPlugin"
+    public let jsName = "SetForceDark"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "setTheme", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getTheme", returnType: CAPPluginReturnPromise),
@@ -32,9 +42,9 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise)
     ]
 
-    private var mode = "system"
+    private var requestedTheme = "system"
     private var forceDarkEnabled = false
-    private var injected = false
+    private var themeInjected = false
     private var traitObserver: TraitObserverView?
 
     // MARK: - Lifecycle
@@ -78,11 +88,11 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("Plugin deallocated")
                 return
             }
-            self.mode = value
+            self.requestedTheme = value
             self.applyOverrideStyle()
             self.injectTheme()
             self.notifyThemeChanged()
-            call.resolve(self.themeInfo())
+            call.resolve(self.themeState())
         }
     }
 
@@ -93,12 +103,12 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
             self.injectTheme()
-            call.resolve(self.themeInfo())
+            call.resolve(self.themeState())
         }
     }
 
     @objc func setForceDark(_ call: CAPPluginCall) {
-        // iOS 没有 forceDark / 算法暗色，接受参数但不做任何事
+        // iOS 没有 forceDark / 算法反色，接受参数但不做任何事
         forceDarkEnabled = call.getBool("enabled") ?? false
         call.resolve()
     }
@@ -109,11 +119,11 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("Plugin deallocated")
                 return
             }
-            var info = self.themeInfo()
+            var info = self.themeState()
             info["forceDarkEnabled"] = false
-            info["injected"] = self.injected
+            info["themeInjected"] = self.themeInjected
             // iOS 上取 UA 需要执行 JS（WKWebView 没有公开的 userAgent 属性），这里不折腾
-            info["userAgent"] = self.bridge?.webView?.customUserAgent ?? ""
+            info["webViewUserAgent"] = self.bridge?.webView?.customUserAgent ?? ""
             call.resolve(info)
         }
     }
@@ -121,7 +131,7 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
     // MARK: - Theme
 
     private func isDark() -> Bool {
-        switch mode {
+        switch requestedTheme {
         case "dark":
             return true
         case "light":
@@ -138,18 +148,18 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
         return bridge?.viewController?.traitCollection.userInterfaceStyle == .dark
     }
 
-    private func themeInfo() -> [String: Any] {
+    private func themeState() -> [String: Any] {
         [
-            "mode": mode,
+            "requestedTheme": requestedTheme,
             "isDark": isDark(),
-            "overridden": mode != "system"
+            "isForced": requestedTheme != "system"
         ]
     }
 
     /// 强制亮/暗：同时作用在 VC 和 WKWebView 上，这样 prefers-color-scheme 也会被覆盖。
     private func applyOverrideStyle() {
         let style: UIUserInterfaceStyle
-        switch mode {
+        switch requestedTheme {
         case "dark":
             style = .dark
         case "light":
@@ -163,7 +173,7 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func notifyThemeChanged() {
-        notifyListeners("themeChanged", data: themeInfo())
+        notifyListeners("themeChanged", data: themeState())
     }
 
     // MARK: - Injection
@@ -177,7 +187,7 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
 
         DispatchQueue.main.async {
             webView.evaluateJavaScript(js) { [weak self] _, _ in
-                self?.injected = true
+                self?.themeInjected = true
             }
         }
     }
@@ -192,7 +202,7 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
         observer.isHidden = true
         observer.frame = .zero
         observer.onTraitChange = { [weak self] in
-            guard let self, self.mode == "system" else { return }
+            guard let self, self.requestedTheme == "system" else { return }
             self.injectTheme()
             self.notifyThemeChanged()
         }
@@ -225,7 +235,7 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
       if (!root) { return; }
       root.setAttribute('data-theme', theme);
       root.style.colorScheme = theme;
-      if (window.__capDarkModePatched) { return; }
+      if (window.__capForceDarkPatched) { return; }
       var css = [];
       try {
         var sheets = document.styleSheets || [];
@@ -254,10 +264,10 @@ public class DarkModePlugin: CAPPlugin, CAPBridgedPlugin {
       } catch (e) { }
       if (!css.length) { return; }
       var style = document.createElement('style');
-      style.id = 'cap-dark-mode-patch';
+      style.id = 'cap-force-dark-patch';
       style.textContent = css.join('\\n');
       (document.head || document.documentElement).appendChild(style);
-      window.__capDarkModePatched = true;
+      window.__capForceDarkPatched = true;
     })();
     """
 }
