@@ -1,28 +1,9 @@
 <script>
-import { StatusBar, Style } from "@capacitor/status-bar";
-
 import HelloWorld from './components/HelloWorld.vue';
-
 
 export default {
   components: {
     HelloWorld,
-  },
-
-  async mounted() {
-    // await StatusBar.setStyle({
-    //   style: Style.Light
-    // });
-
-    const res = await StatusBar.setStyle({
-      style: Style.Dark
-    });
-
-    await StatusBar.setBackgroundColor({
-      color: "#ffffff"
-    })
-
-    console.log(`StatusBar.setStyle ${ res }`);
   },
 };
 </script>

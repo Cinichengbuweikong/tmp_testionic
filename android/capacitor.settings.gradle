@@ -7,3 +7,6 @@ project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacit
 
 include ':capacitor-native-basics'
 project(':capacitor-native-basics').projectDir = new File('../plugins/capacitor-native-basics/android')
+
+include ':capacitor-native-statusbar'
+project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacitor-native-statusbar/android')

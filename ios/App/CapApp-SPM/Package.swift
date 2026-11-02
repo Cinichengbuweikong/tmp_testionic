@@ -13,7 +13,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.6.0"),
         .package(name: "CapacitorStatusBar", path: "../../../node_modules/@capacitor/status-bar"),
-        .package(name: "CapacitorNativeBasics", path: "../../../plugins/capacitor-native-basics")
+        .package(name: "CapacitorNativeBasics", path: "../../../plugins/capacitor-native-basics"),
+        .package(name: "CapacitorNativeStatusbar", path: "../../../plugins/capacitor-native-statusbar")
     ],
     targets: [
         .target(
@@ -22,7 +23,8 @@ let package = Package(
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
                 .product(name: "CapacitorStatusBar", package: "CapacitorStatusBar"),
-                .product(name: "CapacitorNativeBasics", package: "CapacitorNativeBasics")
+                .product(name: "CapacitorNativeBasics", package: "CapacitorNativeBasics"),
+                .product(name: "CapacitorNativeStatusbar", package: "CapacitorNativeStatusbar")
             ]
         )
     ]

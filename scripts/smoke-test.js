@@ -1,9 +1,11 @@
 // Smoke test executed inside the app's WebView (see scripts/verify-android.ps1).
-// Drives the "Plugin Test" page through the DOM and returns the rendered results.
+// Drives the "插件自检" page through the DOM and returns the rendered results.
 (async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const resultEl = () => document.querySelector('pre');
-  const read = () => (resultEl() ? resultEl().textContent : '');
+  const read = () => {
+    const el = document.querySelector('pre');
+    return el ? el.textContent : '';
+  };
 
   const gotoPluginTest = async () => {
     const link = [...document.querySelectorAll('a')].find((a) => a.textContent.trim() === 'Plugin Test');
@@ -14,7 +16,8 @@
     }
     for (let i = 0; i < 40; i++) {
       await sleep(100);
-      if (document.querySelector('pre') && document.querySelector('h1')?.textContent.includes('NativeBasics')) break;
+      const title = document.querySelector('h1');
+      if (document.querySelector('pre') && title && title.textContent.includes('插件自检')) break;
     }
   };
 
@@ -35,9 +38,24 @@
     toast: await click('showToast'),
   };
 
-  const failures = Object.entries(out)
-    .filter(([, v]) => typeof v === 'string' && (v.includes('失败') || v.includes('Error')))
-    .map(([k]) => k);
+  // 状态栏：设色 → 切暗色图标 → 读回
+  out.statusBarSet = await click('橙 #FF5722');
+  out.statusBarStyle = await click('暗色图标');
+  out.statusBarInfo = await click('getInfo');
+
+  // 复原，避免把设备状态栏留在橙色
+  await click('透明');
+  await click('默认');
+
+  const failures = [];
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo']) {
+    if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
+      failures.push(key);
+    }
+  }
+  if (!out.statusBarInfo.includes('#FFFF5722')) {
+    failures.push('statusBarColor');
+  }
 
   return { ok: failures.length === 0, failures, out };
 })();
