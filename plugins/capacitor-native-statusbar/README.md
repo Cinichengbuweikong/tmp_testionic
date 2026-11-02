@@ -82,19 +82,41 @@ const info = await NativeStatusBar.getInfo();
 4. 深色 / 浅色样式在 Android 上依赖 `WindowInsetsControllerCompat`，最低支持到 API 23；
    iOS 用 `CAPBridgeViewController.setStatusBarStyle`。
 
-## 已知问题 / TODO
+## 已知问题 / 设计取舍
 
-1. **MIUI 会按状态栏背景色自动决定图标明暗，并覆盖显式设置**（真机 Redmi K30S Ultra / MIUI 12 实测）：
-   - 蓝色背景（`#2196F3`）→ 图标自动变白
-   - 白色背景（`#FFFFFF`）→ 图标自动变深
-   - 此时调用 `setStyle('light' | 'dark')` 均无效；`dumpsys window` 确认 `LIGHT_STATUS_BAR` 标志**已经**正确设置，
-     是 MIUI 的 SystemUI 没有采纳。
-   - 对照实验：在同一个 App、同一状态下直接调用官方 `@capacitor/status-bar` 的 `setStyle`，同样无效（像素级比对一致）。
-   - 结论：这是 MIUI 的「对比度自适应」行为，插件侧暂时无法强制覆盖；在对比度正常的组合下（浅底配深图标、深底配浅图标），
-     自动结果与期望一致。
-2. **MIUI 劫持 WebView 的 forceDark**：同一台机器上网页 `getComputedStyle(body).backgroundColor` 是
-   `rgb(255,255,255)`，但屏幕显示为近黑色。插件里已对窗口关闭 `setForceDarkAllowed(false)`（API 29+），
-   实测页面会恢复正常颜色；如果不需要这个副作用可以去掉。
+### 1. MIUI 的「对比度自适应」会覆盖图标亮暗（已确认，非本插件 bug）
+
+真机 Redmi K30S Ultra / MIUI 12 实测：
+
+| 状态栏背景 | MIUI 实际渲染的图标 |
+| --- | --- |
+| 蓝色 `#2196F3` | 自动变白 |
+| 白色 `#FFFFFF` | 自动变深 |
+
+此时显式调用 `setStyle('light')` / `setStyle('dark')` **均无效**。排查过程：
+
+- `dumpsys window` 确认标志位**已经**正确写入：
+  `vsysui=... LIGHT_STATUS_BAR`（dark 样式） / 没有该 flag（light 样式）；
+- 对照实验：同一个 App、同一状态下直接调用**官方** `@capacitor/status-bar` 的 `setStyle`，
+  从 `Style.Dark` 切到 `Style.Light`，两张截图逐像素比对：
+  **右上角信号/电池图标区域差异 0 / 5320 像素** —— 官方插件同样改不了；
+- 结论：MIUI 按状态栏背景色做对比度自适应，会无视 App 的请求。
+
+**设计取舍**：不去对抗它。对比度正常的组合（浅底配深图标、深底配浅图标）自动结果本来就正确；
+强行要求低对比度组合（如浅底配白图标）时 MIUI 会拒绝，这在可用性上反而是合理的。
+所以在 MIUI 上「图标亮暗」表现为"跟随背景色自动切换"。
+
+### 2. MIUI 劫持 WebView 的 forceDark（已处理）
+
+同一台机器上网页 `getComputedStyle(document.body).backgroundColor` 是 `rgb(255,255,255)`，
+但屏幕显示为近黑色——MIUI 向 WebView 注入了强制反色。
+插件在 `load()` 里对窗口调用了 `setForceDarkAllowed(false)`（API 29+），实测页面恢复成 CSS 的真实颜色。
+如果不需要这个副作用，删掉 `load()` 里那一行即可。
+
+### 3. 其它已知边界
+
+- 只在 Android 10（真机）和 Android 16（模拟器）上验证过；Android 15+ 走的是自绘色块路径，理论一致。
+- iOS 侧没有 MIUI 这类覆盖行为，`setStyle` 设置什么就是什么。
 
 ## 平台实现
 

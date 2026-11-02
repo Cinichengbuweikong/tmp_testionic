@@ -3,11 +3,33 @@ import UIKit
 import Capacitor
 
 /**
- * 状态栏插件（iOS）。
+ * 状态栏插件（iOS 侧实现）。
  *
- * iOS 的状态栏从来没有"背景色"这个概念：状态栏始终是透明的，浮在 App 内容之上。
- * 所以这里的做法和 Android 一样——在 window 顶部铺一层与状态栏等高的 UIView，
- * 颜色由 JS 指定；高度用 safeAreaLayoutGuide 约束，旋转、刘海机型都会自动适配。
+ * ============================ 一、iOS 状态栏没有"背景色" ============================
+ *
+ * 与 Android 不同，iOS 的状态栏从来只是一层透明的系统 UI，浮在 App 内容之上，
+ * 系统根本没有提供"设置状态栏背景色"的 API。所以这里的做法是**自己画**：
+ * 在视图控制器根视图顶部铺一层 UIView，高度等于安全区顶部（刘海/灵动岛高度），
+ * 颜色由 JS 传入。约束写成 `bottomAnchor == view.safeAreaLayoutGuide.topAnchor`，
+ * 这样旋转、横屏、不同机型都会自动适配，不需要自己算高度。
+ *
+ * 注意：色块会盖住页面顶部那一条，Web 层需要自己让出安全区
+ * （`padding-top: env(safe-area-inset-top)` 之类）。
+ *
+ * ============================ 二、图标亮暗 ============================
+ *
+ * iOS 侧通过 CAPBridgeViewController.setStatusBarStyle(_:) 修改：
+ *   light   -> .lightContent （白色图标，适合深色底）
+ *   dark    -> .darkContent  （深色图标，适合浅色底，iOS 13+）
+ *   default -> .default      （跟随系统）
+ * 调用后 Capacitor 内部会触发 setNeedsStatusBarAppearanceUpdate() 并带 0.2s 动画。
+ *
+ * 与 Android 的差异：iOS 不会像 MIUI 那样按背景色强制覆盖图标颜色，
+ * 这里设置的样式就是最终结果。（Android 上 MIUI 的限制见 Java 类的头部注释。）
+ *
+ * ============================ 三、线程 ============================
+ *
+ * 与 Android 一样，Capacitor 的插件方法不在主线程，所有 UIKit 操作都切到主线程执行。
  */
 @objc(NativeStatusBarPlugin)
 public class NativeStatusBarPlugin: CAPPlugin, CAPBridgedPlugin {
