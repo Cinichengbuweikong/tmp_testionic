@@ -87,7 +87,11 @@ public class NativeStatusBarPlugin: CAPPlugin, CAPBridgedPlugin {
             // iOS 侧永远是自己画的那层
             "usingOverlay": backgroundView != nil
         ]
-        result["color"] = currentColor.map { Self.toHex($0) } ?? NSNull()
+        if let color = currentColor {
+            result["color"] = Self.toHex(color)
+        } else {
+            result["color"] = NSNull()
+        }
         call.resolve(result)
     }
 
