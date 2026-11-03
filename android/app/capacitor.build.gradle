@@ -13,6 +13,7 @@ dependencies {
     implementation project(':capacitor-native-basics')
     implementation project(':capacitor-native-statusbar')
     implementation project(':capacitor-set-force-dark')
+    implementation project(':capacitor-system-info')
     implementation project(':capacitor-webview-to-edge')
 
 }

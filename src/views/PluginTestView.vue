@@ -42,6 +42,16 @@
     </section>
 
     <section class="card">
+      <h2>SystemInfo</h2>
+      <div class="actions">
+        <button @click="loadSystemInfo">读取系统信息</button>
+      </div>
+      <p class="hint">
+        屏幕/视口/安全区/系统栏/系统/WebView 等综合信息；viewport.css 就是 CSS 里 100% 的大小。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>WebViewToEdge</h2>
       <div class="actions">
         <button @click="setToEdge(true)">铺满整屏</button>
@@ -75,6 +85,7 @@ import { Capacitor } from '@capacitor/core';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
 import { SetForceDark } from 'capacitor-set-force-dark';
+import { SystemInfo } from 'capacitor-system-info';
 import { WebViewToEdge } from 'capacitor-webview-to-edge';
 
 export default {
@@ -146,6 +157,52 @@ export default {
         if (results.setForceDark.dataTheme !== 'dark') {
           results.ok = false;
           results.reason = `setForceDark injection failed: ${JSON.stringify(results.setForceDark)}`;
+        }
+
+        // SystemInfo：13 个独立 API 的结构与数值自洽性检查（物理 px = css × density）
+        try {
+          const [screen, viewport, safeArea, statusBar, navigationBar, cutout, system, webView, memory, storage, battery, network, app] = await Promise.all([
+            SystemInfo.getScreenInfo(),
+            SystemInfo.getViewport(),
+            SystemInfo.getSafeAreaInsets(),
+            SystemInfo.getStatusBarInfo(),
+            SystemInfo.getNavigationBarInfo(),
+            SystemInfo.getCutoutInfo(),
+            SystemInfo.getSystemInfo(),
+            SystemInfo.getWebViewInfo(),
+            SystemInfo.getMemoryInfo(),
+            SystemInfo.getStorageInfo(),
+            SystemInfo.getBatteryInfo(),
+            SystemInfo.getNetworkInfo(),
+            SystemInfo.getAppInfo(),
+          ]);
+          results.systemInfo = {
+            screen, viewport, safeArea, statusBar, navigationBar, cutout,
+            system, webView, memory, storage, battery, network, app,
+          };
+          const checks = [
+            ['screen', !!screen && screen.px.width > 0 && screen.density > 0 && Math.abs(screen.css.width * screen.density - screen.px.width) < 1],
+            ['viewport', !!viewport && viewport.css.width > 0 && viewport.css.width <= screen.css.width + 1],
+            ['safeArea', typeof safeArea.top === 'number'],
+            ['statusBar', typeof statusBar.heightPx === 'number'],
+            ['navigationBar', typeof navigationBar.heightPx === 'number'],
+            ['cutout', typeof cutout.exists === 'boolean'],
+            ['system', !!system && system.platform === this.platform && system.osVersion.length > 0],
+            ['webView', !!webView && typeof webView.userAgent === 'string'],
+            ['memory', typeof memory.totalBytes === 'number'],
+            ['storage', typeof storage.totalBytes === 'number'],
+            ['battery', typeof battery.level === 'number'],
+            ['network', ['wifi', 'cellular', 'ethernet', 'vpn', 'none', 'unknown'].includes(network.type)],
+            ['app', typeof app.version === 'string'],
+          ];
+          const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
+          if (failed.length) {
+            results.ok = false;
+            results.reason = `system-info check failed: ${failed.join(', ')} ${JSON.stringify(results.systemInfo)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.systemInfoError = String((err && err.message) || err);
         }
 
         // WebViewToEdge：开 → 读安全区 → 关
@@ -256,6 +313,32 @@ export default {
         });
       } catch (err) {
         this.error('SetForceDark.getInfo', err);
+      }
+    },
+
+    async loadSystemInfo() {
+      try {
+        const [screen, viewport, safeArea, statusBar, navigationBar, cutout, system, webView, memory, storage, battery, network, app] = await Promise.all([
+          SystemInfo.getScreenInfo(),
+          SystemInfo.getViewport(),
+          SystemInfo.getSafeAreaInsets(),
+          SystemInfo.getStatusBarInfo(),
+          SystemInfo.getNavigationBarInfo(),
+          SystemInfo.getCutoutInfo(),
+          SystemInfo.getSystemInfo(),
+          SystemInfo.getWebViewInfo(),
+          SystemInfo.getMemoryInfo(),
+          SystemInfo.getStorageInfo(),
+          SystemInfo.getBatteryInfo(),
+          SystemInfo.getNetworkInfo(),
+          SystemInfo.getAppInfo(),
+        ]);
+        this.print('SystemInfo 成功', {
+          screen, viewport, safeArea, statusBar, navigationBar, cutout,
+          system, webView, memory, storage, battery, network, app,
+        });
+      } catch (err) {
+        this.error('SystemInfo', err);
       }
     },
 

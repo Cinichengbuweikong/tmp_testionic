@@ -43,6 +43,9 @@
   out.statusBarStyle = await click('暗色图标');
   out.statusBarInfo = await click('getInfo');
 
+  // SystemInfo：读一次综合信息
+  out.systemInfo = await click('读取系统信息');
+
   // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
   await click('强制暗色');
   await sleep(400);
@@ -61,7 +64,7 @@
   await click('默认');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -77,6 +80,14 @@
   }
   if (!out.toEdgeInfo.includes('"insets"') || !out.toEdgeInfo.includes('"top"')) {
     failures.push('webViewToEdgeInsets');
+  }
+  if (!out.systemInfo.includes('"platform": "android"')) {
+    failures.push('systemInfoPlatform');
+  }
+  for (const key of ['"screen"', '"viewport"', '"safeArea"', '"statusBar"', '"navigationBar"', '"cutout"', '"system"', '"webView"', '"memory"', '"storage"', '"battery"', '"network"', '"app"']) {
+    if (!out.systemInfo.includes(key)) {
+      failures.push(`systemInfo:${key}`);
+    }
   }
 
   out.dataTheme = dataTheme;
