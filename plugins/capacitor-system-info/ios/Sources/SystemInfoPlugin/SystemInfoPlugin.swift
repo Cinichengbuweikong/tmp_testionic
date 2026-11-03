@@ -212,17 +212,21 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    /// WebView 引擎：WKWebView 没有公开版本 API，从 UA 里取 Safari 版本。
+    /// WebView 引擎：WKWebView 没有公开版本 API，UA 从页面 navigator 取
+    /// （避免 KVC 私有属性在 iOS 26 上抛异常崩溃），版本解析自 UA 的 Safari "Version/x.y"。
     private func resolveWebView(_ call: CAPPluginCall) {
-        var userAgent = ""
-        if let webView = self.bridge?.webView as? WKWebView {
-            userAgent = (webView.value(forKey: "userAgent") as? String) ?? ""
+        guard let webView = self.bridge?.webView else {
+            call.resolve(["packageName": "WKWebView", "version": "", "userAgent": ""])
+            return
         }
-        call.resolve([
-            "packageName": "WKWebView",
-            "version": safariVersion(from: userAgent),
-            "userAgent": userAgent
-        ])
+        webView.evaluateJavaScript("navigator.userAgent") { result, _ in
+            let userAgent = result as? String ?? ""
+            call.resolve([
+                "packageName": "WKWebView",
+                "version": self.safariVersion(from: userAgent),
+                "userAgent": userAgent
+            ])
+        }
     }
 
     /// 内存（字节）。
