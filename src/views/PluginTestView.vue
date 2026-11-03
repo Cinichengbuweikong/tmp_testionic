@@ -184,8 +184,8 @@ export default {
             ['screen', !!screen && screen.px.width > 0 && screen.density > 0 && Math.abs(screen.css.width * screen.density - screen.px.width) < 1],
             ['viewport', !!viewport && viewport.css.width > 0 && viewport.css.width <= screen.css.width + 1],
             ['safeArea', !!safeArea && typeof safeArea.css.top === 'number' && typeof safeArea.px.top === 'number'],
-            ['statusBar', typeof statusBar.heightPx === 'number'],
-            ['navigationBar', typeof navigationBar.heightPx === 'number'],
+            ['statusBar', !!statusBar && typeof statusBar.px.height === 'number' && typeof statusBar.css.height === 'number'],
+            ['navigationBar', !!navigationBar && typeof navigationBar.px.height === 'number' && typeof navigationBar.css.height === 'number'],
             ['cutout', typeof cutout.exists === 'boolean'],
             ['system', !!system && system.platform === this.platform && system.osVersion.length > 0],
             ['webView', !!webView && typeof webView.userAgent === 'string'],
@@ -198,7 +198,8 @@ export default {
           const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
           if (failed.length) {
             results.ok = false;
-            results.reason = `system-info check failed: ${failed.join(', ')} ${JSON.stringify(results.systemInfo)}`;
+            // 数据本体已在 results.systemInfo 里，reason 只放失败项，避免日志超长被截断
+            results.reason = `system-info check failed: ${failed.join(', ')}`;
           }
         } catch (err) {
           results.ok = false;

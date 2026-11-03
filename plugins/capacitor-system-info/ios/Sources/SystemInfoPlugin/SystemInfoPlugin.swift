@@ -395,8 +395,13 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// 硬件型号（如 iPhone13,2），比 UIDevice.model 更精确。
+    /// 硬件型号（真机如 iPhone13,2）。
+    /// 注意：uname().machine 在**模拟器**上返回宿主架构（arm64），不是模拟机型，
+    /// 模拟器要用 SIMULATOR_MODEL_IDENTIFIER（如 iPhone17,4）。
     private func hardwareModel() -> String {
+        #if targetEnvironment(simulator)
+        return ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? "unknown"
+        #else
         var sysinfo = utsname()
         uname(&sysinfo)
         let mirror = Mirror(reflecting: sysinfo.machine)
@@ -408,6 +413,7 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
             model.append(Character(UnicodeScalar(UInt8(bitPattern: value))))
         }
         return model.isEmpty ? "unknown" : model
+        #endif
     }
 
     private func isEmulator() -> Bool {
