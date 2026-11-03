@@ -159,6 +159,12 @@ npx cap sync
 - `insets` 是"距离"，`boundingRects` 是"位置和大小"——两者不是同一维度，`insets.right=0` 但矩形有 `right` 值是完全正常的。
 - `boundingRects` 的 `right`/`bottom` 是**矩形右/下边缘的坐标**：例如 `{left:0, right:90, bottom:1080}` 表示矩形 x 从 0 到 90（宽 90）、y 到 1080（贴底边），而不是"距离右边 90、距离底部 1080"。
 - **矩形贴边 ≠ 挖孔贴边**：系统给的是挖孔**安全区矩形**（把挖孔周围的不可用区域一并框住，因此会贴到屏幕边），真实的圆孔在矩形内部靠中间——所以你会看到"挖孔明显不贴边，但矩形贴边"。
+  - 实测证据 1（模拟器，系统有圆孔轮廓）：圆孔 `x 507~573, y 31~97`（直径 57），而系统报告的安全区矩形是 `[492,0]-[610,128]`——圆孔严格落在矩形内部。
+  - 实测证据 2（红米 K30S Ultra / MIUI 12，`dumpsys display` 中系统自己报告的数据）：
+    `cutout DisplayCutout{ insets=Rect(0, 90 - 0, 0) boundingRect=[Rect(0, 0 - 141, 90)] }`
+    即 MIUI 把安全区直接定义成**贴左上角的 141×90 矩形**；插件原样转发，没有任何加工。
+- **公开 API 拿不到圆孔精确轮廓**：圆孔轮廓属于 SurfaceFlinger 的 `cutoutPathParserInfo`（私有数据，App 层不可访问，且部分 ROM 根本不提供）。因此 `boundingRects` 是能拿到的最准确数据，`centerPx` 可近似视为圆孔中心。
+- 想把内容"绕开"挖孔，正确做法是用 `insetsPx/insetsCss` 做 padding/margin（这是系统给的真实避让距离）；`boundingRects` 只适合了解"哪块区域被遮挡"，不要用它推断圆孔本身是否贴边。
 - `boundingRects` 的坐标随**当前朝向**变化：竖屏坐标系是 1080×2400，转成横屏后坐标系变成 2400×1080，同一个挖孔的坐标数值会完全不同。
 - 判断挖孔在屏幕上哪个位置，请**先把 `getScreenInfo().px` 和 `boundingRects` 放在同一朝向下看**。
 
