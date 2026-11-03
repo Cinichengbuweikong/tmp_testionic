@@ -26,7 +26,7 @@ export interface SystemInfoPlugin {
   getViewport(): Promise<ViewportInfo>;
 
   /**
-   * 安全区：四边需要避让的区域（iOS safe-area 语义），单位 CSS px。
+   * 安全区：四边需要避让的区域（iOS safe-area 语义），px 与 css 两份。
    *
    * @since 0.1.0
    */
@@ -152,8 +152,10 @@ export interface ScreenInfo {
   densityDpi: number;
   /** 字体缩放后的密度。 */
   scaledDensity: number;
-  /** 屏幕刷新率（Hz，当前模式）。 */
+  /** 当前激活档位的刷新率（Hz），如 90。 */
   refreshRate: number;
+  /** 屏幕支持的最高刷新率（Hz），如 144。 */
+  maxRefreshRate: number;
 }
 
 /** getViewport() 的返回值：WebView 视口（CSS 100% 的大小）。 */
@@ -162,8 +164,11 @@ export interface ViewportInfo {
   css: SystemInfoSize;
 }
 
-/** getSafeAreaInsets() 的返回值（CSS px）。 */
-export type SafeAreaInsets = SystemInfoEdges;
+/** getSafeAreaInsets() 的返回值：四边需要避让的区域，px（物理像素）与 css（CSS px）两份。 */
+export interface SafeAreaInsets {
+  px: SystemInfoEdges;
+  css: SystemInfoEdges;
+}
 
 /** getStatusBarInfo() 的返回值。 */
 export interface StatusBarInfo {

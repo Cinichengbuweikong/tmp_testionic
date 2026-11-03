@@ -183,7 +183,7 @@ export default {
           const checks = [
             ['screen', !!screen && screen.px.width > 0 && screen.density > 0 && Math.abs(screen.css.width * screen.density - screen.px.width) < 1],
             ['viewport', !!viewport && viewport.css.width > 0 && viewport.css.width <= screen.css.width + 1],
-            ['safeArea', typeof safeArea.top === 'number'],
+            ['safeArea', !!safeArea && typeof safeArea.css.top === 'number' && typeof safeArea.px.top === 'number'],
             ['statusBar', typeof statusBar.heightPx === 'number'],
             ['navigationBar', typeof navigationBar.heightPx === 'number'],
             ['cutout', typeof cutout.exists === 'boolean'],

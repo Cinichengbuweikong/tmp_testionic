@@ -100,6 +100,7 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
         let screen = UIScreen.main
         let scale = Double(screen.scale)
         let bounds = screen.bounds
+        let rate = refreshRate(screen)
 
         call.resolve([
             "px": ["width": Double(screen.nativeBounds.width), "height": Double(screen.nativeBounds.height)],
@@ -109,7 +110,9 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
             "density": scale,
             "densityDpi": Int(scale * 160),
             "scaledDensity": scale,
-            "refreshRate": refreshRate(screen)
+            // iOS 的 maximumFramesPerSecond 即当前设备刷新率上限（ProMotion 动态调速）
+            "refreshRate": rate,
+            "maxRefreshRate": rate
         ])
     }
 
@@ -128,31 +131,37 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    /// 安全区（pt ≈ CSS px）。
+    /// 安全区：px（pt × scale）与 css（pt）两份。
     private func resolveSafeArea(_ call: CAPPluginCall) {
-        guard let window = self.bridge?.viewController?.view.window else {
-            call.resolve(["top": 0, "right": 0, "bottom": 0, "left": 0])
-            return
-        }
+        let scale = Double(UIScreen.main.scale)
+        let window = self.bridge?.viewController?.view.window
+        let top = window.map { Double($0.safeAreaInsets.top) } ?? 0
+        let right = window.map { Double($0.safeAreaInsets.right) } ?? 0
+        let bottom = window.map { Double($0.safeAreaInsets.bottom) } ?? 0
+        let left = window.map { Double($0.safeAreaInsets.left) } ?? 0
         call.resolve([
-            "top": Double(window.safeAreaInsets.top),
-            "right": Double(window.safeAreaInsets.right),
-            "bottom": Double(window.safeAreaInsets.bottom),
-            "left": Double(window.safeAreaInsets.left)
+            "px": ["top": top * scale, "right": right * scale, "bottom": bottom * scale, "left": left * scale],
+            "css": ["top": top, "right": right, "bottom": bottom, "left": left]
         ])
     }
 
     /// 状态栏（宽 = 屏幕宽）。
     private func resolveStatusBar(_ call: CAPPluginCall) {
         let scale = Double(UIScreen.main.scale)
-        let bounds = UIScreen.main.bounds
-        let frame = self.bridge?.viewController?.view.window?.windowScene?.statusBarManager?.statusBarFrame
-        let cssW = frame.map { Double($0.width) } ?? Double(bounds.width)
-        let cssH = frame.map { Double($0.height) } ?? 0
+        let widthCss = Double(UIScreen.main.bounds.width)
+        var heightCss = 0.0
+        if #available(iOS 26.0, *) {
+            // UIStatusBarManager.statusBarFrame 在 iOS 26 已移除；
+            // 状态栏高度即顶部安全区（灵动岛机型会含岛边距）
+            heightCss = self.bridge?.viewController?.view.window.map { Double($0.safeAreaInsets.top) } ?? 0
+        } else {
+            heightCss = self.bridge?.viewController?.view.window?.windowScene?.statusBarManager?.statusBarFrame
+                .map { Double($0.height) } ?? 0
+        }
         call.resolve([
-            "px": ["width": cssW * scale, "height": cssH * scale],
-            "css": ["width": cssW, "height": cssH],
-            "visible": cssH > 0
+            "px": ["width": widthCss * scale, "height": heightCss * scale],
+            "css": ["width": widthCss, "height": heightCss],
+            "visible": heightCss > 0
         ])
     }
 
@@ -333,15 +342,18 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
         return 60
     }
 
+    /// 旋转角度：用 UIDevice 方向（windowScene.interfaceOrientation 在 iOS 26 已移除）。
+    /// landscapeLeft=270 / landscapeRight=90 与 Android ROTATION 语义对齐；未获得方向时为 0。
     private func rotationDegrees() -> Int {
-        guard let orientation = self.bridge?.viewController?.view.window?.windowScene?.interfaceOrientation else {
-            return 0
-        }
+        let device = UIDevice.current
+        device.beginGeneratingDeviceOrientationNotifications()
+        let orientation = device.orientation
+        device.endGeneratingDeviceOrientationNotifications()
         switch orientation {
         case .portrait: return 0
         case .portraitUpsideDown: return 180
-        case .landscapeLeft: return 90
-        case .landscapeRight: return 270
+        case .landscapeLeft: return 270
+        case .landscapeRight: return 90
         default: return 0
         }
     }

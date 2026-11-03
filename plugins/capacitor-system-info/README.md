@@ -48,7 +48,7 @@ const app = await SystemInfo.getAppInfo();
 | --- | --- | --- |
 | `getScreenInfo()` | `ScreenInfo` | 屏幕物理分辨率 `px`、CSS 尺寸 `css`、`density`/`densityDpi`/`scaledDensity`、`refreshRate`、`orientation`、`rotationDegrees` |
 | `getViewport()` | `ViewportInfo` | WebView 视口尺寸（**CSS 里 `100%` 的大小**），`px` + `css` |
-| `getSafeAreaInsets()` | `SafeAreaInsets` | 四边需要避让的区域（CSS px），top≈状态栏、bottom≈导航栏/手势条 |
+| `getSafeAreaInsets()` | `SafeAreaInsets` | 四边需要避让的区域，`px`（物理像素）与 `css`（CSS px）两份 |
 | `getStatusBarInfo()` | `StatusBarInfo` | 状态栏宽高（宽=屏幕宽）、`visible` |
 | `getNavigationBarInfo()` | `NavigationBarInfo` | 底部导航栏宽高、`visible`、`mode`（iOS 上对应 Home Indicator） |
 | `getCutoutInfo()` | `CutoutInfo` | 刘海/挖孔：`exists`、`insetsCss`、`boundingRectsPx` |
@@ -82,7 +82,10 @@ const app = await SystemInfo.getAppInfo();
 - **导航模式**：优先读系统 `navigation_mode` setting；读不到（MIUI）时按实测占用推断：
   底部有占用 → `three_button`；insets 假报但窗口铺满 → `gesture`；都无 → `none`。
   `none` 表示"未检测到可见导航栏"（可能是手势模式或沉浸模式）。
-- `refreshRate` 是**当前模式**的刷新率（MIUI 动态刷新率会变化，实测静止时 50Hz）。
+- `refreshRate` 是**用户设置的刷新率档位**（不是瞬时值）：Android 11+ 读官方
+  `peak_refresh_rate`，MIUI 读 `user_refresh_rate`（`getRefreshRate()`/`getMode()` 在
+  MIUI 智能刷新率下会返回瞬时档，实测设置 90 时却报 50）；`maxRefreshRate` 是硬件支持的最高档。
+  设置里没有时（如模拟器）退回当前激活模式档位。
 - `darkMode` 报告 App 当前 Configuration 看到的值；MIUI 上它可能与页面
   `matchMedia('(prefers-color-scheme: dark)')` 不一致（这是 MIUI WebView 的已知怪癖，
   见 capacitor-set-force-dark）。
@@ -113,9 +116,9 @@ const app = await SystemInfo.getAppInfo();
 | viewport | 1080×2310 px / 840 css（默认，仅让出状态栏） | 1080×2146 px / 817.52 css（让出状态栏+三键导航栏） |
 | statusBar | 90 px / 32.73 css | 128 px / 48.76 css |
 | navigationBar | 0（手势模式，无导航栏） | 126 px / 48 css，three_button |
-| safeAreaInsets | top 32.73, bottom 0 | top 48.76, bottom 48 |
+| safeAreaInsets | top 32.73, bottom 0（css；px 为 90/0） | top 48.76, bottom 48（css；px 为 128/126） |
 | cutout | 挖孔 [0,141]×[0,90] | 挖孔 [492,610]×[0,128] |
-| refreshRate | 50（MIUI 动态刷新率当前档） | 60 |
+| refreshRate | 90（用户设置档位；maxRefreshRate 144） | 60 |
 
 ## 开发
 

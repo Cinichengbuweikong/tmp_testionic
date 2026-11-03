@@ -168,7 +168,46 @@ public class SystemInfoPlugin extends Plugin {
         ret.put("density", (double) dm.density);
         ret.put("densityDpi", dm.densityDpi);
         ret.put("scaledDensity", (double) dm.scaledDensity);
-        ret.put("refreshRate", Math.round(wm.getDefaultDisplay().getRefreshRate() * 10.0) / 10.0);
+
+        // 刷新率 = 用户设置的档位：
+        // 1) Android 11+ 官方 peak_refresh_rate；
+        // 2) MIUI 用 user_refresh_rate（getMode()/getRefreshRate() 在 MIUI 智能
+        //    刷新率下会返回瞬时档，实测设置 90 时却报 50）；
+        // 3) 兜底：当前激活模式档位。
+        Display display = wm.getDefaultDisplay();
+        double rate = display.getMode().getRefreshRate();
+        try {
+            double settingRate = -1;
+            if (Build.VERSION.SDK_INT >= 30) {
+                // Settings.System.PEAK_REFRESH_RATE 是 @hide 常量，直接用键名
+                settingRate = Settings.System.getFloat(
+                    getContext().getContentResolver(),
+                    "peak_refresh_rate",
+                    -1f
+                );
+            } else {
+                settingRate = Settings.System.getInt(getContext().getContentResolver(), "user_refresh_rate", -1);
+            }
+            // 只接受支持列表里存在的档位，防止 ROM 存了垃圾值
+            if (settingRate > 0 && settingRate <= 240) {
+                for (Display.Mode mode : display.getSupportedModes()) {
+                    if (Math.abs(mode.getRefreshRate() - settingRate) < 0.5) {
+                        rate = settingRate;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // 保持 getMode() 兜底值
+        }
+        double maxRate = rate;
+        for (Display.Mode mode : display.getSupportedModes()) {
+            if (mode.getRefreshRate() > maxRate) {
+                maxRate = mode.getRefreshRate();
+            }
+        }
+        ret.put("refreshRate", Math.round(rate * 10.0) / 10.0);
+        ret.put("maxRefreshRate", Math.round(maxRate * 10.0) / 10.0);
         return ret;
     }
 
@@ -243,7 +282,11 @@ public class SystemInfoPlugin extends Plugin {
         int bottom = Math.max(navBottom, Math.max(gestureBottom, cutoutBottom));
         int right = Math.max(systemRight, cutoutRight);
         int left = Math.max(systemLeft, cutoutLeft);
-        return edgesJson(css(top, density), css(right, density), css(bottom, density), css(left, density));
+
+        JSObject ret = new JSObject();
+        ret.put("px", edgesJson(top, right, bottom, left));
+        ret.put("css", edgesJson(css(top, density), css(right, density), css(bottom, density), css(left, density)));
+        return ret;
     }
 
     /** 状态栏：宽 = 屏幕宽。 */

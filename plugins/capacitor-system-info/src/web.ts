@@ -53,6 +53,7 @@ export class SystemInfoWeb extends WebPlugin implements SystemInfoPlugin {
       densityDpi: Math.round(dpr * 160),
       scaledDensity: dpr,
       refreshRate: 60,
+      maxRefreshRate: 60,
     };
   }
 
@@ -69,7 +70,8 @@ export class SystemInfoWeb extends WebPlugin implements SystemInfoPlugin {
   async getSafeAreaInsets(): Promise<SafeAreaInsets> {
     // 普通浏览器里没有系统安全区（桌面 PWA 用 viewport-fit=cover 时 env() 才有值，
     // 这里不做特判，统一返回 0）
-    return { top: 0, right: 0, bottom: 0, left: 0 };
+    const zero = { top: 0, right: 0, bottom: 0, left: 0 };
+    return { px: zero, css: zero };
   }
 
   async getStatusBarInfo(): Promise<StatusBarInfo> {
