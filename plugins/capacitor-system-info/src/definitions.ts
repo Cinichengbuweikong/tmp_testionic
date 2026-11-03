@@ -129,12 +129,16 @@ export interface SystemInfoEdges {
   left: number;
 }
 
-/** 屏幕坐标系的矩形（物理像素）。 */
+/** 屏幕坐标系的矩形（物理像素或 CSS px，由所在字段决定）。 */
 export interface SystemInfoRect {
   left: number;
   top: number;
   right: number;
   bottom: number;
+  /** 宽 = right − left（便于直接读，不用心算）。 */
+  width?: number;
+  /** 高 = bottom − top。 */
+  height?: number;
 }
 
 /** getScreenInfo() 的返回值。 */
@@ -188,10 +192,30 @@ export interface NavigationBarInfo {
 /** getCutoutInfo() 的返回值。 */
 export interface CutoutInfo {
   exists: boolean;
-  /** 挖孔安全区（仅 exists 时给出），CSS px。 */
+  /**
+   * 挖孔「安全区」（仅 exists 时给出）：四边需要避让的距离，CSS px。
+   * 与 boundingRects 不同：这是"距离"，只在有挖孔的那条边 > 0。
+   */
   insetsCss?: SystemInfoEdges;
-  /** 挖孔包围盒列表，物理像素、屏幕坐标系。 */
+  /** 同 insetsCss，物理像素。 */
+  insetsPx?: SystemInfoEdges;
+  /**
+   * 挖孔「区域矩形」（仅 Android，exists 时给出）：挖孔在屏幕上的位置与大小，
+   * 物理像素，**当前朝向的窗口坐标系**（横屏时坐标系为 宽×高 交换后的尺寸，
+   * 即与 getScreenInfo().px 一致）。多挖孔屏会有多个矩形。
+   * 注意：这是系统给的挖孔**安全区矩形**（贴边），比真实挖孔轮廓大一圈——
+   * 矩形贴边不代表挖孔本身贴边。
+   */
   boundingRectsPx?: SystemInfoRect[];
+  /** 同 boundingRectsPx，CSS px（除以 density，可直接用于 CSS 定位）。 */
+  boundingRectsCss?: SystemInfoRect[];
+  /**
+   * 主挖孔中心点（取第一个 boundingRect 的中心，物理像素，当前朝向坐标系）。
+   * 想看「挖孔大概在屏幕哪个位置」用这个最直观。
+   */
+  centerPx?: { x: number; y: number };
+  /** 同 centerPx，CSS px。 */
+  centerCss?: { x: number; y: number };
 }
 
 /** getSystemInfo() 的返回值。 */

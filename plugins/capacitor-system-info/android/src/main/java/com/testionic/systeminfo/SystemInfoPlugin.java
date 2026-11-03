@@ -326,7 +326,15 @@ public class SystemInfoPlugin extends Plugin {
         return ret;
     }
 
-    /** 刘海 / 挖孔。 */
+    /**
+     * 刘海 / 挖孔。
+     *
+     * 两套数据不要混淆：
+     * - insetsPx / insetsCss：四边需要「避让的距离」，通常只有一条边 > 0；
+     * - boundingRectsPx / boundingRectsCss：挖孔在屏幕上的「区域矩形」，
+     *   坐标是**当前朝向的窗口坐标系**（横屏时与 getScreenInfo().px 的宽高一致），
+     *   多挖孔屏可能有多个矩形；系统给的是挖孔安全区矩形，比真实轮廓略大。
+     */
     private JSObject collectCutout() {
         DisplayCutout cutout = displayCutout();
         float density = getContext().getResources().getDisplayMetrics().density;
@@ -338,6 +346,15 @@ public class SystemInfoPlugin extends Plugin {
         }
         ret.put("exists", true);
         ret.put(
+            "insetsPx",
+            edgesJson(
+                cutout.getSafeInsetTop(),
+                cutout.getSafeInsetRight(),
+                cutout.getSafeInsetBottom(),
+                cutout.getSafeInsetLeft()
+            )
+        );
+        ret.put(
             "insetsCss",
             edgesJson(
                 css(cutout.getSafeInsetTop(), density),
@@ -346,19 +363,51 @@ public class SystemInfoPlugin extends Plugin {
                 css(cutout.getSafeInsetLeft(), density)
             )
         );
-        JSArray rects = new JSArray();
+
+        JSArray rectsPx = new JSArray();
+        JSArray rectsCss = new JSArray();
+        JSObject centerPx = null;
+        JSObject centerCss = null;
         List<Rect> bounds = cutout.getBoundingRects();
         if (bounds != null) {
             for (Rect r : bounds) {
-                JSObject o = new JSObject();
-                o.put("left", r.left);
-                o.put("top", r.top);
-                o.put("right", r.right);
-                o.put("bottom", r.bottom);
-                rects.put(o);
+                JSObject px = new JSObject();
+                px.put("left", r.left);
+                px.put("top", r.top);
+                px.put("right", r.right);
+                px.put("bottom", r.bottom);
+                px.put("width", r.width());
+                px.put("height", r.height());
+                rectsPx.put(px);
+
+                JSObject cssRect = new JSObject();
+                cssRect.put("left", css(r.left, density));
+                cssRect.put("top", css(r.top, density));
+                cssRect.put("right", css(r.right, density));
+                cssRect.put("bottom", css(r.bottom, density));
+                cssRect.put("width", css(r.width(), density));
+                cssRect.put("height", css(r.height(), density));
+                rectsCss.put(cssRect);
+
+                // 第一个矩形视为主挖孔，取中心点（多挖孔屏取第一个）
+                if (centerPx == null) {
+                    double cx = (r.left + r.right) / 2.0;
+                    double cy = (r.top + r.bottom) / 2.0;
+                    centerPx = new JSObject();
+                    centerPx.put("x", cx);
+                    centerPx.put("y", cy);
+                    centerCss = new JSObject();
+                    centerCss.put("x", css(cx, density));
+                    centerCss.put("y", css(cy, density));
+                }
             }
         }
-        ret.put("boundingRectsPx", rects);
+        ret.put("boundingRectsPx", rectsPx);
+        ret.put("boundingRectsCss", rectsCss);
+        if (centerPx != null) {
+            ret.put("centerPx", centerPx);
+            ret.put("centerCss", centerCss);
+        }
         return ret;
     }
 

@@ -146,18 +146,48 @@ npx cap sync
 
 **签名**：`getCutoutInfo(): Promise<CutoutInfo>`
 
-**返回值**：
+**返回值分两类数据，不要混淆**：
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `exists` | `boolean` | 是否有刘海/挖孔 |
-| `insetsCss` | `{ top, right, bottom, left }`（可选，exists 时给出） | 挖孔安全区，CSS px |
-| `boundingRectsPx` | `Array<{ left, top, right, bottom }>`（可选） | 挖孔包围盒列表，物理像素、屏幕坐标系（**仅 Android**） |
+| `insetsPx` / `insetsCss` | `{ top, right, bottom, left }`（可选） | **避让距离**：四边各需要让出多少。通常**只有有挖孔的那条边 > 0**（如竖屏只有 `top`，左横屏只有 `left`） |
+| `boundingRectsPx` / `boundingRectsCss` | `Array<{ left, top, right, bottom, width, height }>`（可选，**仅 Android**） | **挖孔区域矩形**：`{left,top,right,bottom}` 是**矩形四条边的坐标**（不是到四边的距离！），`width/height` 是宽高（已算好）。多挖孔屏会有多个矩形 |
+| `centerPx` / `centerCss` | `{ x, y }`（可选，仅 Android） | **主挖孔中心点**（取第一个矩形中心）。想知道"挖孔大概在屏幕哪个位置"直接看这个 |
+
+**坐标系说明（重要）**：
+- `insets` 是"距离"，`boundingRects` 是"位置和大小"——两者不是同一维度，`insets.right=0` 但矩形有 `right` 值是完全正常的。
+- `boundingRects` 的 `right`/`bottom` 是**矩形右/下边缘的坐标**：例如 `{left:0, right:90, bottom:1080}` 表示矩形 x 从 0 到 90（宽 90）、y 到 1080（贴底边），而不是"距离右边 90、距离底部 1080"。
+- **矩形贴边 ≠ 挖孔贴边**：系统给的是挖孔**安全区矩形**（把挖孔周围的不可用区域一并框住，因此会贴到屏幕边），真实的圆孔在矩形内部靠中间——所以你会看到"挖孔明显不贴边，但矩形贴边"。
+- `boundingRects` 的坐标随**当前朝向**变化：竖屏坐标系是 1080×2400，转成横屏后坐标系变成 2400×1080，同一个挖孔的坐标数值会完全不同。
+- 判断挖孔在屏幕上哪个位置，请**先把 `getScreenInfo().px` 和 `boundingRects` 放在同一朝向下看**。
+
+**真实示例（红米 K30S Ultra，挖孔在设备左上角）**：
+
+```js
+// 竖屏（坐标系 1080×2400）
+{ exists: true,
+  insetsPx: { top: 90, right: 0, bottom: 0, left: 0 },
+  insetsCss: { top: 32.73, right: 0, bottom: 0, left: 0 },
+  boundingRectsPx: [{ left: 0, top: 0, right: 141, bottom: 90, width: 141, height: 90 }],
+  boundingRectsCss: [{ left: 0, top: 0, right: 51.27, bottom: 32.73, width: 51.27, height: 32.73 }],
+  centerPx: { x: 70.5, y: 45 },        // 左上角
+  centerCss: { x: 25.64, y: 16.36 } }
+
+// 向左横屏（坐标系 2400×1080；挖孔转到了左下角）
+{ exists: true,
+  insetsPx: { top: 0, right: 0, bottom: 0, left: 90 },
+  boundingRectsPx: [{ left: 0, top: 939, right: 90, bottom: 1080, width: 90, height: 141 }],
+  boundingRectsCss: [{ left: 0, top: 341.45, right: 32.73, bottom: 392.73, width: 32.73, height: 51.27 }],
+  centerPx: { x: 45, y: 1009.5 },      // 左侧、贴近底边（1080 高的坐标系里）
+  centerCss: { x: 16.36, y: 367.09 } }
+// 手机逆时针转过 90° 后挖孔从左上跑到左下，所以 center 的 y 很大、x 很小 —— 这就是"左下角"
+```
 
 **注意事项**：
-- Android 上挖孔 `insetsCss.top` 一般等于状态栏高度；横屏时在左右。
-- iOS 判断标准：安全区顶部 > 24pt（标准状态栏 20pt）即视为有刘海/灵动岛；`boundingRectsPx` 不提供。
-- 示例（真机 K30S）：`exists: true, insetsCss.top: 32.73, boundingRectsPx: [{left:0, top:0, right:141, bottom:90}]`。
+- Android：`insets.top` 一般等于状态栏高度（挖孔机状态栏高度包含挖孔）；横屏时在 `left` 或 `right`。
+- iOS：只有 `insetsPx/insetsCss`（来自安全区），没有 `boundingRects`（系统不提供挖孔轮廓）；判断标准是安全区某边 > 24pt（标准状态栏 20pt）。
+- 拿挖孔轮廓做精细排版（如给内容"绕开"挖孔）时，`boundingRects` 是安全区矩形、不是精确的圆孔轮廓，需要据此留余量。
 
 ---
 

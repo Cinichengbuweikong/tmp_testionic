@@ -174,7 +174,9 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     /// 刘海：安全区顶部明显高于标准 20pt 状态栏即视为有（横屏时看左右）。
+    /// 注意：insets 是"避让距离"，只有有刘海的那条边 > 0；iOS 没有 boundingRects。
     private func resolveCutout(_ call: CAPPluginCall) {
+        let scale = Double(UIScreen.main.scale)
         let window = self.bridge?.viewController?.view.window
         let top = window.map { Double($0.safeAreaInsets.top) } ?? 0
         let right = window.map { Double($0.safeAreaInsets.right) } ?? 0
@@ -183,7 +185,13 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
         if top > 24 || left > 24 || right > 24 {
             call.resolve([
                 "exists": true,
-                "insetsCss": ["top": top, "right": right, "bottom": bottom, "left": left]
+                "insetsCss": ["top": top, "right": right, "bottom": bottom, "left": left],
+                "insetsPx": [
+                    "top": top * scale,
+                    "right": right * scale,
+                    "bottom": bottom * scale,
+                    "left": left * scale
+                ]
             ])
         } else {
             call.resolve(["exists": false])
