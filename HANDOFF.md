@@ -335,6 +335,7 @@ npm run build
 | 18 | iOS 26 移除 deprecated API | `UIStatusBarManager.statusBarFrame` 在 iOS 26 SDK 标记 **obsoleted（编译期就报错）**，`windowScene.interfaceOrientation` 同理 → 状态栏高度改用 `safeAreaInsets.top`（两者本就相等），旋转角改用 `UIDevice.orientation` |
 | 19 | autotest 断言字段名与 API 结构脱节 | `statusBar.heightPx`（旧扁平结构）vs `statusBar.px.height`（现结构）；Android 冒烟是文本断言测不出，只有 iOS CI autotest 能抓 → 改 API 结构时同步改 autotest |
 | 20 | CI 日志拿不到时怎么诊断 | 公开仓库无 token 拉不到 logs/artifact（403）；让仓库 owner 建 PAT（读权限即可）→ 下载 run logs zip 与 artifact（sim-console.log 里有完整 PLUGIN_AUTOTEST_RESULT，注意步骤日志 2000 字符截断，artifact 里的完整） |
+| 21 | cutout 数据「看起来像错的」 | `boundingRects` 的 left/top/right/bottom 是**矩形四边坐标**（不是到边距离）；系统给的是**挖孔安全区矩形**（会贴屏幕边），真实圆孔在内部、看起来不贴边；横屏时坐标系换成 2400×1080（y=939~1080 即贴近底边）→ 已加 width/height/centerPx/centerCss 让数据自解释（960f52a） |
 
 设备实测数据（真机 M2007J3SC / MIUI 12 / WebView 87）：
 
@@ -358,6 +359,9 @@ npm run build
   插件 README 已含全部 API 的详细文档（功能/限制/返回值字段表/实测数据）。
 - 🔨 新增 capacitor-rotation-listener（屏幕旋转监听）：**iOS CI 全绿**（acc1a45），Android 双端
   实测事件派发/解除监听正常、冒烟全绿（详见 5.6 节）。
+- ✅ capacitor-system-info `getCutoutInfo()` 增强（960f52a，iOS CI 全绿）：rect 增加
+  width/height，新增 centerPx/centerCss（主挖孔中心）；README 讲清「矩形坐标 vs 到边距离」
+  「安全区矩形贴边 ≠ 挖孔贴边」「横屏坐标系 2400×1080」。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
 - 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。
