@@ -101,7 +101,7 @@ public class FullscreenPlugin: CAPPlugin, CAPBridgedPlugin {
         let fakeCall = CAPPluginCall(
             callbackId: "fullscreen-home-indicator",
             methodName: hidden ? "hide" : "show",
-            options: NSDictionary(),
+            options: [:],
             success: { _, _ in },
             error: { _ in }
         )

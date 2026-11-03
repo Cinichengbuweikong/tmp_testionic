@@ -6,6 +6,9 @@
 > - `webview-to-edge`：系统栏**仍然可见**，内容延伸/铺到它们下面（edge-to-edge）；
 > - `capacitor-fullscreen`：系统栏**完全隐藏**（immersive 全屏），屏幕只剩应用内容。
 
+需要注意的是 在和 capacitor-native-statusbar 插件同时使用的时候 由于 capacitor-native-statusbar 的实现原理 会导致系统的状态栏隐藏了 但状态栏的背景还在
+如果需要 capacitor-native-statusbar 设置状态栏背景的话 那需要自行搭配 capacitor-webview-to-edge 来组合实现效果  如果不需要设置状态栏背景的话 则可尝试不使用 capacitor-native-statusbar 来设置状态栏背景
+
 ## 安装
 
 ```bash
