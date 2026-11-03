@@ -68,8 +68,16 @@
   await click('透明');
   await click('默认');
 
+  // Fullscreen：进入 → 读状态 → 退出 → 读状态 → 监听/取消（放最后，且保证退出全屏）
+  out.fullscreenOn = await click('进入全屏');
+  out.fullscreenStateOn = await click('读取全屏状态');
+  out.fullscreenOff = await click('退出全屏');
+  out.fullscreenStateOff = await click('读取全屏状态');
+  out.fullscreenListenStart = await click('监听全屏变化');
+  out.fullscreenListenStop = await click('取消全屏监听');
+
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -102,6 +110,18 @@
   }
   if (!out.rotationListenStop.includes('监听已停止')) {
     failures.push('rotationListenStop');
+  }
+  if (!out.fullscreenStateOn.includes('"fullscreen": true')) {
+    failures.push('fullscreenOn');
+  }
+  if (!out.fullscreenStateOff.includes('"fullscreen": false')) {
+    failures.push('fullscreenOff');
+  }
+  if (!out.fullscreenListenStart.includes('监听已开始')) {
+    failures.push('fullscreenListenStart');
+  }
+  if (!out.fullscreenListenStop.includes('监听已取消')) {
+    failures.push('fullscreenListenStop');
   }
 
   out.dataTheme = dataTheme;

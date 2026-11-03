@@ -13,6 +13,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.6.0"),
         .package(name: "CapacitorStatusBar", path: "../../../node_modules/@capacitor/status-bar"),
+        .package(name: "CapacitorFullscreen", path: "../../../plugins/capacitor-fullscreen"),
         .package(name: "CapacitorNativeBasics", path: "../../../plugins/capacitor-native-basics"),
         .package(name: "CapacitorNativeStatusbar", path: "../../../plugins/capacitor-native-statusbar"),
         .package(name: "CapacitorRotationListener", path: "../../../plugins/capacitor-rotation-listener"),
@@ -27,6 +28,7 @@ let package = Package(
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
                 .product(name: "CapacitorStatusBar", package: "CapacitorStatusBar"),
+                .product(name: "CapacitorFullscreen", package: "CapacitorFullscreen"),
                 .product(name: "CapacitorNativeBasics", package: "CapacitorNativeBasics"),
                 .product(name: "CapacitorNativeStatusbar", package: "CapacitorNativeStatusbar"),
                 .product(name: "CapacitorRotationListener", package: "CapacitorRotationListener"),

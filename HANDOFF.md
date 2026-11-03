@@ -1,7 +1,7 @@
 # 项目上下文存档（HANDOFF）
 
 > **用途**：这份文件保存了截至 2026-11-03 本对话中掌握的所有关键信息——本机环境、项目结构、
-> 已完成的 6 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
+> 已完成的 7 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
 ---
@@ -65,7 +65,8 @@ targetCompatibility JavaVersion.VERSION_21
 
 ```
 D:\projs\testionic
-├─ plugins/                      # 6 个自研插件（每个都是独立 npm 包）
+├─ plugins/                      # 7 个自研插件（每个都是独立 npm 包）
+│  ├─ capacitor-fullscreen/         # 沉浸式全屏：隐藏状态栏+导航栏（带状态事件）
 │  ├─ capacitor-native-basics/      # 参考实现：echo / showToast / getDeviceInfo
 │  ├─ capacitor-native-statusbar/   # 状态栏背景色 + 图标亮暗
 │  ├─ capacitor-rotation-listener/  # 屏幕旋转监听（getRotation + rotationChanged 事件）
@@ -76,7 +77,7 @@ D:\projs\testionic
 ├─ src/
 │  ├─ main.js                     # VITE_AUTOTEST=1 时自动跳 /plugin-test?autotest=1
 │  ├─ router/index.js             # hash 路由：/ /about /plugin-test
-│  ├─ views/PluginTestView.vue    # 「插件自检」页：6 个插件的按钮 + autotest 逻辑
+│  ├─ views/PluginTestView.vue    # 「插件自检」页：7 个插件的按钮 + autotest 逻辑
 │  └─ assets/base.css             # 深色配色（⚠️ 有未提交改动，见第 10 节）
 ├─ scripts/
 │  ├─ deploy-android.ps1          # 一键构建+安装+启动（JBR21，可 -Device 指定设备）
@@ -199,6 +200,26 @@ D:\projs\testionic
   `portrait/0`、**解除监听后再转不触发**；`adb emu rotate` → `landscape/270`；真机 MIUI 12 →
   `landscape/90` 正常。
 - 坑：`JSObject.getInt(String,int)` 不存在（org.json 只有单参），要用 `optInt(name, default)`。
+
+### 5.7 capacitor-fullscreen（沉浸式全屏）
+
+- Android 包 `com.testionic.fullscreen`；iOS 包 `CapacitorFullscreen`；jsName `Fullscreen`
+- API：`enable / disable / setFullscreen({enabled}) / toggle / isFullscreen()`（返回
+  `FullscreenState { fullscreen, statusBarHidden, navigationBarHidden }`）；
+  `addListener('fullscreenChanged')`、`handle.remove()` 解除（桥内置）。
+- **与 webview-to-edge 的区别**：to-edge 系统栏仍可见（内容延伸下去）；本插件系统栏**完全隐藏**。
+- **Android**：`WindowInsetsControllerCompat.hide(systemBars())` +
+  `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`（immersive sticky：边缘滑动可临时唤出系统栏）。
+  系统栏隐藏 → insets=0 → WebView padding 自动归零铺满，插件**不需要手动改布局**；
+  退出后 padding 自动还原。与 webview-to-edge 的 insets 监听兼容。
+- **iOS**：状态栏走 Capacitor 公开 API `bridge.statusBarVisible`；Home Indicator 无法直接隐藏，
+  只能 `prefersHomeIndicatorAutoHidden` —— 借内置 `SystemBars` 插件的 `hide:`/`show:`（@objc
+  运行时调用 + responds 检查，拿不到插件时自动降级为只隐藏状态栏）。
+- **Web**：浏览器 Fullscreen API（需用户手势），`fullscreenchange` 事件同构派发。
+- 实测（2026-11-03）：真机 `enable()` 后截图——状态栏与导航栏完全消失、内容从屏幕顶边渲染；
+  `disable()` 后完整恢复；冒烟测试双端全 PASS（进入/退出/读取/监听/取消）。
+- 坑：`androidx.core:core` 在 `capacitor-android` 里是 `implementation` 依赖**不传递**，
+  插件必须显式声明 `implementation "androidx.core:core:$androidxCoreVersion"`。
 
 ## 6. Capacitor 8 插件开发手册（要点）
 
@@ -362,6 +383,8 @@ npm run build
 - ✅ capacitor-system-info `getCutoutInfo()` 增强（960f52a，iOS CI 全绿）：rect 增加
   width/height，新增 centerPx/centerCss（主挖孔中心）；README 讲清「矩形坐标 vs 到边距离」
   「安全区矩形贴边 ≠ 挖孔贴边」「横屏坐标系 2400×1080」。
+- 🔨 新增 capacitor-fullscreen（沉浸式全屏）：Android 双端实测（截图确认状态栏/导航栏消失、
+  退出恢复）+ 冒烟全绿；iOS CI 待验证（详见 5.7 节）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
 - 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。

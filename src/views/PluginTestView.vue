@@ -65,6 +65,23 @@
     </section>
 
     <section class="card">
+      <h2>Fullscreen</h2>
+      <div class="actions">
+        <button @click="fullscreenEnter">进入全屏</button>
+        <button @click="fullscreenExit">退出全屏</button>
+        <button @click="fullscreenToggle">切换全屏</button>
+        <button @click="loadFullscreenState">读取全屏状态</button>
+      </div>
+      <div class="actions">
+        <button @click="startFullscreenListen">监听全屏变化</button>
+        <button @click="stopFullscreenListen">取消全屏监听</button>
+      </div>
+      <p class="hint">
+        进入全屏会隐藏状态栏和导航栏，内容完整铺满屏幕；退出后恢复。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>WebViewToEdge</h2>
       <div class="actions">
         <button @click="setToEdge(true)">铺满整屏</button>
@@ -95,6 +112,7 @@
 
 <script>
 import { Capacitor } from '@capacitor/core';
+import { Fullscreen } from 'capacitor-fullscreen';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
 import { Rotation } from 'capacitor-rotation-listener';
@@ -109,6 +127,7 @@ export default {
       isNative: Capacitor.isNativePlatform(),
       output: '',
       rotationHandle: null,
+      fullscreenHandle: null,
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
         { label: '绿 #4CAF50', value: '#4CAF50' },
@@ -253,6 +272,31 @@ export default {
           results.ok = false;
           results.reason = `webview-to-edge failed: ${JSON.stringify(results.toEdge)}`;
         }
+
+        // Fullscreen：进入 → 检查 → 监听/解除 → 退出
+        // （放最后，避免隐藏系统栏影响前面的断言；无论成败都退出全屏）
+        try {
+          const fsOn = await Fullscreen.enable();
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          const fsState = await Fullscreen.isFullscreen();
+          const fsHandle = await Fullscreen.addListener('fullscreenChanged', () => {});
+          const fsHasHandle = !!fsHandle && typeof fsHandle.remove === 'function';
+          await fsHandle.remove();
+          const fsOff = await Fullscreen.disable();
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          results.fullscreen = { on: fsOn, state: fsState, off: fsOff, hasHandle: fsHasHandle };
+          const fsOk = !!fsOn && fsOn.fullscreen === true
+            && !!fsState && fsState.fullscreen === true
+            && !!fsOff && fsOff.fullscreen === false
+            && fsHasHandle;
+          if (!fsOk) {
+            results.ok = false;
+            results.reason = `fullscreen check failed: ${JSON.stringify(results.fullscreen)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.fullscreenError = String((err && err.message) || err);
+        }
       } catch (err) {
         results.ok = false;
         results.error = String((err && err.message) || err);
@@ -377,6 +421,71 @@ export default {
         });
       } catch (err) {
         this.error('SystemInfo', err);
+      }
+    },
+
+    async fullscreenEnter() {
+      try {
+        const state = await Fullscreen.enable();
+        this.print('Fullscreen.enable 成功', state);
+      } catch (err) {
+        this.error('Fullscreen.enable', err);
+      }
+    },
+
+    async fullscreenExit() {
+      try {
+        const state = await Fullscreen.disable();
+        this.print('Fullscreen.disable 成功', state);
+      } catch (err) {
+        this.error('Fullscreen.disable', err);
+      }
+    },
+
+    async fullscreenToggle() {
+      try {
+        const state = await Fullscreen.toggle();
+        this.print('Fullscreen.toggle 成功', state);
+      } catch (err) {
+        this.error('Fullscreen.toggle', err);
+      }
+    },
+
+    async loadFullscreenState() {
+      try {
+        const state = await Fullscreen.isFullscreen();
+        this.print('Fullscreen.isFullscreen 成功', state);
+      } catch (err) {
+        this.error('Fullscreen.isFullscreen', err);
+      }
+    },
+
+    async startFullscreenListen() {
+      try {
+        if (this.fullscreenHandle) {
+          this.print('Fullscreen 监听', { status: '已在监听中，忽略重复开始' });
+          return;
+        }
+        this.fullscreenHandle = await Fullscreen.addListener('fullscreenChanged', (state) => {
+          this.print('fullscreenChanged 事件', state);
+        });
+        this.print('Fullscreen 监听已开始', { listening: true });
+      } catch (err) {
+        this.error('Fullscreen.addListener', err);
+      }
+    },
+
+    async stopFullscreenListen() {
+      try {
+        if (!this.fullscreenHandle) {
+          this.print('Fullscreen 监听', { status: '当前没有监听' });
+          return;
+        }
+        await this.fullscreenHandle.remove();
+        this.fullscreenHandle = null;
+        this.print('Fullscreen 监听已取消', { listening: false });
+      } catch (err) {
+        this.error('Fullscreen.removeListener', err);
       }
     },
 

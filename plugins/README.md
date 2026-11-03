@@ -12,6 +12,7 @@
 | [capacitor-webview-to-edge](./capacitor-webview-to-edge/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 运行时开关：WebView 内容铺满整屏（延伸进状态栏），并提供安全区 insets |
 | [capacitor-system-info](./capacitor-system-info/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕/视口/安全区/系统栏/系统/WebView/内存/电量/网络 等 13 个独立只读 API |
 | [capacitor-rotation-listener](./capacitor-rotation-listener/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕旋转监听：getRotation + rotationChanged 事件（可监听/解除） |
+| [capacitor-fullscreen](./capacitor-fullscreen/) | ✅ 已验证 | 🔨 待 CI 验证 | ✅ | 沉浸式全屏：隐藏状态栏+导航栏，带状态事件（可监听/解除） |
 
 ## 新增插件的标准流程
 
