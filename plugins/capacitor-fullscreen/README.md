@@ -122,6 +122,19 @@ await Fullscreen.removeAllListeners(); // 解除全部
 | `statusBarHidden` | `boolean` | 状态栏是否隐藏 |
 | `navigationBarHidden` | `boolean` | 导航栏是否隐藏（iOS 上没有系统导航栏，见下） |
 
+## 实现原理（关键实现）
+
+| 平台 | 隐藏系统栏的机制 |
+| --- | --- |
+| Android | `WindowInsetsControllerCompat.hide(systemBars())` + `setSystemBarsBehavior(BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE)`，与 Capacitor 8 内置 `SystemBars` 插件同一套 API；**不手动改 WebView 布局**——系统栏隐藏后 insets 变 0，Capacitor（或 `webview-to-edge` 插件）的 insets 监听会把 WebView padding 自动置 0，内容随之铺满；退出全屏 insets 恢复，padding 自动还原 |
+| iOS | 状态栏走 Capacitor 公开 API `bridge.statusBarVisible = false/true`（内部触发 `CAPBridgeViewController.setStatusBarVisible` → `prefersStatusBarHidden`）；Home Indicator 借内置 `SystemBars` 插件的 `hide:/show:`（`@objc` 方法，运行时 `responds(to:)` 检查后 `perform` 调用），拿不到插件时**自动降级**为只隐藏状态栏 |
+| Web | 浏览器 Fullscreen API：`document.documentElement.requestFullscreen()` / `document.exitFullscreen()`；监听 `fullscreenchange`（含 `webkit` 前缀）派发事件 |
+
+**状态管理**：
+- 插件自己维护 `fullscreen` 逻辑状态，初始为 `false`；
+- **只在状态真正变化时**派发 `fullscreenChanged`——重复 `enable()`（已全屏）不会重复派发；
+- `statusBarHidden` / `navigationBarHidden` 在 Android 上与 `fullscreen` 完全同步（两个栏总是一起隐藏/恢复）。
+
 ## 平台差异与注意事项
 
 ### Android
@@ -145,6 +158,13 @@ await Fullscreen.removeAllListeners(); // 解除全部
 - 用浏览器 Fullscreen API（`document.documentElement.requestFullscreen()`）实现，效果是隐藏浏览器 UI；
 - `enable()` 需要在**用户手势**（如点击）中调用，否则浏览器会拒绝（插件会捕获异常、保持原状态）；
 - 监听 `fullscreenchange` 事件并派发 `fullscreenChanged`；按 Esc 退出浏览器全屏时也会收到事件。
+
+### 与其它插件的联动（通用注意点）
+
+- **全屏期间系统栏是真的隐藏了**：此时 `capacitor-system-info` 的 `getStatusBarInfo()` / `getNavigationBarInfo()` 会返回 `height: 0`、`visible: false`（`getSafeAreaInsets()` 也会相应变为 0），这是正确行为，不是 bug；
+- 与 `capacitor-rotation-listener` 无冲突：全屏状态下旋转屏幕，`rotationChanged` 照常派发；
+- 与 `capacitor-webview-to-edge` 兼容：两者都依赖 insets 变化，全屏时 insets 归 0、退出时恢复，布局会自动跟上；
+- 全屏隐藏系统栏会**改变视口尺寸**（`100vh` 变大），如需精确布局请在全屏切换后重新测量（或使用 `getViewport()`）。
 
 ## 实测数据（2026-11-03）
 
