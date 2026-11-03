@@ -312,6 +312,8 @@ npm run build
 | 16 | `Plugin.getConfig()` 是插件私有配置块 | 只含 `plugins.<id>` 节点，读不到全局 appName → 用 application label；`Plugin.getAppId()` 基类自带 |
 | 17 | MIUI `getMode()` 返回瞬时刷新率 | 设置 90Hz 时 `getMode()/getRefreshRate()` 报 50（智能刷新率动态降档）；用户档位存 `Settings.System` 的 `user_refresh_rate`（MIUI）/ `peak_refresh_rate`（Android 11+，@hide 常量，用字符串键读） |
 | 18 | iOS 26 移除 deprecated API | `UIStatusBarManager.statusBarFrame` 在 iOS 26 SDK 标记 **obsoleted（编译期就报错）**，`windowScene.interfaceOrientation` 同理 → 状态栏高度改用 `safeAreaInsets.top`（两者本就相等），旋转角改用 `UIDevice.orientation` |
+| 19 | autotest 断言字段名与 API 结构脱节 | `statusBar.heightPx`（旧扁平结构）vs `statusBar.px.height`（现结构）；Android 冒烟是文本断言测不出，只有 iOS CI autotest 能抓 → 改 API 结构时同步改 autotest |
+| 20 | CI 日志拿不到时怎么诊断 | 公开仓库无 token 拉不到 logs/artifact（403）；让仓库 owner 建 PAT（读权限即可）→ 下载 run logs zip 与 artifact（sim-console.log 里有完整 PLUGIN_AUTOTEST_RESULT，注意步骤日志 2000 字符截断，artifact 里的完整） |
 
 设备实测数据（真机 M2007J3SC / MIUI 12 / WebView 87）：
 
@@ -330,12 +332,14 @@ npm run build
 
 ## 10. 当前状态 / 未完成事项
 
-- ✅ 已推送至 `159ba5a`：capacitor-system-info 含刷新率档位修复（真机 90/144）、
-  safeArea px/css 双单位、iOS 26 防御修复。Android 真机 + 模拟器实测通过、冒烟全绿。
-  iOS CI（macos-26）重跑中，待确认全绿（写本文档时刚 push）。
+- ✅ 已推送至 `4029ff5`：capacitor-system-info **iOS CI 全绿**（iPhone 17 Pro 模拟器，13 个 API
+  全部通过 autotest 断言）；Android 真机（MIUI 手势模式）+ 模拟器实测通过、冒烟全绿。
+  插件 README 已含全部 API 的详细文档（功能/限制/返回值字段表/实测数据）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
 - 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。
+- 用户提到「还有一件更重要的事要在别的对话做」；本仓库的插件工作可继续（做新插件 / 修 MIUI 遗留项）。
+- 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）；statusbar 插件在 MIUI 上颜色略偏深（约 #D83200 vs #FF5722，未深究）。
 - 用户提到「还有一件更重要的事要在别的对话做」；本仓库的插件工作可继续（做新插件 / 修 MIUI 遗留项）。
 - 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）；statusbar 插件在 MIUI 上颜色略偏深（约 #D83200 vs #FF5722，未深究）。
 

@@ -1,12 +1,13 @@
 # capacitor-system-info
 
-系统与硬件信息插件：屏幕 / 视口 / 安全区 / 状态栏 / 导航栏 / 挖孔 / 系统 / WebView / 内存 / 存储 / 电量 / 网络 / App 信息。
+系统与硬件信息插件：屏幕 / 视口 / 安全区 / 状态栏 / 导航栏 / 挖孔 / 系统 / WebView / 内存 / 存储 / 电量 / 网络 / App 信息，共 13 个独立只读 API。
 
 ## 设计原则
 
-- **每种信息一个独立 API**：问什么就收集什么，按需调用；
+- **每种信息一个独立 API**：问什么就收集什么，按需调用，没有聚合接口；
 - **互不影响**：每个 API 独立实现、独立容错，某个 API 因系统差异失败不影响其他 API；
-- 纯只读，不需要任何运行时权限（仅声明 `ACCESS_NETWORK_STATE` 普通权限用于网络类型判断）。
+- **纯只读**：不需要任何运行时权限弹窗（仅声明 `ACCESS_NETWORK_STATE` 普通权限用于判断网络类型，系统自动授予）；
+- **三端可用**：Android（原生）/ iOS（原生）/ Web（浏览器降级，保证不报错，数值为估算）。
 
 ## 安装
 
@@ -15,110 +16,321 @@ npm install ./plugins/capacitor-system-info
 npx cap sync
 ```
 
-## 用法
+## 单位约定（先读这个）
 
-```ts
-import { SystemInfo } from 'capacitor-system-info';
+- 字段名带 **`px`** 的是**物理像素**：Android 原生 px；iOS 为 pt × scale。
+- 字段名带 **`css`** 的是 **CSS px**：Android 的 dp / iOS 的 pt——**就是 WebView 里 CSS 使用的单位**。
+- 换算公式：**物理像素 = CSS px × density**（`density` 由 `getScreenInfo()` 返回，真机实测 2.75、模拟器 2.625）。
+- 示例：`getViewport().css` 就是页面里 `100%` 的实际大小；`getSafeAreaInsets().css.top` 可以直接当 `padding-top` 用。
 
-// 屏幕：物理分辨率 / CSS 尺寸 / 密度 / 刷新率 / 朝向
-const screen = await SystemInfo.getScreenInfo();
+---
 
-// WebView 视口 —— CSS 里 100% 对应的就是 viewport.css
-const viewport = await SystemInfo.getViewport();
+## API 详细文档
 
-// 安全区（iOS safe-area 语义，CSS px）
-const safeArea = await SystemInfo.getSafeAreaInsets();
+### getScreenInfo()
 
-const statusBar = await SystemInfo.getStatusBarInfo();
-const navBar = await SystemInfo.getNavigationBarInfo();
-const cutout = await SystemInfo.getCutoutInfo();
+**功能**：读取屏幕分辨率、CSS 尺寸、像素密度、刷新率、朝向。
 
-const system = await SystemInfo.getSystemInfo();     // 平台/版本/型号/语言/深色模式…
-const webView = await SystemInfo.getWebViewInfo();   // 包名/版本/UA
-const memory = await SystemInfo.getMemoryInfo();
-const storage = await SystemInfo.getStorageInfo();
-const battery = await SystemInfo.getBatteryInfo();
-const network = await SystemInfo.getNetworkInfo();
-const app = await SystemInfo.getAppInfo();
-```
+**签名**：`getScreenInfo(): Promise<ScreenInfo>`
 
-## API 速查
+**返回值**：
 
-| API | 返回 | 说明 |
+| 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `getScreenInfo()` | `ScreenInfo` | 屏幕物理分辨率 `px`、CSS 尺寸 `css`、`density`/`densityDpi`/`scaledDensity`、`refreshRate`、`orientation`、`rotationDegrees` |
-| `getViewport()` | `ViewportInfo` | WebView 视口尺寸（**CSS 里 `100%` 的大小**），`px` + `css` |
-| `getSafeAreaInsets()` | `SafeAreaInsets` | 四边需要避让的区域，`px`（物理像素）与 `css`（CSS px）两份 |
-| `getStatusBarInfo()` | `StatusBarInfo` | 状态栏宽高（宽=屏幕宽）、`visible` |
-| `getNavigationBarInfo()` | `NavigationBarInfo` | 底部导航栏宽高、`visible`、`mode`（iOS 上对应 Home Indicator） |
-| `getCutoutInfo()` | `CutoutInfo` | 刘海/挖孔：`exists`、`insetsCss`、`boundingRectsPx` |
-| `getSystemInfo()` | `SystemInfoData` | 平台/系统版本/API Level/厂商/型号/设备代号/是否模拟器/CPU ABI/语言/时区/24 小时制/字体缩放/深色模式 |
-| `getWebViewInfo()` | `WebViewInfo` | WebView 包名 + 版本号 + UserAgent |
-| `getMemoryInfo()` | `MemoryInfo` | 物理内存总量 / 当前可用（字节） |
-| `getStorageInfo()` | `StorageInfo` | 数据分区总量 / 剩余（字节） |
-| `getBatteryInfo()` | `BatteryInfo` | 电量 0~100（未知 -1）、是否充电 |
-| `getNetworkInfo()` | `NetworkInfo` | `wifi/cellular/ethernet/vpn/none/unknown`、`connected`、`metered` |
-| `getAppInfo()` | `AppInfo` | App id / 显示名 / version / build |
+| `px` | `{ width, height }` | 物理分辨率（**跟随当前朝向**：横屏时宽高会交换） |
+| `css` | `{ width, height }` | CSS px 尺寸（= px ÷ density） |
+| `orientation` | `'portrait' \| 'landscape' \| 'unknown'` | 当前朝向 |
+| `rotationDegrees` | `number` | 旋转角度 0/90/180/270；iOS 在拿不到方向时为 0（近似值） |
+| `density` | `number` | 像素密度：1 CSS px 对应多少物理像素（如 2.75） |
+| `densityDpi` | `number` | DPI（如 440） |
+| `scaledDensity` | `number` | 字体缩放后的密度（Android scaledDensity；iOS 与 density 相同） |
+| `refreshRate` | `number` | **用户设置的刷新率档位**（Hz），如 90 |
+| `maxRefreshRate` | `number` | 屏幕硬件支持的最高刷新率（Hz），如 144 |
 
-## 单位约定（重要）
+**注意事项**：
+- `refreshRate` 是**档位不是瞬时值**：Android 11+ 读官方 `peak_refresh_rate`，MIUI 读 `user_refresh_rate`，都没有时才退回当前激活模式。MIUI 智能刷新率会让 `Display.getRefreshRate()`/`getMode()` 返回瞬时档（实测设置 90 时报 50），本插件已规避。
+- 旋转屏幕后请重新调用。
 
-- 字段名带 `px` 的是**物理像素**：Android 原生 px；iOS 为 pt × scale。
-- 字段名带 `css` 的是 **CSS px**：Android 的 dp / iOS 的 pt，即 WebView 里 CSS 用的单位。
-- 换算：`物理像素 = CSS px × density`（`density` 在 `getScreenInfo()` 里，真机实测 2.75、模拟器 2.625）。
+---
 
-## 平台差异与踩坑（实测结论）
+### getViewport()
 
-### Android
+**功能**：读取 WebView 视口尺寸——**CSS 里 `100%` 对应的就是这个 `css` 值**。
 
-- **MIUI 等 ROM 假报导航栏 insets**：红米 K30S Ultra（MIUI 12，手势模式）上
-  `getSystemWindowInsetBottom()` 仍报告旧三键高度 130px，但窗口实际铺满全屏。
-  本插件在 API 29 上用 `getWindowVisibleDisplayFrame()` 反推真实占用（实测正确报 0），
-  而不是直接信 insets。
-- **`webview-to-edge` 插件常驻接管 DecorView insets 监听**：本插件不依赖 View 层的
-  insets 传播，API 30+ 从 `WindowManager.getMaximumWindowMetrics()`（显示层）取值，
-  因此在 to-edge 开启/关闭状态下数值都真实。
-- **状态栏高度包含挖孔**：挖孔机（如 K30S）状态栏高度 = 挖孔高度（实测 90px / 32.73css，
-  模拟器 128px / 48.76css）。
-- **导航模式**：优先读系统 `navigation_mode` setting；读不到（MIUI）时按实测占用推断：
-  底部有占用 → `three_button`；insets 假报但窗口铺满 → `gesture`；都无 → `none`。
-  `none` 表示"未检测到可见导航栏"（可能是手势模式或沉浸模式）。
-- `refreshRate` 是**用户设置的刷新率档位**（不是瞬时值）：Android 11+ 读官方
-  `peak_refresh_rate`，MIUI 读 `user_refresh_rate`（`getRefreshRate()`/`getMode()` 在
-  MIUI 智能刷新率下会返回瞬时档，实测设置 90 时却报 50）；`maxRefreshRate` 是硬件支持的最高档。
-  设置里没有时（如模拟器）退回当前激活模式档位。
-- `darkMode` 报告 App 当前 Configuration 看到的值；MIUI 上它可能与页面
-  `matchMedia('(prefers-color-scheme: dark)')` 不一致（这是 MIUI WebView 的已知怪癖，
-  见 capacitor-set-force-dark）。
-- 视口与安全区的关系：默认状态下 `viewport.css.height = screen.css.height - 状态栏 - 导航栏`；
-  开启 webview-to-edge 铺满整屏后，视口 = 整个屏幕，此时请用 `getSafeAreaInsets()` 做避让。
+**签名**：`getViewport(): Promise<ViewportInfo>`
 
-### iOS
+**返回值**：
 
-- 没有"底部导航栏"概念：`getNavigationBarInfo()` 对应 **Home Indicator** 区域
-  （有则 `mode: 'gesture'`，无则 `mode: 'none'`）。
-- `getWebViewInfo().version` 取自 UA 里的 Safari `Version/x.y`（WKWebView 没有公开版本 API）；
-  `packageName` 固定为 `"WKWebView"`。
-- 刘海判断：安全区顶部 > 24pt（标准状态栏 20pt）即视为有刘海/灵动岛。
-- `getBatteryInfo().level` 在模拟器上为 -1（无电量数据）。
-- `getNetworkInfo()` 用 NWPathMonitor 异步探测，1.5s 超时兜底 `unknown`。
-- `getMemoryInfo().availableBytes` 取自 `os_proc_available_memory()`（iOS 13+，更低版本为 -1）。
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `px` | `{ width, height }` | WebView 视口物理像素 |
+| `css` | `{ width, height }` | WebView 视口 CSS px（= 页面 `window.innerWidth/Height` 的量级） |
 
-### Web（浏览器降级）
+**注意事项**：
+- Android 默认（未启用 webview-to-edge 铺满整屏）时，视口会让出状态栏/导航栏：`viewport.height = screen.height − 状态栏 − 导航栏`（真机实测 840 = 872.73 − 32.73）。
+- 启用 webview-to-edge 后视口 = 整个屏幕，此时请改用 `getSafeAreaInsets()` 做避让。
+- iOS 上 Capacitor 默认贴边满屏，视口 = 屏幕。
 
-- 全部用浏览器 API 估算（`screen` / `innerWidth` / UA / Battery API / Storage API 等），
-  仅保证不报错；系统栏、安全区、导航栏在普通浏览器里为 0。
+---
+
+### getSafeAreaInsets()
+
+**功能**：读取四边安全区（iOS safe-area 语义：内容需要避让的区域），**双单位**。
+
+**签名**：`getSafeAreaInsets(): Promise<SafeAreaInsets>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `px` | `{ top, right, bottom, left }` | 四边安全区，物理像素（整数） |
+| `css` | `{ top, right, bottom, left }` | 四边安全区，CSS px（两位小数） |
+
+**注意事项**：
+- `css.top` 通常等于状态栏高度；`css.bottom` 通常等于导航栏/手势条/Home Indicator 高度；横屏时挖孔会跑到 left/right。
+- Android 手势导航（如 MIUI 手势模式）下 `bottom = 0`。
+- 可直接用于 CSS：`padding-top: ${css.top}px`（或配合 webview-to-edge 注入的 `--safe-area-inset-*` 变量）。
+
+---
+
+### getStatusBarInfo()
+
+**功能**：读取状态栏宽高。
+
+**签名**：`getStatusBarInfo(): Promise<StatusBarInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `px` | `{ width, height }` | 宽 = 屏幕宽；高 = 状态栏物理像素（真机 90 / 模拟器 128） |
+| `css` | `{ width, height }` | 同上，CSS px（真机 32.73 / 模拟器 48.76） |
+| `visible` | `boolean` | 状态栏是否可见（高度 > 0） |
+
+**注意事项**：
+- **挖孔机的状态栏高度包含挖孔**：红米 K30S 的挖孔高 90px，状态栏高即 90px（不是标准 24dp）。
+- iOS 上状态栏高度 = 顶部安全区（`safeAreaInsets.top`）；灵动岛机型会含岛边距。
+
+---
+
+### getNavigationBarInfo()
+
+**功能**：读取底部导航栏宽高与导航方式。
+
+**签名**：`getNavigationBarInfo(): Promise<NavigationBarInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `px` | `{ width, height }` | 宽 = 屏幕宽；高 = 导航栏物理像素（模拟器三键 126 / 真机手势 0） |
+| `css` | `{ width, height }` | 同上，CSS px（模拟器 48 / 真机 0） |
+| `visible` | `boolean` | 是否可见（高度 > 0） |
+| `mode` | `'three_button' \| 'two_button' \| 'gesture' \| 'none' \| 'unknown'` | 导航方式（见下） |
+
+**`mode` 说明**：
+- `three_button`：经典三键导航（有实体占用）；`two_button`：Android 9 药丸两键；`gesture`：手势导航；
+- `none`：**未检测到可见导航栏**（可能是手势模式，也可能是沉浸全屏）——配合 `height=0` 使用；
+- `unknown`：无法判断。
+
+**注意事项**：
+- 优先读系统 `navigation_mode` 设置；MIUI 等 ROM 读不到时按实测占用推断。
+- **iOS 上没有导航栏**：此 API 对应 **Home Indicator** 区域（有则 `mode: 'gesture'`，无则 `mode: 'none'`）。
+- 已知怪癖：MIUI 手势模式下 insets API 假报三键高度 130px，本插件用窗口实际占用反推，正确返回 0。
+
+---
+
+### getCutoutInfo()
+
+**功能**：读取刘海/挖孔信息。
+
+**签名**：`getCutoutInfo(): Promise<CutoutInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `exists` | `boolean` | 是否有刘海/挖孔 |
+| `insetsCss` | `{ top, right, bottom, left }`（可选，exists 时给出） | 挖孔安全区，CSS px |
+| `boundingRectsPx` | `Array<{ left, top, right, bottom }>`（可选） | 挖孔包围盒列表，物理像素、屏幕坐标系（**仅 Android**） |
+
+**注意事项**：
+- Android 上挖孔 `insetsCss.top` 一般等于状态栏高度；横屏时在左右。
+- iOS 判断标准：安全区顶部 > 24pt（标准状态栏 20pt）即视为有刘海/灵动岛；`boundingRectsPx` 不提供。
+- 示例（真机 K30S）：`exists: true, insetsCss.top: 32.73, boundingRectsPx: [{left:0, top:0, right:141, bottom:90}]`。
+
+---
+
+### getSystemInfo()
+
+**功能**：读取系统与设备基本信息。
+
+**签名**：`getSystemInfo(): Promise<SystemInfoData>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `platform` | `'android' \| 'ios' \| 'web'` | 平台 |
+| `osVersion` | `string` | 系统版本号（如 "10" / "26.4.1"） |
+| `sdkInt` | `number`（可选） | Android API Level（如 29）；iOS/Web 无此字段 |
+| `manufacturer` | `string` | 制造商（Xiaomi / Apple） |
+| `brand` | `string` | 品牌（Redmi / Apple） |
+| `model` | `string` | 型号（M2007J3SC / iPhone13,2；**模拟器上 iOS 为模拟机型如 iPhone17,4**） |
+| `deviceCode` | `string` | 设备代号 codename（apollo / sargo；iOS 与 model 相同） |
+| `isEmulator` | `boolean` | 是否模拟器 |
+| `cpuAbis` | `string[]` | CPU ABI 列表（如 ["arm64-v8a", "armeabi-v7a"]；iOS 为 ["arm64"]） |
+| `locale` | `string` | 区域（zh-CN / en_US） |
+| `language` | `string` | 语言（zh / en） |
+| `timezone` | `string` | 时区（Asia/Shanghai） |
+| `is24Hour` | `boolean` | 是否 24 小时制 |
+| `fontScale` | `number` | 系统字体缩放倍率（Android fontScale；iOS 为动态字号的近似映射） |
+| `darkMode` | `boolean` | 系统深色模式（App 当前配置看到的） |
+
+**注意事项**：
+- **MIUI 坑**：`darkMode` 在 MIUI 上可能与页面 `matchMedia('(prefers-color-scheme: dark)')` 不一致（MIUI WebView 已知怪癖，参见 capacitor-set-force-dark 插件）。
+- `fontScale > 1` 说明用户开了大字体，Web 布局建议用 rem/相对单位适配。
+
+---
+
+### getWebViewInfo()
+
+**功能**：读取 WebView 引擎信息（版本、UA）。
+
+**签名**：`getWebViewInfo(): Promise<WebViewInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `packageName` | `string`（可选） | Android：WebView 包名（com.google.android.webview / com.android.webview）；iOS：固定 "WKWebView" |
+| `version` | `string`（可选） | Android：WebView 版本号（如 87.0.4280.101）；iOS：UA 里的 Safari 版本（iOS 26 简化 UA 无此信息时为 ""） |
+| `userAgent` | `string` | 完整 UserAgent |
+
+**注意事项**：
+- Android API < 26 或个别 ROM 上拿不到包信息时，`version` 从 UA 的 `Chrome/x.y` 解析；`packageName` 可能为空。
+- iOS 没有公开的 WKWebView 版本 API；iOS 26 起 UA 是简化形式（无 Version/ 字段），`version` 会为空——需要版本判断时请解析 `userAgent`。
+- 典型用途：根据 WebView 版本决定 CSS/JS 兼容方案（如老 WebView 87 无 `env(safe-area-inset-*)`）。
+
+---
+
+### getMemoryInfo()
+
+**功能**：读取内存信息。
+
+**签名**：`getMemoryInfo(): Promise<MemoryInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `totalBytes` | `number` | 物理内存总量（字节；真机 8GB = 8014004224） |
+| `availableBytes` | `number` | 当前可用内存（字节）；iOS 拿不到时为 -1（模拟器可能为 0） |
+
+**注意事项**：`availableBytes` 是瞬时值，适合做 OOM 预警（如可用 < 200MB 时降级渲染），不适合精确统计。
+
+---
+
+### getStorageInfo()
+
+**功能**：读取存储信息（数据分区）。
+
+**签名**：`getStorageInfo(): Promise<StorageInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `totalBytes` | `number` | 数据分区总量（字节） |
+| `freeBytes` | `number` | 数据分区剩余（字节） |
+
+**注意事项**：
+- Android 是 `/data` 分区；iOS 是应用沙盒所在卷（容量按卷统计）。
+- 两者都不是"整机所有存储"（不含 SD 卡/系统分区）。
+
+---
+
+### getBatteryInfo()
+
+**功能**：读取电量信息。
+
+**签名**：`getBatteryInfo(): Promise<BatteryInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `level` | `number` | 电量 0~100；**未知为 -1**（iOS 模拟器恒为 -1） |
+| `charging` | `boolean` | 是否正在充电（含充满） |
+
+**注意事项**：无运行时权限要求（系统广播 + BatteryManager）。
+
+---
+
+### getNetworkInfo()
+
+**功能**：读取网络状态。
+
+**签名**：`getNetworkInfo(): Promise<NetworkInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `type` | `'wifi' \| 'cellular' \| 'ethernet' \| 'vpn' \| 'none' \| 'unknown'` | 网络类型 |
+| `connected` | `boolean` | 是否有可用网络（具备互联网能力） |
+| `metered` | `boolean` | 是否计费网络（蜂窝流量通常为 true） |
+
+**注意事项**：
+- Android 需 `ACCESS_NETWORK_STATE` 权限（普通权限，插件已声明，自动授予）。
+- iOS 用 NWPathMonitor 异步探测，**最慢 1.5s 返回**（超时兜底 `unknown`）——调用方别在 UI 卡点同步等待；模拟器上通常报 `ethernet`。
+- 典型用途：蜂窝网络下自动切省流量模式（低清图/暂停预加载）。
+
+---
+
+### getAppInfo()
+
+**功能**：读取应用自身信息。
+
+**签名**：`getAppInfo(): Promise<AppInfo>`
+
+**返回值**：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | `string` | App 包名 / bundle id（如 com.myapp.testionic） |
+| `name` | `string` | 应用显示名（Android 取 application label；iOS 取 CFBundleDisplayName） |
+| `version` | `string` | 版本号（如 "1.0"） |
+| `build` | `string`（可选） | 构建号（Android versionCode / iOS CFBundleVersion） |
+
+**注意事项**：iOS 若未配置 CFBundleDisplayName，`name` 可能为空——取 Bundle name 兜底可自行判断。
+
+---
+
+## 平台差异速查
+
+| 项 | Android | iOS |
+| --- | --- | --- |
+| 状态栏高度 | 系统栏 insets（含挖孔） | 顶部安全区（灵动岛含边距） |
+| 导航栏 | 三键/两键/手势/无 | 恒为 Home Indicator（gesture/none） |
+| 挖孔包围盒 | ✅ boundingRectsPx | ❌ 只有 insetsCss |
+| 刷新率档位 | peak_refresh_rate / user_refresh_rate / 激活模式 | maximumFramesPerSecond（即上限） |
+| WebView 版本 | 包版本号 | UA 解析（iOS 26 可能为空） |
+| 可用内存 | ActivityManager | os_proc_available_memory（可能 -1/0） |
+| 电量 | BatteryManager（模拟器 100） | UIDevice（模拟器 -1） |
+| 网络探测 | ConnectivityManager（即时） | NWPathMonitor（最多 1.5s） |
 
 ## 设备实测数据（2026-11-03）
 
-| 字段 | 红米 K30S Ultra（MIUI 12, Android 10, WebView 87） | Pixel 6 模拟器（Android 16, WebView 133） |
-| --- | --- | --- |
-| screen | 1080×2400 px / 392.73×872.73 css，density 2.75 (440dpi) | 1080×2400 px / 411.43×914.29 css，density 2.625 (420dpi) |
-| viewport | 1080×2310 px / 840 css（默认，仅让出状态栏） | 1080×2146 px / 817.52 css（让出状态栏+三键导航栏） |
-| statusBar | 90 px / 32.73 css | 128 px / 48.76 css |
-| navigationBar | 0（手势模式，无导航栏） | 126 px / 48 css，three_button |
-| safeAreaInsets | top 32.73, bottom 0（css；px 为 90/0） | top 48.76, bottom 48（css；px 为 128/126） |
-| cutout | 挖孔 [0,141]×[0,90] | 挖孔 [492,610]×[0,128] |
-| refreshRate | 90（用户设置档位；maxRefreshRate 144） | 60 |
+| 字段 | 红米 K30S Ultra（MIUI 12, Android 10, WebView 87, 手势导航） | Pixel 6 模拟器（Android 16, WebView 133, 三键） | iPhone 17 Pro 模拟器（iOS 26.4.1，CI） |
+| --- | --- | --- | --- |
+| screen | 1080×2400 px / 392.73×872.73 css，density 2.75 (440dpi) | 1080×2400 px / 411.43×914.29 css，density 2.625 (420dpi) | 1206×2622 px / 402×874 css，density 3 (480dpi) |
+| viewport（默认） | 1080×2310 px / 840 css | 1080×2146 px / 817.52 css | 1206×2622 px / 402×874 css（iOS 默认满屏） |
+| statusBar | 90 px / 32.73 css | 128 px / 48.76 css | 186 px / 62 css |
+| navigationBar | 0（手势） | 126 px / 48 css（three_button） | 102 px / 34 css（gesture = Home Indicator） |
+| safeArea css | top 32.73 / bottom 0 | top 48.76 / bottom 48 | top 62 / bottom 34 |
+| refreshRate | 90（max 144） | 60（max 60） | 60（max 60） |
+| cutout | 挖孔 [0,141]×[0,90] | 挖孔 [492,610]×[0,128] | exists: true（灵动岛） |
 
 ## 开发
 
@@ -129,5 +341,5 @@ npm run build        # tsc → dist/esm
 ```
 
 - Android：`android/src/main/java/com/testionic/systeminfo/SystemInfoPlugin.java`
-- iOS：`ios/Sources/SystemInfoPlugin/SystemInfoPlugin.swift`（Windows 上无法编译，靠 CI）
-- 每个 API 独立实现，新增 API 时按现有模式复制即可。
+- iOS：`ios/Sources/SystemInfoPlugin/SystemInfoPlugin.swift`（Windows 上无法编译，靠 GitHub Actions 验证）
+- 每个 API 独立实现，新增 API 时按现有模式复制即可；两侧记得同步 `pluginMethods` / `@PluginMethod` 与 TS 声明。
