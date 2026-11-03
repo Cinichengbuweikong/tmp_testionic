@@ -356,8 +356,8 @@ npm run build
 - ✅ 已推送至 `4029ff5`：capacitor-system-info **iOS CI 全绿**（iPhone 17 Pro 模拟器，13 个 API
   全部通过 autotest 断言）；Android 真机（MIUI 手势模式）+ 模拟器实测通过、冒烟全绿。
   插件 README 已含全部 API 的详细文档（功能/限制/返回值字段表/实测数据）。
-- 🔨 新增 capacitor-rotation-listener（屏幕旋转监听）：Android 双端实测事件派发/解除监听正常，
-  冒烟全绿；iOS CI 待验证（详见 5.6 节）。
+- 🔨 新增 capacitor-rotation-listener（屏幕旋转监听）：**iOS CI 全绿**（acc1a45），Android 双端
+  实测事件派发/解除监听正常、冒烟全绿（详见 5.6 节）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
 - 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。
