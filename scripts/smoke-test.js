@@ -46,6 +46,11 @@
   // SystemInfo：读一次综合信息
   out.systemInfo = await click('读取系统信息');
 
+  // Rotation：读状态 → 开始监听 → 停止监听
+  out.rotationInfo = await click('读取旋转状态');
+  out.rotationListenStart = await click('开始监听');
+  out.rotationListenStop = await click('停止监听');
+
   // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
   await click('强制暗色');
   await sleep(400);
@@ -64,7 +69,7 @@
   await click('默认');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -88,6 +93,15 @@
     if (!out.systemInfo.includes(key)) {
       failures.push(`systemInfo:${key}`);
     }
+  }
+  if (!out.rotationInfo.includes('"orientation"') || !out.rotationInfo.includes('"rotationDegrees"')) {
+    failures.push('rotationInfo');
+  }
+  if (!out.rotationListenStart.includes('监听已开始')) {
+    failures.push('rotationListenStart');
+  }
+  if (!out.rotationListenStop.includes('监听已停止')) {
+    failures.push('rotationListenStop');
   }
 
   out.dataTheme = dataTheme;

@@ -1,7 +1,7 @@
 # 项目上下文存档（HANDOFF）
 
 > **用途**：这份文件保存了截至 2026-11-03 本对话中掌握的所有关键信息——本机环境、项目结构、
-> 已完成的 5 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
+> 已完成的 6 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
 ---
@@ -65,9 +65,10 @@ targetCompatibility JavaVersion.VERSION_21
 
 ```
 D:\projs\testionic
-├─ plugins/                      # 5 个自研插件（每个都是独立 npm 包）
+├─ plugins/                      # 6 个自研插件（每个都是独立 npm 包）
 │  ├─ capacitor-native-basics/      # 参考实现：echo / showToast / getDeviceInfo
 │  ├─ capacitor-native-statusbar/   # 状态栏背景色 + 图标亮暗
+│  ├─ capacitor-rotation-listener/  # 屏幕旋转监听（getRotation + rotationChanged 事件）
 │  ├─ capacitor-set-force-dark/     # WebView forceDark 修复 + 主题注入
 │  ├─ capacitor-system-info/        # 屏幕/系统/安全区等 13 个独立只读 API
 │  ├─ capacitor-webview-to-edge/    # WebView 铺满整屏 + 安全区 insets
@@ -75,7 +76,7 @@ D:\projs\testionic
 ├─ src/
 │  ├─ main.js                     # VITE_AUTOTEST=1 时自动跳 /plugin-test?autotest=1
 │  ├─ router/index.js             # hash 路由：/ /about /plugin-test
-│  ├─ views/PluginTestView.vue    # 「插件自检」页：5 个插件的按钮 + autotest 逻辑
+│  ├─ views/PluginTestView.vue    # 「插件自检」页：6 个插件的按钮 + autotest 逻辑
 │  └─ assets/base.css             # 深色配色（⚠️ 有未提交改动，见第 10 节）
 ├─ scripts/
 │  ├─ deploy-android.ps1          # 一键构建+安装+启动（JBR21，可 -Device 指定设备）
@@ -178,6 +179,26 @@ D:\projs\testionic
 - 两个 Capacitor 8 API 坑：`Plugin.getConfig()` 只含**插件自己的配置块**（`plugins.Xxx` 节点），
   读不到全局 appName → 从 application label 读；`Plugin.getAppId()` 是基类自带方法。
 - Android 权限：仅 `ACCESS_NETWORK_STATE`（普通权限，无弹窗）。
+
+### 5.6 capacitor-rotation-listener（屏幕旋转监听）
+
+- Android 包 `com.testionic.rotation`；iOS 包 `CapacitorRotationListener`；jsName `Rotation`；
+  npm 包名 `capacitor-rotation-listener`（用户指定）。
+- API：`getRotation()` → `RotationState { orientation, rotationDegrees, isPortrait, isLandscape }`；
+  `addListener('rotationChanged', cb)`（返回 handle，`handle.remove()` 解除）；
+  `removeAllListeners()`（桥内置）。**监听/解除监听不需要原生实现，桥本身支持**。
+- **Android**：事件源 = `Plugin.handleOnConfigurationChanged`（要求宿主 MainActivity 的
+  `android:configChanges` 含 orientation|screenSize，Capacitor 模板默认已含）；用「orientation +
+  rotationDegrees」双值去重，键盘/字体等非方向配置变化不派发。
+- **iOS**：`UIDevice.orientationDidChangeNotification`（load 时 beginGenerating，deinit 时注销）；
+  orientation 用 WebView 宽高比判断（faceUp 也可靠），角度由 UIDevice 映射
+  （portrait→0 / upsideDown→180 / landscapeRight→90 / landscapeLeft→270）；不用 iOS 26 已
+  obsoleted 的 `windowScene.interfaceOrientation`。
+- **Web**：`screen.orientation change` / `orientationchange` 模拟，同构派发事件。
+- 实测（2026-11-03）：模拟器 `settings put system user_rotation` 横屏→`landscape/90`、回竖屏→
+  `portrait/0`、**解除监听后再转不触发**；`adb emu rotate` → `landscape/270`；真机 MIUI 12 →
+  `landscape/90` 正常。
+- 坑：`JSObject.getInt(String,int)` 不存在（org.json 只有单参），要用 `optInt(name, default)`。
 
 ## 6. Capacitor 8 插件开发手册（要点）
 
@@ -335,6 +356,8 @@ npm run build
 - ✅ 已推送至 `4029ff5`：capacitor-system-info **iOS CI 全绿**（iPhone 17 Pro 模拟器，13 个 API
   全部通过 autotest 断言）；Android 真机（MIUI 手势模式）+ 模拟器实测通过、冒烟全绿。
   插件 README 已含全部 API 的详细文档（功能/限制/返回值字段表/实测数据）。
+- 🔨 新增 capacitor-rotation-listener（屏幕旋转监听）：Android 双端实测事件派发/解除监听正常，
+  冒烟全绿；iOS CI 待验证（详见 5.6 节）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
 - 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。

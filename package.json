@@ -18,6 +18,7 @@
     "@capacitor/status-bar": "^8.0.4",
     "capacitor-native-basics": "file:plugins/capacitor-native-basics",
     "capacitor-native-statusbar": "file:plugins/capacitor-native-statusbar",
+    "capacitor-rotation-listener": "file:plugins/capacitor-rotation-listener",
     "capacitor-set-force-dark": "file:plugins/capacitor-set-force-dark",
     "capacitor-system-info": "file:plugins/capacitor-system-info",
     "capacitor-webview-to-edge": "file:plugins/capacitor-webview-to-edge",

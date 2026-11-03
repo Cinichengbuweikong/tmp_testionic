@@ -52,6 +52,19 @@
     </section>
 
     <section class="card">
+      <h2>Rotation</h2>
+      <div class="actions">
+        <button @click="loadRotation">读取旋转状态</button>
+        <button @click="startRotationListen">开始监听</button>
+        <button @click="stopRotationListen">停止监听</button>
+      </div>
+      <p class="hint">
+        开始监听后旋转设备（模拟器可用 adb emu rotate），output 会打印 rotationChanged 事件；
+        停止监听即解除（js 侧 handle.remove()）。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>WebViewToEdge</h2>
       <div class="actions">
         <button @click="setToEdge(true)">铺满整屏</button>
@@ -84,6 +97,7 @@
 import { Capacitor } from '@capacitor/core';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
+import { Rotation } from 'capacitor-rotation-listener';
 import { SetForceDark } from 'capacitor-set-force-dark';
 import { SystemInfo } from 'capacitor-system-info';
 import { WebViewToEdge } from 'capacitor-webview-to-edge';
@@ -94,6 +108,7 @@ export default {
       platform: Capacitor.getPlatform(),
       isNative: Capacitor.isNativePlatform(),
       output: '',
+      rotationHandle: null,
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
         { label: '绿 #4CAF50', value: '#4CAF50' },
@@ -204,6 +219,28 @@ export default {
         } catch (err) {
           results.ok = false;
           results.systemInfoError = String((err && err.message) || err);
+        }
+
+        // Rotation：读取状态 + 监听/解除监听冒烟
+        try {
+          const rot = await Rotation.getRotation();
+          const handle = await Rotation.addListener('rotationChanged', () => {});
+          const hasHandle = !!handle && typeof handle.remove === 'function';
+          await handle.remove();
+          results.rotation = { state: rot, hasHandle, removed: true };
+          const rotOk = !!rot
+            && ['portrait', 'landscape', 'unknown'].includes(rot.orientation)
+            && [0, 90, 180, 270].includes(rot.rotationDegrees)
+            && typeof rot.isPortrait === 'boolean'
+            && typeof rot.isLandscape === 'boolean'
+            && hasHandle;
+          if (!rotOk) {
+            results.ok = false;
+            results.reason = `rotation check failed: ${JSON.stringify(rot)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.rotationError = String((err && err.message) || err);
         }
 
         // WebViewToEdge：开 → 读安全区 → 关
@@ -340,6 +377,44 @@ export default {
         });
       } catch (err) {
         this.error('SystemInfo', err);
+      }
+    },
+
+    async loadRotation() {
+      try {
+        const state = await Rotation.getRotation();
+        this.print('Rotation.getRotation 成功', state);
+      } catch (err) {
+        this.error('Rotation.getRotation', err);
+      }
+    },
+
+    async startRotationListen() {
+      try {
+        if (this.rotationHandle) {
+          this.print('Rotation 监听', { status: '已在监听中，忽略重复开始' });
+          return;
+        }
+        this.rotationHandle = await Rotation.addListener('rotationChanged', (state) => {
+          this.print('rotationChanged 事件', state);
+        });
+        this.print('Rotation 监听已开始', { listening: true });
+      } catch (err) {
+        this.error('Rotation.addListener', err);
+      }
+    },
+
+    async stopRotationListen() {
+      try {
+        if (!this.rotationHandle) {
+          this.print('Rotation 监听', { status: '当前没有监听' });
+          return;
+        }
+        await this.rotationHandle.remove();
+        this.rotationHandle = null;
+        this.print('Rotation 监听已停止', { listening: false });
+      } catch (err) {
+        this.error('Rotation.removeListener', err);
       }
     },
 

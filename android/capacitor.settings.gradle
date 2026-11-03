@@ -11,6 +11,9 @@ project(':capacitor-native-basics').projectDir = new File('../plugins/capacitor-
 include ':capacitor-native-statusbar'
 project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacitor-native-statusbar/android')
 
+include ':capacitor-rotation-listener'
+project(':capacitor-rotation-listener').projectDir = new File('../plugins/capacitor-rotation-listener/android')
+
 include ':capacitor-set-force-dark'
 project(':capacitor-set-force-dark').projectDir = new File('../plugins/capacitor-set-force-dark/android')
 

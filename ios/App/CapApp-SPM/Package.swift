@@ -15,6 +15,7 @@ let package = Package(
         .package(name: "CapacitorStatusBar", path: "../../../node_modules/@capacitor/status-bar"),
         .package(name: "CapacitorNativeBasics", path: "../../../plugins/capacitor-native-basics"),
         .package(name: "CapacitorNativeStatusbar", path: "../../../plugins/capacitor-native-statusbar"),
+        .package(name: "CapacitorRotationListener", path: "../../../plugins/capacitor-rotation-listener"),
         .package(name: "CapacitorSetForceDark", path: "../../../plugins/capacitor-set-force-dark"),
         .package(name: "CapacitorSystemInfo", path: "../../../plugins/capacitor-system-info"),
         .package(name: "CapacitorWebviewToEdge", path: "../../../plugins/capacitor-webview-to-edge")
@@ -28,6 +29,7 @@ let package = Package(
                 .product(name: "CapacitorStatusBar", package: "CapacitorStatusBar"),
                 .product(name: "CapacitorNativeBasics", package: "CapacitorNativeBasics"),
                 .product(name: "CapacitorNativeStatusbar", package: "CapacitorNativeStatusbar"),
+                .product(name: "CapacitorRotationListener", package: "CapacitorRotationListener"),
                 .product(name: "CapacitorSetForceDark", package: "CapacitorSetForceDark"),
                 .product(name: "CapacitorSystemInfo", package: "CapacitorSystemInfo"),
                 .product(name: "CapacitorWebviewToEdge", package: "CapacitorWebviewToEdge")
