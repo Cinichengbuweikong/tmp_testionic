@@ -91,10 +91,14 @@ jobs:
 
           if ! grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
             echo "::error::autotest marker not found in simulator console"
+            echo "----- sim-console.log (last 60 lines for diagnosis) -----"
+            tail -n 60 sim-console.log || true
             exit 1
           fi
           if ! grep -q '"ok":true' sim-console.log; then
             echo "::error::autotest reported a failure"
+            echo "----- sim-console.log (last 60 lines for diagnosis) -----"
+            tail -n 60 sim-console.log || true
             exit 1
           fi
           echo "autotest passed:"
@@ -122,5 +126,14 @@ jobs:
               echo '```'
             else
               echo '没有找到 autotest 结果，请查看 sim-console.log 工件。'
+              if [ -f sim-console.log ]; then
+                echo ''
+                echo '<details><summary>sim-console.log 尾部（诊断）</summary>'
+                echo ''
+                echo '```'
+                tail -n 60 sim-console.log
+                echo '```'
+                echo '</details>'
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
