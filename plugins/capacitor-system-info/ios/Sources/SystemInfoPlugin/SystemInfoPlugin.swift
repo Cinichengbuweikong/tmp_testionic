@@ -146,18 +146,12 @@ public class SystemInfoPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     /// 状态栏（宽 = 屏幕宽）。
+    /// 高度直接用顶部安全区：iOS 上两者本就相等（状态栏高度 = safeAreaInsets.top），
+    /// 且 UIStatusBarManager.statusBarFrame 在 iOS 26 SDK 已 obsoleted，无法再引用。
     private func resolveStatusBar(_ call: CAPPluginCall) {
         let scale = Double(UIScreen.main.scale)
         let widthCss = Double(UIScreen.main.bounds.width)
-        var heightCss = 0.0
-        if #available(iOS 26.0, *) {
-            // UIStatusBarManager.statusBarFrame 在 iOS 26 已移除；
-            // 状态栏高度即顶部安全区（灵动岛机型会含岛边距）
-            heightCss = self.bridge?.viewController?.view.window.map { Double($0.safeAreaInsets.top) } ?? 0
-        } else {
-            heightCss = self.bridge?.viewController?.view.window?.windowScene?.statusBarManager?.statusBarFrame
-                .map { Double($0.height) } ?? 0
-        }
+        let heightCss = self.bridge?.viewController?.view.window.map { Double($0.safeAreaInsets.top) } ?? 0
         call.resolve([
             "px": ["width": widthCss * scale, "height": heightCss * scale],
             "css": ["width": widthCss, "height": heightCss],

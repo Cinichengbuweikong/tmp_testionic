@@ -1,7 +1,7 @@
 # 项目上下文存档（HANDOFF）
 
 > **用途**：这份文件保存了截至 2026-11-03 本对话中掌握的所有关键信息——本机环境、项目结构、
-> 已完成的 4 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
+> 已完成的 5 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
 ---
@@ -65,16 +65,17 @@ targetCompatibility JavaVersion.VERSION_21
 
 ```
 D:\projs\testionic
-├─ plugins/                      # 4 个自研插件（每个都是独立 npm 包）
+├─ plugins/                      # 5 个自研插件（每个都是独立 npm 包）
 │  ├─ capacitor-native-basics/      # 参考实现：echo / showToast / getDeviceInfo
 │  ├─ capacitor-native-statusbar/   # 状态栏背景色 + 图标亮暗
 │  ├─ capacitor-set-force-dark/     # WebView forceDark 修复 + 主题注入
+│  ├─ capacitor-system-info/        # 屏幕/系统/安全区等 13 个独立只读 API
 │  ├─ capacitor-webview-to-edge/    # WebView 铺满整屏 + 安全区 insets
 │  └─ README.md                     # 插件集合说明 + CLI 识别规则
 ├─ src/
 │  ├─ main.js                     # VITE_AUTOTEST=1 时自动跳 /plugin-test?autotest=1
 │  ├─ router/index.js             # hash 路由：/ /about /plugin-test
-│  ├─ views/PluginTestView.vue    # 「插件自检」页：4 个插件的按钮 + autotest 逻辑
+│  ├─ views/PluginTestView.vue    # 「插件自检」页：5 个插件的按钮 + autotest 逻辑
 │  └─ assets/base.css             # 深色配色（⚠️ 有未提交改动，见第 10 节）
 ├─ scripts/
 │  ├─ deploy-android.ps1          # 一键构建+安装+启动（JBR21，可 -Device 指定设备）
@@ -144,6 +145,39 @@ D:\projs\testionic
   系统栏 insets 清零后回传（所以 **Android 上 `env(safe-area-inset-*)` 恒为 0**，统一用插件变量）。
 - iOS：Capacitor 默认已贴边（`contentInsetAdjustmentBehavior = .never`）；enable=.never、disable=.automatic；安全区来自 `safeAreaInsets`。
 - 实测：真机 WebView bounds `[0,90]` → enable `[0,0]` → disable `[0,90]`；模拟器 `[0,128]` → `[0,0][1080,2400]`，insets top 49 / bottom 48。
+
+### 5.5 capacitor-system-info（系统与硬件信息）
+
+- Android 包 `com.testionic.systeminfo`；iOS 包 `CapacitorSystemInfo`；jsName `SystemInfo`
+- **设计原则（用户明确要求）**：**13 个独立只读 API，问什么收集什么、互不影响**，不搞一个大 `getInfo()`。
+- API：`getScreenInfo / getViewport / getSafeAreaInsets / getStatusBarInfo / getNavigationBarInfo /
+  getCutoutInfo / getSystemInfo / getWebViewInfo / getMemoryInfo / getStorageInfo / getBatteryInfo /
+  getNetworkInfo / getAppInfo`，全部无参数、返回 Promise。
+- 单位约定：`px`=物理像素；`css`=CSS px（Android dp / iOS pt）；`css × density = px`。
+  `getViewport().css` 就是 CSS 里 `100%` 的大小。
+- **关键实现（Android）**：
+  - API 30+ 从 `WindowManager.getMaximumWindowMetrics()` 拿系统栏真实值（显示层数据，
+    绕开 webview-to-edge 常驻的 insets 监听器）；
+  - API 29 **底部导航栏用 `getWindowVisibleDisplayFrame()` 反推**——MIUI 手势模式下
+    insets 假报三键 130px（stable/transient 都是），但窗口实际铺满（dumpsys `mStable=[0,90][1080,2400]`、
+    to-edge 收到 `{top:33,bottom:0}` 三方印证）；反推后正确报 0；
+  - 导航模式优先读 `settings navigation_mode`（MIUI 读不到）→ 实测占用推断；
+  - 状态栏高度含挖孔：K30S 挖孔 `[0,141]×[0,90]` → 状态栏 90px/32.73css。
+- 实测数据（2026-11-03）：
+  | 字段 | 真机 K30S（MIUI12/API29/WebView87） | 模拟器 Pixel_6（API36/WebView133） |
+  | --- | --- | --- |
+  | screen | 1080×2400 px / 392.73×872.73 css；density 2.75 (440dpi) | 1080×2400 px / 411.43×914.29 css；density 2.625 (420dpi) |
+  | viewport（默认） | 1080×2310 px / 840 css（只让出状态栏） | 1080×2146 px / 817.52 css（让出状态栏+三键） |
+  | statusBar | 90px / 32.73css | 128px / 48.76css |
+  | navigationBar | 0（手势模式） | 126px / 48css，three_button |
+  | safeArea | top 32.73 / bottom 0（css；px 90/0） | top 48.76 / bottom 48（css；px 128/126） |
+  | refreshRate | 90（用户档位，读 MIUI `user_refresh_rate`；max 144） | 60（max 60） |
+- iOS：`window.safeAreaInsets`（状态栏高度=safeArea.top） / `NWPathMonitor`（1.5s 超时兜底）/
+  `os_proc_available_memory()` / `utsname` 硬件型号；导航栏=Home Indicator；电池模拟器=-1；
+  WebView 版本取 UA `Version/x.y`。
+- 两个 Capacitor 8 API 坑：`Plugin.getConfig()` 只含**插件自己的配置块**（`plugins.Xxx` 节点），
+  读不到全局 appName → 从 application label 读；`Plugin.getAppId()` 是基类自带方法。
+- Android 权限：仅 `ACCESS_NETWORK_STATE`（普通权限，无弹窗）。
 
 ## 6. Capacitor 8 插件开发手册（要点）
 
@@ -274,6 +308,10 @@ npm run build
 | 12 | `onConfigurationChanged` 旋转也会触发 | 事件去重（只有 isDark/insets 真变化才派发） |
 | 13 | CDP 评估挂起 | WebSocket 连接时 app 被杀；webview-eval 加 30s 超时；MIUI 会杀后台进程（`has died: cch CRE`） |
 | 14 | 官方 status-bar 的 `getInfo().overlays` 误导 | 它只读 `SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN`，不代表 WebView 真铺到状态栏下（实际内容在状态栏下方） |
+| 15 | MIUI 手势模式假报导航栏 insets | `getSystemWindowInsetBottom`/`getStableInsetBottom` 都报 130px，但窗口实际铺满 → API29 用 `getWindowVisibleDisplayFrame()` 反推 |
+| 16 | `Plugin.getConfig()` 是插件私有配置块 | 只含 `plugins.<id>` 节点，读不到全局 appName → 用 application label；`Plugin.getAppId()` 基类自带 |
+| 17 | MIUI `getMode()` 返回瞬时刷新率 | 设置 90Hz 时 `getMode()/getRefreshRate()` 报 50（智能刷新率动态降档）；用户档位存 `Settings.System` 的 `user_refresh_rate`（MIUI）/ `peak_refresh_rate`（Android 11+，@hide 常量，用字符串键读） |
+| 18 | iOS 26 移除 deprecated API | `UIStatusBarManager.statusBarFrame` 在 iOS 26 SDK 标记 **obsoleted（编译期就报错）**，`windowScene.interfaceOrientation` 同理 → 状态栏高度改用 `safeAreaInsets.top`（两者本就相等），旋转角改用 `UIDevice.orientation` |
 
 设备实测数据（真机 M2007J3SC / MIUI 12 / WebView 87）：
 
@@ -292,10 +330,12 @@ npm run build
 
 ## 10. 当前状态 / 未完成事项
 
-- ✅ 已推送至 `26c0c07`，iOS CI 全绿；手机上装的是最新构建（深色背景 `#202020`）。
+- ✅ 已推送至 `159ba5a`：capacitor-system-info 含刷新率档位修复（真机 90/144）、
+  safeArea px/css 双单位、iOS 26 防御修复。Android 真机 + 模拟器实测通过、冒烟全绿。
+  iOS CI（macos-26）重跑中，待确认全绿（写本文档时刚 push）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
-- 真机当前未连接（写文档时 `adb devices` 为空）；模拟器也已关闭。
+- 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。
 - 用户提到「还有一件更重要的事要在别的对话做」；本仓库的插件工作可继续（做新插件 / 修 MIUI 遗留项）。
 - 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）；statusbar 插件在 MIUI 上颜色略偏深（约 #D83200 vs #FF5722，未深究）。
 
