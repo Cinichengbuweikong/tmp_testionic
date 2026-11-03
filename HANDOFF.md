@@ -383,8 +383,8 @@ npm run build
 - ✅ capacitor-system-info `getCutoutInfo()` 增强（960f52a，iOS CI 全绿）：rect 增加
   width/height，新增 centerPx/centerCss（主挖孔中心）；README 讲清「矩形坐标 vs 到边距离」
   「安全区矩形贴边 ≠ 挖孔贴边」「横屏坐标系 2400×1080」。
-- 🔨 新增 capacitor-fullscreen（沉浸式全屏）：Android 双端实测（截图确认状态栏/导航栏消失、
-  退出恢复）+ 冒烟全绿；iOS CI 待验证（详见 5.7 节）。
+- 🔨 新增 capacitor-fullscreen（沉浸式全屏）：**iOS CI 全绿**（59a9e64），Android 双端实测
+  （截图确认状态栏/导航栏消失、退出恢复）+ 冒烟全绿（详见 5.7 节）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
 - 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。
