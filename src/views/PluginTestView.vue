@@ -110,6 +110,29 @@
     </section>
 
     <section class="card">
+      <h2>DataChannel</h2>
+      <div class="actions">
+        <button @click="dataChannelStart">启动通道</button>
+        <button @click="dataChannelStop">停止通道</button>
+        <button @click="loadDataChannelInfo">读取通道信息</button>
+      </div>
+      <div class="actions">
+        <button @click="dataChannelUpload">上传 10MB</button>
+        <button @click="dataChannelUploadChunked">分块上传 100MB</button>
+        <button @click="dataChannelDownload">下载测试文件</button>
+        <button @click="dataChannelList">列出文件</button>
+      </div>
+      <div class="actions">
+        <input ref="dcFileInput" class="kb-input" type="file" style="flex: 1" />
+        <button @click="dataChannelUploadFile">上传所选文件</button>
+      </div>
+      <p class="hint">
+        本地 HTTP server（仅 127.0.0.1 + token 鉴权）：用 fetch 直接收发原始二进制，
+        不经过 base64 / JSON 序列化。分块上传会复用同一个 8MB 缓冲区，内存占用恒定。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>WebViewToEdge</h2>
       <div class="actions">
         <button @click="setToEdge(true)">铺满整屏</button>
@@ -140,6 +163,7 @@
 
 <script>
 import { Capacitor } from '@capacitor/core';
+import { DataChannel } from 'capacitor-data-channel';
 import { Fullscreen } from 'capacitor-fullscreen';
 import { KeyboardAvoiding } from 'capacitor-keyboard-avoiding';
 import { NativeBasics } from 'capacitor-native-basics';
@@ -158,6 +182,7 @@ export default {
       rotationHandle: null,
       fullscreenHandle: null,
       keyboardHandle: null,
+      dataChannelInfo: null,
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
         { label: '绿 #4CAF50', value: '#4CAF50' },
@@ -339,6 +364,93 @@ export default {
         } catch (err) {
           results.ok = false;
           results.keyboardAvoidingError = String((err && err.message) || err);
+        }
+
+        // DataChannel：本地 HTTP server 全链路（上传/下载/鉴权/路径穿越/列表/删除）
+        try {
+          const ch = await DataChannel.start();
+          const health = await (await fetch(`${ch.baseUrl}/health`)).json();
+
+          // 1MB 上传（原始二进制，不经过 base64）
+          const payload = new Uint8Array(1024 * 1024);
+          for (let i = 0; i < payload.length; i += 4096) {
+            payload[i] = i & 0xff;
+          }
+          const uploadRes = await fetch(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
+            method: 'PUT',
+            headers: { Authorization: `Bearer ${ch.token}` },
+            body: payload,
+          });
+          const upload = await uploadRes.json();
+
+          const infoRes = await fetch(`${ch.baseUrl}/info?path=selftest/test.bin&token=${ch.token}`);
+          const fileInfo = await infoRes.json();
+
+          const downloadRes = await fetch(`${ch.baseUrl}/download?path=selftest/test.bin&token=${ch.token}`);
+          const downloaded = await downloadRes.arrayBuffer();
+          const downloadedBytes = new Uint8Array(downloaded);
+          const same =
+            downloadedBytes.byteLength === payload.byteLength &&
+            downloadedBytes[0] === payload[0] &&
+            downloadedBytes[4096] === payload[4096] &&
+            downloadedBytes[downloadedBytes.length - 1] === payload[payload.length - 1];
+
+          // 安全：无 token 应返回 404（伪装成未知路由，不泄露需要认证）
+          const noTokenRes = await fetch(`${ch.baseUrl}/download?path=selftest/test.bin`);
+          // 安全：路径穿越应 400
+          const traversalRes = await fetch(`${ch.baseUrl}/download?path=../escape.txt&token=${ch.token}`);
+          // 安全：未知路由应 404
+          const unknownRes = await fetch(`${ch.baseUrl}/nope?token=${ch.token}`);
+          // CORS 预检应 204
+          const preflightRes = await fetch(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
+            method: 'OPTIONS',
+            headers: { 'Access-Control-Request-Method': 'PUT' },
+          });
+
+          const listRes = await fetch(`${ch.baseUrl}/list?path=selftest&token=${ch.token}`);
+          const list = await listRes.json();
+
+          await fetch(`${ch.baseUrl}/file?path=selftest&token=${ch.token}`, { method: 'DELETE' });
+          const stopInfo = await DataChannel.stop();
+
+          results.dataChannel = {
+            running: ch.running,
+            port: ch.port,
+            healthOk: health.ok === true,
+            uploadBytes: upload.bytes,
+            storedSize: fileInfo.size,
+            downloadedBytes: downloadedBytes.byteLength,
+            same,
+            noTokenStatus: noTokenRes.status,
+            traversalStatus: traversalRes.status,
+            unknownStatus: unknownRes.status,
+            preflightStatus: preflightRes.status,
+            listCount: list.length,
+            stopped: stopInfo.running === false,
+          };
+          const dcOk = !!ch && ch.running === true && ch.port > 0
+            && health.ok === true
+            && upload.bytes === payload.byteLength
+            && fileInfo.size === payload.byteLength
+            && same
+            && noTokenRes.status === 404
+            && traversalRes.status === 400
+            && unknownRes.status === 404
+            && preflightRes.status === 204
+            && Array.isArray(list) && list.length === 1
+            && stopInfo.running === false;
+          if (!dcOk) {
+            results.ok = false;
+            results.reason = `data-channel check failed: ${JSON.stringify(results.dataChannel)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.dataChannelError = String((err && err.message) || err);
+          try {
+            await DataChannel.stop();
+          } catch (ignored) {
+            // 尽力停止
+          }
         }
 
         // WebViewToEdge：开 → 读安全区 → 关
@@ -657,6 +769,186 @@ export default {
         this.print('KeyboardAvoiding 监听已停止', { listening: false });
       } catch (err) {
         this.error('KeyboardAvoiding.removeListener', err);
+      }
+    },
+
+    async dataChannelStart() {
+      try {
+        this.dataChannelInfo = await DataChannel.start();
+        this.print('DataChannel.start 成功', this.dataChannelInfo);
+      } catch (err) {
+        this.error('DataChannel.start', err);
+      }
+    },
+
+    async dataChannelStop() {
+      try {
+        const info = await DataChannel.stop();
+        this.dataChannelInfo = null;
+        this.print('DataChannel.stop 成功', info);
+      } catch (err) {
+        this.error('DataChannel.stop', err);
+      }
+    },
+
+    async loadDataChannelInfo() {
+      try {
+        this.dataChannelInfo = await DataChannel.getInfo();
+        this.print('DataChannel.getInfo 成功', this.dataChannelInfo);
+      } catch (err) {
+        this.error('DataChannel.getInfo', err);
+      }
+    },
+
+    async ensureDataChannel() {
+      if (this.dataChannelInfo && this.dataChannelInfo.running) {
+        return this.dataChannelInfo;
+      }
+      this.dataChannelInfo = await DataChannel.getInfo();
+      if (!this.dataChannelInfo.running) {
+        this.dataChannelInfo = await DataChannel.start();
+      }
+      return this.dataChannelInfo;
+    },
+
+    async dataChannelUpload() {
+      try {
+        const ch = await this.ensureDataChannel();
+        const sizeMB = 10;
+        const bytes = new Uint8Array(sizeMB * 1024 * 1024);
+        // 填充部分随机内容（避免全零被压缩/优化，同时保持生成速度）
+        const filler = new Uint8Array(65536);
+        crypto.getRandomValues(filler);
+        for (let offset = 0; offset < bytes.length; offset += filler.length) {
+          bytes.set(filler.subarray(0, Math.min(filler.length, bytes.length - offset)), offset);
+        }
+        const startedAt = performance.now();
+        const res = await fetch(`${ch.baseUrl}/upload?path=test/upload-${sizeMB}mb.bin`, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${ch.token}`,
+            'Content-Type': 'application/octet-stream',
+          },
+          body: bytes,
+        });
+        const json = await res.json();
+        const elapsedMs = performance.now() - startedAt;
+        this.print('DataChannel 上传完成', {
+          status: res.status,
+          uploadedBytes: json.bytes,
+          storedSize: json.size,
+          elapsedMs: Math.round(elapsedMs),
+          speedMBps: Math.round(((sizeMB * 1000) / Math.max(1, elapsedMs)) * 100) / 100,
+        });
+      } catch (err) {
+        this.error('DataChannel 上传', err);
+      }
+    },
+
+    async dataChannelUploadChunked() {
+      try {
+        const ch = await this.ensureDataChannel();
+        const totalMB = 100;
+        const chunkMB = 8;
+        const chunkSize = chunkMB * 1024 * 1024;
+        const totalBytes = totalMB * 1024 * 1024;
+        const chunkCount = Math.ceil(totalBytes / chunkSize);
+        // 复用同一个缓冲区：JS 侧内存恒定（这是分块上传的核心优势）
+        if (!this.dcChunkBuffer || this.dcChunkBuffer.byteLength !== chunkSize) {
+          this.dcChunkBuffer = new Uint8Array(chunkSize);
+          crypto.getRandomValues(this.dcChunkBuffer.subarray(0, 65536));
+        }
+        const startedAt = performance.now();
+        let uploaded = 0;
+        for (let i = 0; i < chunkCount; i++) {
+          const size = Math.min(chunkSize, totalBytes - uploaded);
+          const res = await fetch(
+            `${ch.baseUrl}/upload?path=test/100mb-chunked.bin${i === 0 ? '' : '&append=1'}`,
+            {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${ch.token}`,
+                'Content-Type': 'application/octet-stream',
+              },
+              body: this.dcChunkBuffer.subarray(0, size),
+            },
+          );
+          if (!res.ok) {
+            throw new Error(`chunk ${i} failed: HTTP ${res.status} ${await res.text()}`);
+          }
+          await res.json();
+          uploaded += size;
+        }
+        const elapsedMs = performance.now() - startedAt;
+        this.print('DataChannel 分块上传完成', {
+          totalBytes: uploaded,
+          chunks: chunkCount,
+          chunkMB,
+          elapsedMs: Math.round(elapsedMs),
+          speedMBps: Math.round(((totalMB * 1000) / Math.max(1, elapsedMs)) * 100) / 100,
+        });
+      } catch (err) {
+        this.error('DataChannel 分块上传', err);
+      }
+    },
+
+    async dataChannelUploadFile() {
+      try {
+        const file = this.$refs.dcFileInput && this.$refs.dcFileInput.files && this.$refs.dcFileInput.files[0];
+        if (!file) {
+          throw new Error('请先选择一个文件');
+        }
+        const ch = await this.ensureDataChannel();
+        const startedAt = performance.now();
+        const res = await fetch(`${ch.baseUrl}/upload?path=test/${encodeURIComponent(file.name)}`, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${ch.token}` },
+          body: file,
+        });
+        const json = await res.json();
+        const elapsedMs = performance.now() - startedAt;
+        this.print('DataChannel 上传文件完成', {
+          name: file.name,
+          fileSize: file.size,
+          uploadedBytes: json.bytes,
+          elapsedMs: Math.round(elapsedMs),
+          speedMBps: Math.round(((file.size / 1024 / 1024 / Math.max(1, elapsedMs)) * 1000) * 100) / 100,
+        });
+      } catch (err) {
+        this.error('DataChannel 上传文件', err);
+      }
+    },
+
+    async dataChannelDownload() {
+      try {
+        const ch = await this.ensureDataChannel();
+        const startedAt = performance.now();
+        const res = await fetch(`${ch.baseUrl}/download?path=test/upload-10mb.bin&token=${ch.token}`);
+        if (!res.ok) {
+          throw new Error(`download failed: HTTP ${res.status} ${await res.text()}`);
+        }
+        const buffer = await res.arrayBuffer();
+        const elapsedMs = performance.now() - startedAt;
+        this.print('DataChannel 下载完成', {
+          status: res.status,
+          bytes: buffer.byteLength,
+          elapsedMs: Math.round(elapsedMs),
+          speedMBps: Math.round(((buffer.byteLength / 1024 / 1024 / (elapsedMs || 1)) * 1000) * 100) / 100,
+          head: Array.from(new Uint8Array(buffer).slice(0, 8)),
+        });
+      } catch (err) {
+        this.error('DataChannel 下载', err);
+      }
+    },
+
+    async dataChannelList() {
+      try {
+        const ch = await this.ensureDataChannel();
+        const res = await fetch(`${ch.baseUrl}/list?path=test&token=${ch.token}`);
+        const entries = await res.json();
+        this.print('DataChannel 文件列表', { status: res.status, entries });
+      } catch (err) {
+        this.error('DataChannel 列表', err);
       }
     },
 

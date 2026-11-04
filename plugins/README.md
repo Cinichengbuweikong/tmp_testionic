@@ -12,6 +12,7 @@
 | [capacitor-webview-to-edge](./capacitor-webview-to-edge/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 运行时开关：WebView 内容铺满整屏（延伸进状态栏），并提供安全区 insets |
 | [capacitor-system-info](./capacitor-system-info/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕/视口/安全区/系统栏/系统/WebView/内存/电量/网络 等 13 个独立只读 API |
 | [capacitor-native-rotation](./capacitor-native-rotation/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕方向：getRotation + rotationChanged 事件 + 主动锁定横屏/竖屏（视频全屏播放场景） |
+| [capacitor-data-channel](./capacitor-data-channel/) | ✅ 已验证 | 🔨 待 CI 验证 | ✅ | 原生↔WebView 二进制数据通道：本地 HTTP Server（127.0.0.1 + token）大文件高速上传下载，绕开 base64 序列化 |
 | [capacitor-fullscreen](./capacitor-fullscreen/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 沉浸式全屏：隐藏状态栏+导航栏，带状态事件（可监听/解除） |
 | [capacitor-keyboard-avoiding](./capacitor-keyboard-avoiding/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 键盘避让：keyboardChanged 事件（带高度）+ 可选自动避让（Android 补差 / iOS contentInset） |
 

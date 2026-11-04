@@ -1,7 +1,7 @@
 # 项目上下文存档（HANDOFF）
 
 > **用途**：这份文件保存了截至 2026-11-03 本对话中掌握的所有关键信息——本机环境、项目结构、
-> 已完成的 8 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
+> 已完成的 9 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
 ---
@@ -68,6 +68,7 @@ D:\projs\testionic
 ├─ plugins/                      # 7 个自研插件（每个都是独立 npm 包）
 │  ├─ capacitor-fullscreen/         # 沉浸式全屏：隐藏状态栏+导航栏（带状态事件）
 │  ├─ capacitor-keyboard-avoiding/  # 键盘避让：keyboardChanged 事件 + 可选自动避让
+│  ├─ capacitor-data-channel/      # 二进制数据通道：本地 HTTP Server（127.0.0.1+token）大文件高速传输
 │  ├─ capacitor-native-basics/      # 参考实现：echo / showToast / getDeviceInfo
 │  ├─ capacitor-native-statusbar/   # 状态栏背景色 + 图标亮暗
 │  ├─ capacitor-native-rotation/   # 屏幕方向：监听 + 主动锁定横屏/竖屏
@@ -78,7 +79,7 @@ D:\projs\testionic
 ├─ src/
 │  ├─ main.js                     # VITE_AUTOTEST=1 时自动跳 /plugin-test?autotest=1
 │  ├─ router/index.js             # hash 路由：/ /about /plugin-test
-│  ├─ views/PluginTestView.vue    # 「插件自检」页：8 个插件的按钮 + autotest 逻辑
+│  ├─ views/PluginTestView.vue    # 「插件自检」页：9 个插件的按钮 + autotest 逻辑
 │  └─ assets/base.css             # 深色配色（⚠️ 有未提交改动，见第 10 节）
 ├─ scripts/
 │  ├─ deploy-android.ps1          # 一键构建+安装+启动（JBR21，可 -Device 指定设备）
@@ -269,6 +270,36 @@ D:\projs\testionic
   `adjustNothing` 并同步调整其它插件（不属于本插件职责）。README 已写明，
   并给出验证插件是否工作的方法（看 autoAvoid 字段 / 事件的 height+viewportHeight）。
 
+### 5.9 capacitor-data-channel（原生↔WebView 二进制数据通道）
+
+- 背景：Capacitor 桥是 JSON 序列化，复杂类型必须 base64（官方注释自证：
+  "FormData, Blob, ArrayBuffer ... only directly supported on web"）→ 大文件传输代价极高。
+- 方案：原生侧启动**只监听 127.0.0.1 的 HTTP Server**（随机端口 + 32 字节 Bearer token），
+  WebView 用 `fetch` / `<video>` / `<img>` 直接收发原始二进制，**完全绕开桥**。
+- 两端各自手写 HTTP 实现（零第三方依赖）：Android `DataChannelServer.java`（ServerSocket+线程池）、
+  iOS `DataChannelServer.swift`（NWListener + 状态机）；**协议完全一致**：
+  `/health`、`PUT|POST /upload`（流式、`append=1` 续传）、`GET /download`（支持 Range→206）、
+  `/info`、`/list`、`DELETE /file`、`OPTIONS` 预检。
+- 宿主配置（必需，否则 WebView 拒绝访问明文回环）：
+  - Android：`res/xml/network_security_config.xml` 只对 127.0.0.1/localhost 放行 cleartext +
+    manifest `android:networkSecurityConfig`；
+  - iOS：Info.plist `NSAppTransportSecurity → NSAllowsLocalNetworking = true`。
+- 安全设计：只绑回环（iOS 用 `requiredInterfaceType = .loopback` + 连接来源校验）、随机端口、
+  常量时间 token 比较、Origin 白名单（非法 Origin **静默断连**）、鉴权失败统一 **404**（不泄露
+  "需要认证的服务"）、路径 canonical/软链校验、请求大小/头/超时限制、上传 `.part` 原子写、日志不记 token。
+- **内存实测（真机，App 进程 RSS 峰值增量）**——README 已收录为示例：
+  | 方式 | 105~110MB 文件 | 速度 | RSS 增量 |
+  |---|---|---|---|
+  | File 直接上传（`<input type=file>`） | 806ms | 131 MB/s | **+4.2MB** 🥇 |
+  | 分块 8MB×13 复用缓冲 + append | 920ms | 109 MB/s | +42.8MB |
+  | 一次性 `Uint8Array(100MB)` | 912ms | 110 MB/s | +275.3MB |
+  → **File 方式比一次性省 65 倍内存还更快**；server 自身空闲开销仅 +0.5MB RSS / 0.13% CPU。
+- 安全思路结论（用户提议"故意返回迷惑数据"）：**不做伪装**（拦不住真攻击者，还破坏 Range/CORS/
+  调试），改为"默认拒绝 + 最小暴露面"（404 隐藏 + 静默断连），已实现并实测。
+- 坑：JavaDoc 注释里手滑写 `*/` 导致注释提前结束、`android.util.Log` 没有 `debug()`
+  （只有 `Log.d`）、NWConnection/NWListener 的队列必须是 **serial**（不能用 concurrent）。
+- 为后续「文件系统插件」预留：`rootPath` 绝对路径、`/list` 路由、统一 path 规则。
+
 ## 6. Capacitor 8 插件开发手册（要点）
 
 ### 6.1 包结构（每个插件）
@@ -433,7 +464,10 @@ npm run build
   不是 UIViewController 的。
 - ✅ capacitor-native-statusbar **0.2.0**：修复暗色模式 force dark 导致白色失效/橙色偏暗——
   给自绘色块单独 `setForceDarkAllowed(false)`；实测 白色→rgb(228,232,227)、橙色→精确 #FF5722。
-- 🔨 capacitor-keyboard-avoiding（键盘避让，新增）：真机实测键盘事件与补差逻辑全通过
+- ✅ **capacitor-data-channel**（二进制数据通道，新增）：本地 HTTP Server 大文件传输；
+  真机实测 File 上传 105.8MB 仅 **806ms/131MB/s、内存 +4.2MB**；Range/401→404/CORS 预检全通过；
+  双端冒烟 PASS；iOS CI 待验证（详见 5.9 节）。
+- ✅ capacitor-keyboard-avoiding（键盘避让）：真机实测键盘事件与补差逻辑全通过
   （键盘弹出 height 337.45css/928px、enable 无双重缩小、关闭事件正常）；双端冒烟 PASS；
   **iOS CI 全绿**（e4a1fe0 attempt 2；attempt 1 是模拟器 flaky——App 未启动、console 为空，
   重跑即过，遇到了就重跑）。

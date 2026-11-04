@@ -29,6 +29,22 @@
     return read();
   };
 
+  // 点击后等待输出里出现指定文本（用于上传/下载等耗时操作）
+  const clickAndWait = async (label, expected, timeoutMs = 15000) => {
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === label);
+    if (!btn) throw new Error(`button not found: ${label}`);
+    btn.click();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(300);
+      const text = read();
+      if (text.includes(expected) || text.includes('失败') || text.includes('Error')) {
+        return text;
+      }
+    }
+    return read();
+  };
+
   await gotoPluginTest();
 
   const out = {
@@ -64,6 +80,14 @@
   out.keyboardListenStart = await click('监听键盘');
   out.keyboardListenStop = await click('停止键盘监听');
 
+  // DataChannel：启动 → 上传 10MB → 下载 → 列表 → 停止
+  out.dataChannelStart = await click('启动通道');
+  out.dataChannelInfo = await click('读取通道信息');
+  out.dataChannelUpload = await clickAndWait('上传 10MB', '上传完成', 20000);
+  out.dataChannelDownload = await clickAndWait('下载测试文件', '下载完成', 20000);
+  out.dataChannelList = await click('列出文件');
+  out.dataChannelStop = await click('停止通道');
+
   // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
   await click('强制暗色');
   await sleep(400);
@@ -90,7 +114,7 @@
   out.fullscreenListenStop = await click('取消全屏监听');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelList', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -129,6 +153,21 @@
   }
   if (!out.rotationLockStateAfterUnlock.includes('"orientation": "auto"')) {
     failures.push('rotationUnlock');
+  }
+  if (!out.dataChannelStart.includes('"running": true') || !out.dataChannelStart.includes('"port":')) {
+    failures.push('dataChannelStart');
+  }
+  if (!out.dataChannelUpload.includes('"uploadedBytes": 10485760')) {
+    failures.push('dataChannelUpload');
+  }
+  if (!out.dataChannelDownload.includes('"bytes": 10485760')) {
+    failures.push('dataChannelDownload');
+  }
+  if (!out.dataChannelList.includes('upload-10mb.bin')) {
+    failures.push('dataChannelList');
+  }
+  if (!out.dataChannelStop.includes('"running": false')) {
+    failures.push('dataChannelStop');
   }
   if (!out.keyboardState.includes('"visible": false') || !out.keyboardState.includes('"autoAvoid": false')) {
     failures.push('keyboardState');

@@ -5,6 +5,9 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 include ':capacitor-status-bar'
 project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacitor/status-bar/android')
 
+include ':capacitor-data-channel'
+project(':capacitor-data-channel').projectDir = new File('../plugins/capacitor-data-channel/android')
+
 include ':capacitor-fullscreen'
 project(':capacitor-fullscreen').projectDir = new File('../plugins/capacitor-fullscreen/android')
 
