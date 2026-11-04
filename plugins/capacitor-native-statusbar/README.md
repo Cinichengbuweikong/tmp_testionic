@@ -110,17 +110,42 @@ const info = await NativeStatusBar.getInfo();
 强行要求低对比度组合（如浅底配白图标）时 MIUI 会拒绝，这在可用性上反而是合理的。
 所以在 MIUI 上「图标亮暗」表现为"跟随背景色自动切换"。
 
-### 2. 职责边界：WebView 的 forceDark 不归本插件管
+### 2. 暗色模式下「白色失效」：色块被系统 force dark 反色（0.2.0 已修复）
+
+真机实测（Redmi K30S Ultra / Android 10 / MIUI 12，**系统处于暗色模式**）：
+
+| 设置的颜色 | 修复前状态栏实际像素 | 修复后 |
+| --- | --- | --- |
+| `#FFFFFF` | **rgb(27,27,27) 近黑**（白色被完全反色） | rgb(228,232,227) 近白 ✅ |
+| `#FF5722` | rgb(216,50,0) = `#D83200`（被压暗） | **rgb(255,87,34) = `#FF5722` 精确原色** ✅ |
+
+此时 `getInfo()` 一直返回 `#FFFFFFFF`、`usingOverlay: true`——**色块本身是画出来了的**，是被系统渲染层改色。
+
+**根因**：Android Q（10）引入的 **force dark**——系统暗色模式下对 App 内的 View 做"智能反色"，
+MIUI 12 对第三方 App 默认启用。白色（高亮度）会被整体反转为近黑色，橙色等中间色被压暗，
+这与 WebView 层的 forceDark 是同一类机制，但作用在**原生 View 树**上。
+
+**修复**：给自绘的状态栏色块**单独**关闭 force dark（只影响这一条色块，不动全局）：
+
+```java
+if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    overlayView.setForceDarkAllowed(false);   // API 29+
+}
+```
+
+注意：不要用窗口级/主题级的 `android:forceDarkAllowed="false"`——那会关掉整个 App 的
+暗色适配；只对色块 View 关闭即可获得"设置什么颜色就显示什么颜色"的效果。
+
+### 3. 职责边界：WebView 内容的 forceDark 不归本插件管
 
 MIUI 12 会向 WebView 注入 forceDark（同一台机器上 `getComputedStyle(document.body).backgroundColor`
 算出来是 `rgb(255,255,255)`，屏幕却显示成近黑色）。这是**页面/WebView 层**的问题，不是状态栏的问题。
 
-本插件只负责「状态栏背景色 + 图标样式」两件事，因此**不处理** forceDark，也不会去调
-`setForceDarkAllowed()` 这类会影响整个窗口的全局开关。
-（开发过程中曾短暂加过这段代码用于定位问题，整理时已移除；如果以后需要处理，应该单独做一个
-WebView 相关的插件或配置项。）
+本插件只负责「状态栏背景色 + 图标样式」两件事，**不处理 WebView 的 forceDark**。
+（第 2 节对色块 View 关闭 force dark 是精准处理，不会影响 WebView 内容；
+如果页面颜色也有问题，请用 `capacitor-set-force-dark` 插件或页面层的 CSS 方案。）
 
-### 3. 其它已知边界
+### 4. 其它已知边界
 
 - 只在 Android 10（真机）和 Android 16（模拟器）上验证过；Android 15+ 走的是自绘色块路径，理论一致。
 - iOS 侧没有 MIUI 这类覆盖行为，`setStyle` 设置什么就是什么。

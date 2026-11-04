@@ -1,7 +1,7 @@
 {
-  "name": "capacitor-rotation-listener",
-  "version": "0.1.0",
-  "description": "Capacitor 屏幕旋转监听插件：读取当前方向 + rotationChanged 事件（可监听/解除）",
+  "name": "capacitor-native-rotation",
+  "version": "0.2.0",
+  "description": "Capacitor 原生旋转插件：读取/监听方向 + 主动锁定横屏或竖屏（视频全屏播放场景）",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",

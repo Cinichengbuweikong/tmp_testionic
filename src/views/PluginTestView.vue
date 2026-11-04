@@ -58,9 +58,15 @@
         <button @click="startRotationListen">开始监听</button>
         <button @click="stopRotationListen">停止监听</button>
       </div>
+      <div class="actions">
+        <button @click="lockLandscape">锁定横屏</button>
+        <button @click="lockPortrait">锁定竖屏</button>
+        <button @click="unlockRotation">解锁（自动旋转）</button>
+        <button @click="loadRotationLock">读取锁定状态</button>
+      </div>
       <p class="hint">
         开始监听后旋转设备（模拟器可用 adb emu rotate），output 会打印 rotationChanged 事件；
-        停止监听即解除（js 侧 handle.remove()）。
+        停止监听即解除。「锁定横屏」可用于视频全屏播放场景。
       </p>
     </section>
 
@@ -115,7 +121,7 @@ import { Capacitor } from '@capacitor/core';
 import { Fullscreen } from 'capacitor-fullscreen';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
-import { Rotation } from 'capacitor-rotation-listener';
+import { Rotation } from 'capacitor-native-rotation';
 import { SetForceDark } from 'capacitor-set-force-dark';
 import { SystemInfo } from 'capacitor-system-info';
 import { WebViewToEdge } from 'capacitor-webview-to-edge';
@@ -257,9 +263,30 @@ export default {
             results.ok = false;
             results.reason = `rotation check failed: ${JSON.stringify(rot)}`;
           }
+
+          // 方向锁定：锁横屏 → 读状态/当前方向 → 解锁（无论成败都要解锁）
+          const lockOn = await Rotation.lock({ orientation: 'landscape' });
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          const lockState = await Rotation.getLock();
+          const rotAfterLock = await Rotation.getRotation();
+          const unlockState = await Rotation.unlock();
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          results.rotationLock = { lockOn, lockState, rotAfterLock, unlockState };
+          const lockOk = !!lockOn && lockOn.locked === true && lockOn.orientation === 'landscape'
+            && !!lockState && lockState.locked === true && lockState.orientation === 'landscape'
+            && !!unlockState && unlockState.locked === false && unlockState.orientation === 'auto';
+          if (!lockOk) {
+            results.ok = false;
+            results.reason = `rotation lock check failed: ${JSON.stringify(results.rotationLock)}`;
+          }
         } catch (err) {
           results.ok = false;
           results.rotationError = String((err && err.message) || err);
+          try {
+            await Rotation.unlock();
+          } catch (ignored) {
+            // 尽力恢复自动旋转
+          }
         }
 
         // WebViewToEdge：开 → 读安全区 → 关
@@ -486,6 +513,42 @@ export default {
         this.print('Fullscreen 监听已取消', { listening: false });
       } catch (err) {
         this.error('Fullscreen.removeListener', err);
+      }
+    },
+
+    async lockLandscape() {
+      try {
+        const state = await Rotation.lock({ orientation: 'landscape' });
+        this.print('Rotation.lock(landscape) 成功', state);
+      } catch (err) {
+        this.error('Rotation.lock', err);
+      }
+    },
+
+    async lockPortrait() {
+      try {
+        const state = await Rotation.lock({ orientation: 'portrait' });
+        this.print('Rotation.lock(portrait) 成功', state);
+      } catch (err) {
+        this.error('Rotation.lock', err);
+      }
+    },
+
+    async unlockRotation() {
+      try {
+        const state = await Rotation.unlock();
+        this.print('Rotation.unlock 成功', state);
+      } catch (err) {
+        this.error('Rotation.unlock', err);
+      }
+    },
+
+    async loadRotationLock() {
+      try {
+        const state = await Rotation.getLock();
+        this.print('Rotation.getLock 成功', state);
+      } catch (err) {
+        this.error('Rotation.getLock', err);
       }
     },
 

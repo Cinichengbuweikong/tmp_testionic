@@ -1,7 +1,7 @@
 {
   "name": "capacitor-native-statusbar",
-  "version": "0.1.0",
-  "description": "可用的 Capacitor 状态栏插件：真正能生效的背景色 + 文字/图标亮暗样式（Android + iOS）",
+  "version": "0.2.0",
+  "description": "可用的 Capacitor 状态栏插件：真正能生效的背景色（含暗色模式 force dark 修复）+ 文字/图标亮暗样式（Android + iOS）",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",

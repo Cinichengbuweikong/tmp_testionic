@@ -7,11 +7,11 @@
 | 插件 | Android | iOS | Web | 说明 |
 | --- | --- | --- | --- | --- |
 | [capacitor-native-basics](./capacitor-native-basics/) | ✅ 已验证 | 🟡 已实现，待 CI 编译验证 | ✅ | 原生 Toast、设备信息、echo 自检（参考实现） |
-| [capacitor-native-statusbar](./capacitor-native-statusbar/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 状态栏背景色 + 图标亮暗（绕过 Android 15+/MIUI 的 setStatusBarColor 失效） |
+| [capacitor-native-statusbar](./capacitor-native-statusbar/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 状态栏背景色 + 图标亮暗（绕过 Android 15+/MIUI 的 setStatusBarColor 失效；0.2.0 修复暗色模式 force dark 导致白色失效） |
 | [capacitor-set-force-dark](./capacitor-set-force-dark/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 设置/关闭 WebView 的 forceDark，注入 data-theme/color-scheme 并派发主题变化事件 |
 | [capacitor-webview-to-edge](./capacitor-webview-to-edge/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 运行时开关：WebView 内容铺满整屏（延伸进状态栏），并提供安全区 insets |
 | [capacitor-system-info](./capacitor-system-info/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕/视口/安全区/系统栏/系统/WebView/内存/电量/网络 等 13 个独立只读 API |
-| [capacitor-rotation-listener](./capacitor-rotation-listener/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕旋转监听：getRotation + rotationChanged 事件（可监听/解除） |
+| [capacitor-native-rotation](./capacitor-native-rotation/) | ✅ 已验证 | 🔨 待 CI 验证 | ✅ | 屏幕方向：getRotation + rotationChanged 事件 + 主动锁定横屏/竖屏（视频全屏播放场景） |
 | [capacitor-fullscreen](./capacitor-fullscreen/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 沉浸式全屏：隐藏状态栏+导航栏，带状态事件（可监听/解除） |
 
 ## 新增插件的标准流程

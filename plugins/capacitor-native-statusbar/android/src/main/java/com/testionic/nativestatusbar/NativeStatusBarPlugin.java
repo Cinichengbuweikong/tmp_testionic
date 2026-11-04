@@ -3,6 +3,7 @@ package com.testionic.nativestatusbar;
 import android.app.Activity;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -310,6 +311,13 @@ public class NativeStatusBarPlugin extends Plugin {
             // DecorView 默认 clipToPadding=true，会把画在状态栏区域的子 View 裁掉
             root.setClipToPadding(false);
             overlayView = new View(getContext());
+            // 关键：暗色模式下 MIUI（以及 Android Q+ 的 force dark）会对 App 内的 View
+            // 做"智能反色"——白色色块会被反成近黑色（实测 #FFFFFF → rgb(27,27,27)），
+            // 橙色也会被压暗（#FF5722 → #D83200）。这里关掉该色块的 force dark，
+            // 让设置的颜色原样呈现。API 29（Android 10）起才有这个接口。
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                overlayView.setForceDarkAllowed(false);
+            }
             overlayView.setClickable(false);
             overlayView.setFocusable(false);
             root.addView(overlayView, buildOverlayParams(root));

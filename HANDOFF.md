@@ -69,7 +69,7 @@ D:\projs\testionic
 │  ├─ capacitor-fullscreen/         # 沉浸式全屏：隐藏状态栏+导航栏（带状态事件）
 │  ├─ capacitor-native-basics/      # 参考实现：echo / showToast / getDeviceInfo
 │  ├─ capacitor-native-statusbar/   # 状态栏背景色 + 图标亮暗
-│  ├─ capacitor-rotation-listener/  # 屏幕旋转监听（getRotation + rotationChanged 事件）
+│  ├─ capacitor-native-rotation/   # 屏幕方向：监听 + 主动锁定横屏/竖屏
 │  ├─ capacitor-set-force-dark/     # WebView forceDark 修复 + 主题注入
 │  ├─ capacitor-system-info/        # 屏幕/系统/安全区等 13 个独立只读 API
 │  ├─ capacitor-webview-to-edge/    # WebView 铺满整屏 + 安全区 insets
@@ -181,25 +181,41 @@ D:\projs\testionic
   读不到全局 appName → 从 application label 读；`Plugin.getAppId()` 是基类自带方法。
 - Android 权限：仅 `ACCESS_NETWORK_STATE`（普通权限，无弹窗）。
 
-### 5.6 capacitor-rotation-listener（屏幕旋转监听）
+### 5.6 capacitor-native-rotation（屏幕方向：监听 + 主动控制）
 
-- Android 包 `com.testionic.rotation`；iOS 包 `CapacitorRotationListener`；jsName `Rotation`；
-  npm 包名 `capacitor-rotation-listener`（用户指定）。
-- API：`getRotation()` → `RotationState { orientation, rotationDegrees, isPortrait, isLandscape }`；
-  `addListener('rotationChanged', cb)`（返回 handle，`handle.remove()` 解除）；
-  `removeAllListeners()`（桥内置）。**监听/解除监听不需要原生实现，桥本身支持**。
-- **Android**：事件源 = `Plugin.handleOnConfigurationChanged`（要求宿主 MainActivity 的
-  `android:configChanges` 含 orientation|screenSize，Capacitor 模板默认已含）；用「orientation +
-  rotationDegrees」双值去重，键盘/字体等非方向配置变化不派发。
-- **iOS**：`UIDevice.orientationDidChangeNotification`（load 时 beginGenerating，deinit 时注销）；
-  orientation 用 WebView 宽高比判断（faceUp 也可靠），角度由 UIDevice 映射
-  （portrait→0 / upsideDown→180 / landscapeRight→90 / landscapeLeft→270）；不用 iOS 26 已
-  obsoleted 的 `windowScene.interfaceOrientation`。
-- **Web**：`screen.orientation change` / `orientationchange` 模拟，同构派发事件。
-- 实测（2026-11-03）：模拟器 `settings put system user_rotation` 横屏→`landscape/90`、回竖屏→
-  `portrait/0`、**解除监听后再转不触发**；`adb emu rotate` → `landscape/270`；真机 MIUI 12 →
-  `landscape/90` 正常。
+- Android 包 `com.testionic.rotation`；iOS 包 `CapacitorNativeRotation`；jsName `Rotation`；
+  npm 包名 `capacitor-native-rotation`（**0.2.0 从 capacitor-rotation-listener 改名**）。
+- API：
+  - 监听：`getRotation()` → `RotationState { orientation, rotationDegrees, isPortrait, isLandscape }`；
+    `addListener('rotationChanged', cb)`（返回 handle，`handle.remove()` 解除）；`removeAllListeners()`（桥内置）。
+  - 控制：`lock({ orientation: 'landscape'|'portrait'|'auto' })`、`unlock()`、`getLock()`
+    → `OrientationLockState { orientation, locked }`。**视频「全屏播放」= lock(landscape) + Fullscreen.enable()**。
+- **Android**：事件源 `Plugin.handleOnConfigurationChanged`（要求 MainActivity 的 `android:configChanges`
+  含 orientation|screenSize，Capacitor 模板默认已含）；方向锁定用 `Activity.setRequestedOrientation`
+  （landscape→SENSOR_LANDSCAPE 支持左右两方向 / portrait→SENSOR_PORTRAIT / auto→UNSPECIFIED），
+  锁定引起的旋转同样走配置变化 → 自动派发 rotationChanged。
+- **iOS**：`UIDevice.orientationDidChangeNotification`（load beginGenerating、deinit 注销）；
+  orientation 用 WebView 宽高比、角度由 UIDevice 映射；锁定改
+  `CAPBridgeViewController.supportedOrientations`（public 可写）+ iOS16 的
+  `setNeedsUpdateOfSupportedInterfaceOrientations()` + `requestGeometryUpdate()`，
+  iOS15 用 `UIDevice` KVC + `attemptRotationToDeviceOrientation()`；
+  解锁时把 supportedOrientations 还原成进入前记录值。不用 iOS 26 已 obsoleted 的 `interfaceOrientation`。
+- **Web**：`screen.orientation` change 派发事件；锁定用 `screen.orientation.lock()/unlock()`
+  （浏览器要求页面全屏且支持该 API，否则 reject）。
+- 实测（2026-11-04 真机 MIUI 12）：`lock(landscape)` → 返回 locked:true、屏幕真实横屏
+  （截图 2400×1080、getRotation→landscape/90）；`unlock()` → 回竖屏 portrait/0。
+  旋转事件实测（模拟器 + 真机）：`landscape/90` ↔ `portrait/0`，解除监听后不再触发。
 - 坑：`JSObject.getInt(String,int)` 不存在（org.json 只有单参），要用 `optInt(name, default)`。
+
+### 5.6b capacitor-native-statusbar（0.2.0 修复：暗色模式白色失效）
+
+- **现象**：MIUI 12 暗色模式下 `setBackgroundColor('#FFFFFF')` 后 `getInfo()` 返回 #FFFFFFFF、
+  `usingOverlay:true`，但状态栏实际像素是 **rgb(27,27,27) 近黑**；橙色 #FF5722 也被压成 #D83200。
+- **根因**：Android Q+ 的 **force dark**（暗色模式对 App 内 View 智能反色），MIUI 12 对第三方 App 生效；
+  色块是普通 View，被系统反色。与 WebView 的 forceDark 是两回事（作用在原生 View 树）。
+- **修复**：给自绘色块单独关闭 force dark（`overlayView.setForceDarkAllowed(false)`，API 29+），
+  不动全局主题/窗口。**不要**用 `android:forceDarkAllowed="false"` 关整个 App。
+- **实测**：修复后 白色→rgb(228,232,227)（近白，取样含图标）、橙色→**rgb(255,87,34) 精确 #FF5722** ✅
 
 ### 5.7 capacitor-fullscreen（沉浸式全屏）
 
@@ -375,23 +391,18 @@ npm run build
 
 ## 10. 当前状态 / 未完成事项
 
-- ✅ 已推送至 `4029ff5`：capacitor-system-info **iOS CI 全绿**（iPhone 17 Pro 模拟器，13 个 API
-  全部通过 autotest 断言）；Android 真机（MIUI 手势模式）+ 模拟器实测通过、冒烟全绿。
-  插件 README 已含全部 API 的详细文档（功能/限制/返回值字段表/实测数据）。
-- 🔨 新增 capacitor-rotation-listener（屏幕旋转监听）：**iOS CI 全绿**（acc1a45），Android 双端
-  实测事件派发/解除监听正常、冒烟全绿（详见 5.6 节）。
-- ✅ capacitor-system-info `getCutoutInfo()` 增强（960f52a，iOS CI 全绿）：rect 增加
-  width/height，新增 centerPx/centerCss（主挖孔中心）；README 讲清「矩形坐标 vs 到边距离」
-  「安全区矩形贴边 ≠ 挖孔贴边」「横屏坐标系 2400×1080」。
-- 🔨 新增 capacitor-fullscreen（沉浸式全屏）：**iOS CI 全绿**（59a9e64），Android 双端实测
-  （截图确认状态栏/导航栏消失、退出恢复）+ 冒烟全绿（详见 5.7 节）。
+- ✅ capacitor-system-info（13 个独立只读 API）：iOS CI 全绿；Android 双端实测通过。
+  `getCutoutInfo()` 已增强（width/height + centerPx/centerCss，960f52a）。
+- ✅ capacitor-fullscreen（沉浸式全屏）：iOS CI 全绿（59a9e64）；Android 双端截图验证通过。
+- ✅ capacitor-native-rotation **0.2.0**（原 capacitor-rotation-listener 改名）：新增
+  `lock/unlock/getLock` 主动方向控制（视频全屏播放场景）。真机实测：lock(landscape) → 横屏
+  （截图 2400×1080、rotation landscape/90）；unlock → 竖屏 portrait/0。iOS CI 待跑。
+- ✅ capacitor-native-statusbar **0.2.0**：修复暗色模式 force dark 导致白色失效/橙色偏暗——
+  给自绘色块单独 `setForceDarkAllowed(false)`；实测 白色→rgb(228,232,227)、橙色→精确 #FF5722。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
-- 真机（`32e93a6d`）与模拟器（`emulator-5554`）均在运行；真机为 MIUI 手势模式（无底部导航栏）。
-- 用户提到「还有一件更重要的事要在别的对话做」；本仓库的插件工作可继续（做新插件 / 修 MIUI 遗留项）。
-- 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）；statusbar 插件在 MIUI 上颜色略偏深（约 #D83200 vs #FF5722，未深究）。
-- 用户提到「还有一件更重要的事要在别的对话做」；本仓库的插件工作可继续（做新插件 / 修 MIUI 遗留项）。
-- 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）；statusbar 插件在 MIUI 上颜色略偏深（约 #D83200 vs #FF5722，未深究）。
+- 真机（`32e93a6d`）为 MIUI 手势模式（无底部导航栏）；模拟器（`emulator-5554`）按需启动。
+- 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）。
 
 ## 11. 新对话快速恢复 checklist
 

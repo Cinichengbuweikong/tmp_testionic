@@ -3,11 +3,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "CapacitorRotationListener",
+    name: "CapacitorNativeRotation",
     platforms: [.iOS(.v15)],
     products: [
         .library(
-            name: "CapacitorRotationListener",
+            name: "CapacitorNativeRotation",
             targets: ["RotationPlugin"])
     ],
     dependencies: [

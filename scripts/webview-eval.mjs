@@ -67,7 +67,8 @@ const response = await Promise.race([
   }),
   new Promise((_, reject) => {
     // 防止 WebView 进程被杀 / 页面卡死时一直挂着（注意不要 unref，否则事件循环空了会提前退出）
-    setTimeout(() => reject(new Error('CDP evaluate timeout (30s)')), 30000);
+    // 冒烟脚本（smoke-test.js）步骤越来越多，执行时间已超过 30s，这里放宽到 120s
+    setTimeout(() => reject(new Error('CDP evaluate timeout (120s)')), 120000);
   }),
 ]).catch((err) => {
   console.error(String(err && err.message ? err.message : err));

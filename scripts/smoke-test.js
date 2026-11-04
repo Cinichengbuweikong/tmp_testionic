@@ -46,10 +46,15 @@
   // SystemInfo：读一次综合信息
   out.systemInfo = await click('读取系统信息');
 
-  // Rotation：读状态 → 开始监听 → 停止监听
+  // Rotation：读状态 → 开始监听 → 停止监听 → 方向锁定
   out.rotationInfo = await click('读取旋转状态');
   out.rotationListenStart = await click('开始监听');
   out.rotationListenStop = await click('停止监听');
+  out.rotationLockLandscape = await click('锁定横屏');
+  await sleep(700);
+  out.rotationLockState = await click('读取锁定状态');
+  out.rotationUnlock = await click('解锁（自动旋转）');
+  out.rotationLockStateAfterUnlock = await click('读取锁定状态');
 
   // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
   await click('强制暗色');
@@ -77,7 +82,7 @@
   out.fullscreenListenStop = await click('取消全屏监听');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -110,6 +115,12 @@
   }
   if (!out.rotationListenStop.includes('监听已停止')) {
     failures.push('rotationListenStop');
+  }
+  if (!out.rotationLockState.includes('"locked": true') || !out.rotationLockState.includes('"orientation": "landscape"')) {
+    failures.push('rotationLockLandscape');
+  }
+  if (!out.rotationLockStateAfterUnlock.includes('"orientation": "auto"')) {
+    failures.push('rotationUnlock');
   }
   if (!out.fullscreenStateOn.includes('"fullscreen": true')) {
     failures.push('fullscreenOn');
