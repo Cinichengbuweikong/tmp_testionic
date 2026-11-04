@@ -396,7 +396,9 @@ npm run build
 - ✅ capacitor-fullscreen（沉浸式全屏）：iOS CI 全绿（59a9e64）；Android 双端截图验证通过。
 - ✅ capacitor-native-rotation **0.2.0**（原 capacitor-rotation-listener 改名）：新增
   `lock/unlock/getLock` 主动方向控制（视频全屏播放场景）。真机实测：lock(landscape) → 横屏
-  （截图 2400×1080、rotation landscape/90）；unlock → 竖屏 portrait/0。iOS CI 待跑。
+  （截图 2400×1080、rotation landscape/90）；unlock → 竖屏 portrait/0。**iOS CI 全绿**（65eac4c）。
+  坑：iOS 的 `requestGeometryUpdate` 是 **UIWindowScene** 的方法（走 `view.window?.windowScene`），
+  不是 UIViewController 的。
 - ✅ capacitor-native-statusbar **0.2.0**：修复暗色模式 force dark 导致白色失效/橙色偏暗——
   给自绘色块单独 `setForceDarkAllowed(false)`；实测 白色→rgb(228,232,227)、橙色→精确 #FF5722。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
