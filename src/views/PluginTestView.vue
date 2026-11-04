@@ -88,6 +88,28 @@
     </section>
 
     <section class="card">
+      <h2>KeyboardAvoiding</h2>
+      <div class="actions">
+        <button @click="enableKeyboardAvoid">开启避让</button>
+        <button @click="disableKeyboardAvoid">关闭避让</button>
+        <button @click="loadKeyboardState">读取键盘状态</button>
+      </div>
+      <div class="actions">
+        <button @click="startKeyboardListen">监听键盘</button>
+        <button @click="stopKeyboardListen">停止键盘监听</button>
+      </div>
+      <input
+        class="kb-input"
+        type="text"
+        placeholder="点这里弹出软键盘测试"
+      />
+      <p class="hint">
+        点输入框弹出键盘后，output 会打印 keyboardChanged 事件（含键盘高度）；开启避让时
+        WebView 会自动缩到键盘上方。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>WebViewToEdge</h2>
       <div class="actions">
         <button @click="setToEdge(true)">铺满整屏</button>
@@ -119,6 +141,7 @@
 <script>
 import { Capacitor } from '@capacitor/core';
 import { Fullscreen } from 'capacitor-fullscreen';
+import { KeyboardAvoiding } from 'capacitor-keyboard-avoiding';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
 import { Rotation } from 'capacitor-native-rotation';
@@ -134,6 +157,7 @@ export default {
       output: '',
       rotationHandle: null,
       fullscreenHandle: null,
+      keyboardHandle: null,
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
         { label: '绿 #4CAF50', value: '#4CAF50' },
@@ -287,6 +311,34 @@ export default {
           } catch (ignored) {
             // 尽力恢复自动旋转
           }
+        }
+
+        // KeyboardAvoiding：状态结构 + 开关 + 监听/解除（不依赖真实键盘）
+        try {
+          const kbInitial = await KeyboardAvoiding.getState();
+          const kbOn = await KeyboardAvoiding.enable();
+          const kbState = await KeyboardAvoiding.getState();
+          const kbHandle = await KeyboardAvoiding.addListener('keyboardChanged', () => {});
+          const kbHasHandle = !!kbHandle && typeof kbHandle.remove === 'function';
+          await kbHandle.remove();
+          const kbOff = await KeyboardAvoiding.disable();
+          results.keyboardAvoiding = { initial: kbInitial, on: kbOn, state: kbState, off: kbOff, hasHandle: kbHasHandle };
+          const kbOk = !!kbInitial
+            && typeof kbInitial.visible === 'boolean'
+            && typeof kbInitial.height === 'number'
+            && typeof kbInitial.viewportHeight === 'number'
+            && kbInitial.viewportHeight > 0
+            && !!kbOn && kbOn.autoAvoid === true
+            && !!kbState && kbState.autoAvoid === true
+            && !!kbOff && kbOff.autoAvoid === false
+            && kbHasHandle;
+          if (!kbOk) {
+            results.ok = false;
+            results.reason = `keyboard-avoiding check failed: ${JSON.stringify(results.keyboardAvoiding)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.keyboardAvoidingError = String((err && err.message) || err);
         }
 
         // WebViewToEdge：开 → 读安全区 → 关
@@ -552,6 +604,62 @@ export default {
       }
     },
 
+    async enableKeyboardAvoid() {
+      try {
+        const state = await KeyboardAvoiding.enable();
+        this.print('KeyboardAvoiding.enable 成功', state);
+      } catch (err) {
+        this.error('KeyboardAvoiding.enable', err);
+      }
+    },
+
+    async disableKeyboardAvoid() {
+      try {
+        const state = await KeyboardAvoiding.disable();
+        this.print('KeyboardAvoiding.disable 成功', state);
+      } catch (err) {
+        this.error('KeyboardAvoiding.disable', err);
+      }
+    },
+
+    async loadKeyboardState() {
+      try {
+        const state = await KeyboardAvoiding.getState();
+        this.print('KeyboardAvoiding.getState 成功', state);
+      } catch (err) {
+        this.error('KeyboardAvoiding.getState', err);
+      }
+    },
+
+    async startKeyboardListen() {
+      try {
+        if (this.keyboardHandle) {
+          this.print('KeyboardAvoiding 监听', { status: '已在监听中，忽略重复开始' });
+          return;
+        }
+        this.keyboardHandle = await KeyboardAvoiding.addListener('keyboardChanged', (state) => {
+          this.print('keyboardChanged 事件', state);
+        });
+        this.print('KeyboardAvoiding 监听已开始', { listening: true });
+      } catch (err) {
+        this.error('KeyboardAvoiding.addListener', err);
+      }
+    },
+
+    async stopKeyboardListen() {
+      try {
+        if (!this.keyboardHandle) {
+          this.print('KeyboardAvoiding 监听', { status: '当前没有监听' });
+          return;
+        }
+        await this.keyboardHandle.remove();
+        this.keyboardHandle = null;
+        this.print('KeyboardAvoiding 监听已停止', { listening: false });
+      } catch (err) {
+        this.error('KeyboardAvoiding.removeListener', err);
+      }
+    },
+
     async loadRotation() {
       try {
         const state = await Rotation.getRotation();
@@ -667,6 +775,18 @@ export default {
 .actions button {
   font-size: 0.85rem;
   padding: 0.35rem 0.7rem;
+}
+
+.kb-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0.5rem 0 0.25rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 1rem;
+  border-radius: 6px;
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
 }
 
 .output {

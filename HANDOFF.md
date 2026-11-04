@@ -1,7 +1,7 @@
 # 项目上下文存档（HANDOFF）
 
 > **用途**：这份文件保存了截至 2026-11-03 本对话中掌握的所有关键信息——本机环境、项目结构、
-> 已完成的 7 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
+> 已完成的 8 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
 ---
@@ -67,6 +67,7 @@ targetCompatibility JavaVersion.VERSION_21
 D:\projs\testionic
 ├─ plugins/                      # 7 个自研插件（每个都是独立 npm 包）
 │  ├─ capacitor-fullscreen/         # 沉浸式全屏：隐藏状态栏+导航栏（带状态事件）
+│  ├─ capacitor-keyboard-avoiding/  # 键盘避让：keyboardChanged 事件 + 可选自动避让
 │  ├─ capacitor-native-basics/      # 参考实现：echo / showToast / getDeviceInfo
 │  ├─ capacitor-native-statusbar/   # 状态栏背景色 + 图标亮暗
 │  ├─ capacitor-native-rotation/   # 屏幕方向：监听 + 主动锁定横屏/竖屏
@@ -77,7 +78,7 @@ D:\projs\testionic
 ├─ src/
 │  ├─ main.js                     # VITE_AUTOTEST=1 时自动跳 /plugin-test?autotest=1
 │  ├─ router/index.js             # hash 路由：/ /about /plugin-test
-│  ├─ views/PluginTestView.vue    # 「插件自检」页：7 个插件的按钮 + autotest 逻辑
+│  ├─ views/PluginTestView.vue    # 「插件自检」页：8 个插件的按钮 + autotest 逻辑
 │  └─ assets/base.css             # 深色配色（⚠️ 有未提交改动，见第 10 节）
 ├─ scripts/
 │  ├─ deploy-android.ps1          # 一键构建+安装+启动（JBR21，可 -Device 指定设备）
@@ -236,6 +237,31 @@ D:\projs\testionic
   `disable()` 后完整恢复；冒烟测试双端全 PASS（进入/退出/读取/监听/取消）。
 - 坑：`androidx.core:core` 在 `capacitor-android` 里是 `implementation` 依赖**不传递**，
   插件必须显式声明 `implementation "androidx.core:core:$androidxCoreVersion"`。
+
+### 5.8 capacitor-keyboard-avoiding（键盘避让）
+
+- Android 包 `com.testionic.keyboardavoiding`；iOS 包 `CapacitorKeyboardAvoiding`；
+  jsName `KeyboardAvoiding`；npm 包名 `capacitor-keyboard-avoiding`。
+- API：`enable / disable / setEnabled({enabled}) / isEnabled() / getState()` →
+  `KeyboardState { visible, height(css), heightPx, viewportHeight(css), viewportHeightPx,
+  autoAvoid, animationDuration }`；`addListener('keyboardChanged')`、`handle.remove()` 解除。
+- **核心设计**：
+  - 纯监听（默认）：只派发事件，不改布局；
+  - 自动避让（enable）：Android **补差**（不盲加）、iOS **contentInset**（WKWebView 默认不避让）。
+- **Android 实测关键结论**：真机 MIUI 12 键盘弹出后 WebView 2310px→1382px、innerHeight 840→503css
+  （键盘 928px/337css）——**系统已自动避让**，所以 autoAvoid 必须"补差"：
+  用 `getRootWindowInsets().getInsets(Type.ime())` 读高度（**不注册** listener，避免与
+  webview-to-edge/SystemBars 抢），用 WebView `bottomMargin` 补齐 deficit（反推原始底部计算，幂等不抖动）。
+  键盘状态靠 `ViewTreeObserver.OnGlobalLayoutListener` 触发检测。
+- **iOS**：`keyboardWillChangeFrameNotification` / `keyboardWillHideNotification`，
+  键盘高度 = WebView 底部与 keyboardFrameEnd 顶边的重叠；autoAvoid 用
+  `scrollView.contentInset.bottom`（关闭时还原基线 inset）；iOS point = CSS px。
+- **Web**：`visualViewport` 差值计算键盘高度（<80px 视为浏览器 UI 折叠），同构派发事件。
+- 实测（2026-11-04 真机）：键盘弹出事件 `{visible:true, height:337.45css/928px, viewportHeight:502.55css}`；
+  键盘已弹出时 enable → innerHeight 保持 503（**无双重缩小**）✅；关闭键盘事件
+  `{visible:false, height:0, viewportHeight:840}`、事件总数 2；disable 恢复 autoAvoid:false。
+- 坑：Android 模拟器默认"硬件键盘"模式下软键盘不弹（需 `settings put secure
+  show_ime_with_hard_keyboard 1`，且 AOSP 模拟器仍可能不稳定）→ 键盘相关验证以**真机**为准。
 
 ## 6. Capacitor 8 插件开发手册（要点）
 
@@ -401,6 +427,9 @@ npm run build
   不是 UIViewController 的。
 - ✅ capacitor-native-statusbar **0.2.0**：修复暗色模式 force dark 导致白色失效/橙色偏暗——
   给自绘色块单独 `setForceDarkAllowed(false)`；实测 白色→rgb(228,232,227)、橙色→精确 #FF5722。
+- 🔨 capacitor-keyboard-avoiding（键盘避让，新增）：真机实测键盘事件与补差逻辑全通过
+  （键盘弹出 height 337.45css/928px、enable 无双重缩小、关闭事件正常）；双端冒烟 PASS；
+  iOS CI 待验证（详见 5.8 节）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
 - 真机（`32e93a6d`）为 MIUI 手势模式（无底部导航栏）；模拟器（`emulator-5554`）按需启动。

@@ -56,6 +56,14 @@
   out.rotationUnlock = await click('解锁（自动旋转）');
   out.rotationLockStateAfterUnlock = await click('读取锁定状态');
 
+  // KeyboardAvoiding：读状态 → 开启避让 → 读状态 → 关闭避让 → 监听/停止监听
+  out.keyboardState = await click('读取键盘状态');
+  out.keyboardAvoidOn = await click('开启避让');
+  out.keyboardStateOn = await click('读取键盘状态');
+  out.keyboardAvoidOff = await click('关闭避让');
+  out.keyboardListenStart = await click('监听键盘');
+  out.keyboardListenStop = await click('停止键盘监听');
+
   // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
   await click('强制暗色');
   await sleep(400);
@@ -82,7 +90,7 @@
   out.fullscreenListenStop = await click('取消全屏监听');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -121,6 +129,18 @@
   }
   if (!out.rotationLockStateAfterUnlock.includes('"orientation": "auto"')) {
     failures.push('rotationUnlock');
+  }
+  if (!out.keyboardState.includes('"visible": false') || !out.keyboardState.includes('"autoAvoid": false')) {
+    failures.push('keyboardState');
+  }
+  if (!out.keyboardStateOn.includes('"autoAvoid": true')) {
+    failures.push('keyboardAvoidOn');
+  }
+  if (!out.keyboardListenStart.includes('监听已开始')) {
+    failures.push('keyboardListenStart');
+  }
+  if (!out.keyboardListenStop.includes('监听已停止')) {
+    failures.push('keyboardListenStop');
   }
   if (!out.fullscreenStateOn.includes('"fullscreen": true')) {
     failures.push('fullscreenOn');
