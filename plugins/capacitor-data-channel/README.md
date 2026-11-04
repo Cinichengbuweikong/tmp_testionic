@@ -253,6 +253,44 @@ const res = await fetch(`${ch.baseUrl}/upload?path=big.bin`, {
 });
 ```
 
+### 方式 C2：把内存数据包装成 File 再上传（可降低"上传阶段"内存，但躲不掉生成阶段峰值）
+
+前端生成的数据（ArrayBuffer/Blob）可以先包装成 `File`/`Blob` 再上传：
+
+```ts
+const buf = new Uint8Array(100 * 1024 * 1024); // 数据生成阶段：这一步本身就占 100MB
+// ...在这里生成数据...
+
+// 包装成 Blob/File（Chromium 会把大 Blob spool 到磁盘临时存储）
+const blob = new Blob([buf], { type: 'application/octet-stream' });
+const file = new File([buf], 'generated.bin', { type: 'application/octet-stream' });
+
+// 上传（传 file 或 blob 都可以）
+const res = await fetch(`${ch.baseUrl}/upload?path=generated.bin`, {
+  method: 'PUT',
+  headers: { Authorization: `Bearer ${ch.token}` },
+  body: file, // 或 body: blob
+});
+```
+
+**实测（真机，100MB）**：
+
+| 方式 | 耗时 | 速度 | 上传期间 RSS 增量 |
+| --- | --- | --- | --- |
+| `body: file`（`new File([buf])`） | 698ms | **143 MB/s** | **+0.6 MB**（上传阶段极低） |
+| `body: uint8array`（直接传） | 912ms | 110 MB/s | +275.3 MB |
+
+**怎么解读**：
+- **上传阶段**确实做到了极低内存：Chromium 会把大 Blob spool 到磁盘临时文件，上传时流式读取，
+  所以上传期间几乎不占内存，速度还更快（143 MB/s）。
+- **但数据生成阶段的内存躲不掉**：`new Uint8Array(100MB)` 那一刻数据就在 JS 堆里；
+  如果前端必须"一次性完整生成"数据，峰值仍然是数据本身大小。
+- **结论**：
+  - 前端能**分块生成**的数据 → 用方式 B（分块，内存恒定 + 40MB 级别）；
+  - 数据**必须整体生成**、但生成后可以立即释放引用 → 用本方式（C2）包装成 File/Blob，
+    上传阶段内存极低；
+  - **用户从磁盘选的文件**（`<input type="file">`）→ 用方式 A（最优，+4.2MB）。
+
 ### 下载：优先让浏览器直接消费（零 JS 内存）
 
 ```html
@@ -350,6 +388,7 @@ const head = new Uint8Array(await res.arrayBuffer());
 | --- | --- |
 | 上传 10MB | **179ms（≈56 MB/s）**，`bytes/size` 正确 |
 | 上传 105.8MB（File 直接上传） | **806ms（≈131 MB/s）**，RSS 峰值 **+4.2MB** |
+| 上传 100MB（`new File([buf])` 包装后上传） | **698ms（143 MB/s）**，上传阶段 RSS **+0.6MB**（生成阶段峰值仍在） |
 | 上传 100MB（分块 8MB×13） | 920ms（109 MB/s），RSS 峰值 **+42.8MB** |
 | 上传 100MB（一次性 Uint8Array） | 912ms（110 MB/s），RSS 峰值 **+275.3MB** |
 | 下载 100MB | 353ms（≈285 MB/s），头/中/尾校验一致 |
