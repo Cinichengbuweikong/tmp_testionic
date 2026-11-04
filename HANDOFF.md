@@ -262,6 +262,12 @@ D:\projs\testionic
   `{visible:false, height:0, viewportHeight:840}`、事件总数 2；disable 恢复 autoAvoid:false。
 - 坑：Android 模拟器默认"硬件键盘"模式下软键盘不弹（需 `settings put secure
   show_ime_with_hard_keyboard 1`，且 AOSP 模拟器仍可能不稳定）→ 键盘相关验证以**真机**为准。
+- **重要（用户实测疑问）**：真机上 enable/disable 看起来"都避让了"是**正常现象**——
+  ① Capacitor 模板 `windowSoftInputMode=adjustResize` 让**系统自己缩窗口**；
+  ② `webview-to-edge` 又会把 IME 高度设成 DecorView 底部 padding。
+  本插件的 disable 只是"不再额外加"，撤销不了这两层；要彻底关掉得改宿主
+  `adjustNothing` 并同步调整其它插件（不属于本插件职责）。README 已写明，
+  并给出验证插件是否工作的方法（看 autoAvoid 字段 / 事件的 height+viewportHeight）。
 
 ## 6. Capacitor 8 插件开发手册（要点）
 

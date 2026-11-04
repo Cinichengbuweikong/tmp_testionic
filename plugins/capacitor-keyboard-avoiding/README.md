@@ -162,6 +162,36 @@ addListener(
 | `disable()` | `autoAvoid:false`，布局恢复正常 ✅ |
 | 冒烟测试（真机 + 模拟器） | 读取状态 / 开启避让 / 关闭避让 / 监听 / 停止监听 全 PASS ✅ |
 
+## 常见疑问：为什么真机上「开启/关闭避让」看起来没有区别？
+
+这是**正常现象，不是插件失效**。在本项目真机（MIUI 12 / Android 10）上用「显示布局边界」观察，
+enable 与 disable 状态下键盘弹出时 WebView 都会被顶到键盘上方，原因有两层：
+
+1. **系统层**：Capacitor 模板的 `windowSoftInputMode` 是 `adjustResize`，键盘弹出时**Android 系统自己
+   就把窗口内容缩到键盘上方**（实测 WebView 2310px → 1382px）；
+2. **项目层**：`capacitor-webview-to-edge` 插件在 insets 分发时把 IME 高度作为底部 padding
+   （`paddingBottom = ime.bottom`），即便系统不缩窗口它也会避让。
+
+本插件的 `disable()` 语义是"**不再额外加避让**"，它无法撤销上面两个已经存在的行为
+（那属于窗口配置 / 其它插件的职责）。
+
+| 状态 | WebView 表现 | 原因 |
+| --- | --- | --- |
+| `autoAvoid: false`（disable） | 仍被键盘顶起 | 系统 adjustResize + to-edge 的 IME padding |
+| `autoAvoid: true`（enable） | 仍被键盘顶起（**不会双重缩小**） | 插件检测到系统已让出空间 → 补差量 0 → 不加 margin |
+
+**如何确认插件真的在工作**：
+1. `getState().autoAvoid` 是否随 enable/disable 正确切换（true/false）；
+2. `keyboardChanged` 事件的 `height` / `viewportHeight` 是否与屏幕实际一致
+   （真机实测 height 337.45css/928px、viewportHeight 502.55css/1382px）；
+3. 想看 autoAvoid 的"布局差异"，需要一个**系统与其它插件都没有处理避让**的环境
+   （例如纯 edge-to-edge 且 `SystemBars` 的 insetsHandling 不处理、也未启用 to-edge），
+   此时 disable 会让 WebView 延伸到键盘下方、enable 会把缺口补齐。
+
+**想彻底关闭系统级避让**（键盘直接叠在内容上）：需修改宿主
+`android:windowSoftInputMode="adjustNothing"`（并同步调整其它插件的 IME 处理），
+这属于应用/窗口配置，不是本插件运行时可单独控制的。
+
 ## 开发
 
 ```bash
