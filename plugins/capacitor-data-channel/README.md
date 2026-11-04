@@ -1,4 +1,4 @@
-# capacitor-data-channel
+﻿# capacitor-data-channel
 
 原生 ↔ WebView **二进制数据通道**：在原生侧启动一个**只监听 127.0.0.1 的 HTTP Server**，
 让 WebView 用标准 `fetch` / `<video>` / `<img>` 直接收发**原始二进制**，绕开 Capacitor 桥的
@@ -125,192 +125,145 @@ start/stop 时派发，载荷同 `ChannelInfo`。
 
 ## 大文件传输最佳实践（重点）
 
-> **结论先行**：实际开发中，前端要上传的数据**绝大多数是程序生成的**（视频帧、编码结果、导出的文件、
-> 音频包、备份包……），而不是用户从磁盘里选的文件。所以：
->
-> **首选方案是「分块上传 + 复用缓冲区」（方式 B）**——内存占用恒定在 ~40MB 量级，速度 109 MB/s，
-> 且天然支持断点续传。`File` 直传虽然内存最省（+4.2MB），但**只适用于数据本来就在磁盘上的场景**
-> （用户选文件上传，例如相册视频），不能当通用方案。
+### 先看清两个最常见的真实场景
 
-三种上传方式都可用，但**内存占用差异巨大**。以下为真机实测（Redmi K30S / MIUI 12 / Android 10，App 进程 RSS 峰值增量）：
+真实项目里，数据流动主要是这两个方向（**不是**"选个文件后原样传到别处"）：
 
-| 方式 | 文件大小 | 耗时 | 速度 | RSS 峰值增量 | 结论 |
-| --- | --- | --- | --- | --- | --- |
-| **B. 分块上传**（8MB/块，复用缓冲 + `append=1`） | 100MB | 920ms | 109 MB/s | +42.8 MB | ✅ **首选**：前端生成数据的通用解法、内存恒定 |
-| **A. File 直接上传**（`<input type="file">` 的磁盘文件） | 105.8MB | 806ms | **131 MB/s** | **+4.2 MB** | ⚠️ 最省，但**仅限数据本来就在磁盘**（用户选文件） |
-| **C. 一次性 `Uint8Array(100MB)`** | 100MB | 912ms | 110 MB/s | +275.3 MB | ❌ 不推荐：内存峰值高 |
-| **C2. 整体生成后包装成 `File`/`Blob`** | 100MB | 698ms | **143 MB/s** | 上传阶段 +0.6 MB（生成阶段峰值仍在） | 🟡 备选：数据必须整体生成时 |
-
-> - **分块方式**用同一个 8MB 缓冲区循环使用，内存占用恒定；
-> - **File 直传**省内存是因为磁盘引用流式读取，但现实中前端数据大多**不在磁盘上**；
-> - **一次性方式**的内存峰值来自 JS 数据本身 + Chromium 网络栈缓冲（Android WebView 与 App 同进程）；
-> - **C2 包装 File** 上传阶段极低（Chromium 把大 Blob spool 到磁盘），但数据生成那一刻的峰值躲不掉。
-
-### 怎么选（按数据来源）
-
-| 数据来源 | 推荐方式 | 典型场景 |
+| 方向 | 场景 | 推荐做法 |
 | --- | --- | --- |
-| **前端程序生成**（可分块产出） | **B. 分块 + 复用缓冲** | 视频帧、编码结果、音频包、PDF/Excel 导出、备份打包 |
-| **前端程序生成**（必须整体先生成） | **C2. 包装成 File/Blob 再传** | 第三方库只能一次性产出完整 ArrayBuffer/Blob |
-| **磁盘上已有的文件**（用户选择） | **A. File 直传** | 相册选视频、文件管理器选文件、拍照/录音结果 |
-| 小文件（< 几 MB） | C. 直接传 | 小图标、配置、缩略图 |
+| **读：磁盘/原生 → WebView** | 用户选择文件，把内容读进 WebView 处理（预览、解码、编辑、解析） | **分块加载**：`file.slice()` 逐块读，每块用完即释放 |
+| **写：WebView → 磁盘/原生** | WebView 生成的数据写回磁盘（导出、保存、编码结果） | **分块 + 复用 buffer**：内存恒定、性能好 |
+| （少见）整体转发 | 用户选的文件**不做处理**，原样存到别处 | File 直传（最省，但场景少） |
 
-### 方式 A：File 直接上传（仅适用于磁盘文件）
+真机实测（Redmi K30S / MIUI 12 / Android 10，App 进程 RSS 峰值增量）：
 
-> ⚠️ **适用面有限**：只有数据**本来就在磁盘上**时才有这个效果。
-> 前端生成的 `new File([buffer])` **不属于**这一类（数据已在内存，见方式 C2）。
+| 方式 | 文件大小 | 耗时 | 速度 | RSS 峰值增量 |
+| --- | --- | --- | --- | --- |
+| 分块上传（8MB/块，复用缓冲 + `append=1`） | 100MB | 920ms | 109 MB/s | +42.8 MB |
+| File 直传（磁盘文件原样转发） | 105.8MB | 806ms | **131 MB/s** | **+4.2 MB** |
+| 一次性 `Uint8Array(100MB)` | 100MB | 912ms | 110 MB/s | +275.3 MB |
+| 整体生成后包装 `new File([buf])` | 100MB | 698ms | **143 MB/s** | 上传阶段 +0.6 MB（生成峰值仍在） |
 
-`<input type="file">` 拿到的 `File` 是**磁盘引用**，`fetch` 的 body 直接传它时
-Chromium 会边读边发，不会把整个文件读进内存（大视频也安全）。
+### 场景一（读）：用户选择文件 → 分块加载进 WebView
 
-```html
-<input id="fileInput" type="file" accept="video/*,image/*" />
-<button id="uploadBtn">上传</button>
-
-<script type="module">
-  import { DataChannel } from 'capacitor-data-channel';
-
-  const ch = await DataChannel.start();
-
-  document.getElementById('uploadBtn').onclick = async () => {
-    const file = document.getElementById('fileInput').files[0];
-    if (!file) return;
-
-    const res = await fetch(
-      `${ch.baseUrl}/upload?path=videos/${encodeURIComponent(file.name)}`,
-      {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${ch.token}` },
-        body: file, // ← 直接传 File，不要先 arrayBuffer()
-      },
-    );
-    console.log(await res.json()); // { path, bytes, size, appended: false }
-  };
-</script>
-```
-
-### 方式 B：分块上传（✅ 首选：前端生成数据的通用解法）
-
-核心两点：
-1. **复用同一个缓冲区**（不要每块都新建大数组）；
-2. 第 2 块起带 `append=1`。
-
-**子场景 B1：从 File/Blob 切片上传**（`Blob.slice` 是引用，不复制数据，内存也很低）
+**不要** `file.arrayBuffer()` 一次性读（100MB 文件 = 100MB 内存）。
+用 `Blob.slice` 分块读（slice 是引用，不复制数据）：
 
 ```ts
-import { DataChannel } from 'capacitor-data-channel';
+const file = input.files[0];
+const CHUNK = 4 * 1024 * 1024;
 
-const ch = await DataChannel.start();
-const CHUNK_SIZE = 8 * 1024 * 1024; // 建议 4~8MB
-
-async function uploadFileChunked(file: File, remotePath: string) {
-  let offset = 0;
-  let index = 0;
-  while (offset < file.size) {
-    const chunk = file.slice(offset, offset + CHUNK_SIZE); // 引用，不复制
-    const res = await fetch(
-      `${ch.baseUrl}/upload?path=${encodeURIComponent(remotePath)}${index === 0 ? '' : '&append=1'}`,
-      {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${ch.token}` },
-        body: chunk,
-      },
-    );
-    if (!res.ok) throw new Error(`chunk ${index} failed: HTTP ${res.status}`);
-    offset += chunk.size;
-    index += 1;
-  }
-  return { chunks: index, bytes: file.size };
+for (let offset = 0; offset < file.size; offset += CHUNK) {
+  const chunk = file.slice(offset, offset + CHUNK);        // 引用，不复制
+  const bytes = new Uint8Array(await chunk.arrayBuffer());  // 只有这一块进内存
+  await processChunk(bytes, offset);                        // 解码/解析/渲染
+  // 处理完 bytes 即可释放（下一轮循环覆盖引用）
 }
 ```
 
-**子场景 B2：上传 JS 生成的数据**（内存恒定：始终只有一个 8MB 缓冲）
+如果文件在 native 侧（data-channel 的 `rootPath` 里），用 **Range 分块下载**：
 
 ```ts
-import { DataChannel } from 'capacitor-data-channel';
+const CHUNK = 4 * 1024 * 1024;
+const info = await (await fetch(`${ch.baseUrl}/info?path=large.bin&token=${ch.token}`)).json();
 
+for (let offset = 0; offset < info.size; offset += CHUNK) {
+  const end = Math.min(offset + CHUNK - 1, info.size - 1);
+  const res = await fetch(`${ch.baseUrl}/download?path=large.bin&token=${ch.token}`, {
+    headers: { Range: `bytes=${offset}-${end}` },
+  });
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  await processChunk(bytes, offset);
+}
+```
+
+如果只是**播放/显示**（视频、图片、音频）：直接给 `<video>` / `<img>` 引用 URL，
+浏览器自己流式处理，**JS 侧零内存**：
+
+```html
+<video :src="`${ch.baseUrl}/download?path=videos/clip.mp4&token=${ch.token}`" controls></video>
+```
+
+### 场景二（写，首选）：WebView 生成数据 → 分块写回磁盘
+
+核心两点：**复用同一块缓冲区** + 第 2 块起带 `append=1`。
+
+```ts
 const ch = await DataChannel.start();
-const TOTAL_BYTES = 100 * 1024 * 1024; // 100MB
-const CHUNK_SIZE = 8 * 1024 * 1024;
-const buffer = new Uint8Array(CHUNK_SIZE); // 复用同一个缓冲区
-const chunkCount = Math.ceil(TOTAL_BYTES / CHUNK_SIZE);
+const CHUNK = 8 * 1024 * 1024;
+const buffer = new Uint8Array(CHUNK);          // 复用这一块，全程内存恒定
+const REMOTE = 'exports/video.mp4';
 
-let uploaded = 0;
-for (let i = 0; i < chunkCount; i += 1) {
-  const size = Math.min(CHUNK_SIZE, TOTAL_BYTES - uploaded);
-  // 这里模拟"生成第 i 块数据"：实际业务中可以是视频帧、音频包、编码结果等
-  fillChunk(buffer, size, i);
-
+let index = 0;
+while (hasMoreData()) {
+  const size = fillChunk(buffer, index);       // 生成第 index 块，返回实际字节数
   const res = await fetch(
-    `${ch.baseUrl}/upload?path=generated/data.bin${i === 0 ? '' : '&append=1'}`,
+    `${ch.baseUrl}/upload?path=${REMOTE}${index === 0 ? '' : '&append=1'}`,
     {
       method: 'PUT',
       headers: { Authorization: `Bearer ${ch.token}` },
-      body: buffer.subarray(0, size),
+      body: buffer.subarray(0, size),          // 只发这一块
     },
   );
-  if (!res.ok) throw new Error(`chunk ${i} failed: HTTP ${res.status}`);
-  uploaded += size;
-}
-
-function fillChunk(target: Uint8Array, size: number, index: number) {
-  for (let offset = 0; offset < size; offset += 65536) {
-    crypto.getRandomValues(target.subarray(offset, Math.min(offset + 65536, size)));
-  }
-  // 仅为了让每块内容不同
-  target[0] = index & 0xff;
+  if (!res.ok) throw new Error(`chunk ${index} failed: HTTP ${res.status}`);
+  index += 1;
 }
 ```
 
-### 方式 C：一次性上传（不推荐，仅小文件）
+> 实测：100MB 用这种方式内存峰值只 **+42.8MB**（一次性则是 +275.3MB），速度 109 MB/s。
+> 额外好处：`append=1` 天然支持**断点续传**（失败后从最后一成功块继续）。
+
+如果数据来自 File/Blob 切片（`Blob.slice` 也是引用，同样不复制）：
 
 ```ts
-// ⚠️ 100MB 数据会在 JS 堆 + Chromium 网络栈各占一份，App 进程峰值 +275MB
-const bytes = new Uint8Array(100 * 1024 * 1024);
-const res = await fetch(`${ch.baseUrl}/upload?path=big.bin`, {
+for (let offset = 0, index = 0; offset < file.size; offset += CHUNK, index += 1) {
+  const chunk = file.slice(offset, offset + CHUNK);
+  await fetch(
+    `${ch.baseUrl}/upload?path=${REMOTE}${index === 0 ? '' : '&append=1'}`,
+    { method: 'PUT', headers: { Authorization: `Bearer ${ch.token}` }, body: chunk },
+  );
+}
+```
+
+### 场景三（少见）：选文件后原样转发
+
+只有"用户选的文件**不做处理**、原样存到别处"时才用：
+
+```ts
+const file = document.getElementById('fileInput').files[0];
+await fetch(`${ch.baseUrl}/upload?path=${encodeURIComponent(file.name)}`, {
+  method: 'PUT',
+  headers: { Authorization: `Bearer ${ch.token}` },
+  body: file, // 磁盘引用，流式发送，内存几乎零增长
+});
+```
+
+### 其他情况
+
+**数据必须整体生成**（第三方库只能一次性产出完整 ArrayBuffer）→ 生成后立即包装成 Blob/File 上传，
+上传阶段内存极低：
+
+```ts
+let buf = await someLib.renderToArrayBuffer();  // 这一步无法避免占用 buf 大小
+const blob = new Blob([buf], { type: 'application/octet-stream' });
+buf = null;                                     // 尽快释放原始引用
+
+await fetch(`${ch.baseUrl}/upload?path=export.bin`, {
+  method: 'PUT',
+  headers: { Authorization: `Bearer ${ch.token}` },
+  body: blob,                                   // 上传阶段 +0.6MB（实测），速度 143 MB/s
+});
+```
+
+**小文件（< 几 MB）** → 直接传 `Uint8Array`/`ArrayBuffer` 即可，不必分块：
+
+```ts
+await fetch(`${ch.baseUrl}/upload?path=icons/a.png`, {
   method: 'PUT',
   headers: { Authorization: `Bearer ${ch.token}` },
   body: bytes,
 });
 ```
-
-### 方式 C2：把内存数据包装成 File 再上传（可降低"上传阶段"内存，但躲不掉生成阶段峰值）
-
-前端生成的数据（ArrayBuffer/Blob）可以先包装成 `File`/`Blob` 再上传：
-
-```ts
-const buf = new Uint8Array(100 * 1024 * 1024); // 数据生成阶段：这一步本身就占 100MB
-// ...在这里生成数据...
-
-// 包装成 Blob/File（Chromium 会把大 Blob spool 到磁盘临时存储）
-const blob = new Blob([buf], { type: 'application/octet-stream' });
-const file = new File([buf], 'generated.bin', { type: 'application/octet-stream' });
-
-// 上传（传 file 或 blob 都可以）
-const res = await fetch(`${ch.baseUrl}/upload?path=generated.bin`, {
-  method: 'PUT',
-  headers: { Authorization: `Bearer ${ch.token}` },
-  body: file, // 或 body: blob
-});
-```
-
-**实测（真机，100MB）**：
-
-| 方式 | 耗时 | 速度 | 上传期间 RSS 增量 |
-| --- | --- | --- | --- |
-| `body: file`（`new File([buf])`） | 698ms | **143 MB/s** | **+0.6 MB**（上传阶段极低） |
-| `body: uint8array`（直接传） | 912ms | 110 MB/s | +275.3 MB |
-
-**怎么解读**：
-- **上传阶段**确实做到了极低内存：Chromium 会把大 Blob spool 到磁盘临时文件，上传时流式读取，
-  所以上传期间几乎不占内存，速度还更快（143 MB/s）。
-- **但数据生成阶段的内存躲不掉**：`new Uint8Array(100MB)` 那一刻数据就在 JS 堆里；
-  如果前端必须"一次性完整生成"数据，峰值仍然是数据本身大小。
-- **结论**（与上面的选型表一致）：
-  - 前端能**分块生成**的数据 → 用方式 B（**首选**，内存恒定 + 40MB 级别）；
-  - 数据**必须整体生成**、但生成后可以立即释放引用 → 用本方式（C2）包装成 File/Blob，
-    上传阶段内存极低；
-  - **用户从磁盘选的文件**（`<input type="file">`）→ 用方式 A（+4.2MB，仅限该场景）。
 
 ### 下载：优先让浏览器直接消费（零 JS 内存）
 
