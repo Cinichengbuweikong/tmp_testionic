@@ -1,4 +1,4 @@
-﻿# capacitor-data-channel
+# capacitor-data-channel
 
 原生 ↔ WebView **二进制数据通道**：在原生侧启动一个**只监听 127.0.0.1 的 HTTP Server**，
 让 WebView 用标准 `fetch` / `<video>` / `<img>` 直接收发**原始二进制**，绕开 Capacitor 桥的
@@ -131,7 +131,7 @@ start/stop 时派发，载荷同 `ChannelInfo`。
 
 | 方向 | 场景 | 推荐做法 |
 | --- | --- | --- |
-| **读：磁盘/原生 → WebView** | 用户选择文件，把内容读进 WebView 处理（预览、解码、编辑、解析） | **分块加载**：`file.slice()` 逐块读，每块用完即释放 |
+| **读：磁盘/原生 → WebView** | 用户选择文件，把内容读进 WebView 处理（预览、解码、编辑、解析） | **分块加载**：逐块读，每块用完即释放，或是逐步把完整文件拼接到 WebView 中 |
 | **写：WebView → 磁盘/原生** | WebView 生成的数据写回磁盘（导出、保存、编码结果） | **分块 + 复用 buffer**：内存恒定、性能好 |
 | （少见）整体转发 | 用户选的文件**不做处理**，原样存到别处 | File 直传（最省，但场景少） |
 
@@ -142,7 +142,7 @@ start/stop 时派发，载荷同 `ChannelInfo`。
 | 分块上传（8MB/块，复用缓冲 + `append=1`） | 100MB | 920ms | 109 MB/s | +42.8 MB |
 | File 直传（磁盘文件原样转发） | 105.8MB | 806ms | **131 MB/s** | **+4.2 MB** |
 | 一次性 `Uint8Array(100MB)` | 100MB | 912ms | 110 MB/s | +275.3 MB |
-| 整体生成后包装 `new File([buf])` | 100MB | 698ms | **143 MB/s** | 上传阶段 +0.6 MB（生成峰值仍在） |
+| 整体生成后包装 `new File([buf])` | 100MB | 698ms | **143 MB/s** | 上传阶段 +0.6 MB（生成峰值仍在，Chromium 会把大 Blob spool 到磁盘临时文件，上传时流式读取，所以不占内存） |
 
 ### 场景一（读）：用户选择文件 → 分块加载进 WebView
 
@@ -254,6 +254,57 @@ await fetch(`${ch.baseUrl}/upload?path=export.bin`, {
   body: blob,                                   // 上传阶段 +0.6MB（实测），速度 143 MB/s
 });
 ```
+
+**一次性上传（body 直接传整个数组）**——代码最简，但**大数据会占用大量内存**：
+
+```ts
+import { DataChannel } from 'capacitor-data-channel';
+
+const ch = await DataChannel.start();
+
+// 1) 在 JS 里整块构造数据：这一步本身就占用了 100MB 堆内存
+const TOTAL_BYTES = 100 * 1024 * 1024; // 100MB
+const bytes = new Uint8Array(TOTAL_BYTES);
+
+// 填充内容（示例用随机数；真实场景可能是编码后的视频帧、导出的文件内容等）
+const filler = new Uint8Array(65536);
+crypto.getRandomValues(filler);
+for (let offset = 0; offset < bytes.length; offset += filler.length) {
+  bytes.set(filler.subarray(0, Math.min(filler.length, bytes.length - offset)), offset);
+}
+
+// 2) 一次性上传：body 直接传整个 Uint8Array
+const startedAt = performance.now();
+const res = await fetch(`${ch.baseUrl}/upload?path=bench/100mb-single.bin`, {
+  method: 'PUT',
+  headers: {
+    Authorization: `Bearer ${ch.token}`,
+    'Content-Type': 'application/octet-stream',
+  },
+  body: bytes, // 整个数组作为请求体，不经过 base64
+});
+
+if (!res.ok) {
+  throw new Error(`upload failed: HTTP ${res.status} ${await res.text()}`);
+}
+
+const result = await res.json(); // { path, bytes, size, appended }
+const elapsedMs = performance.now() - startedAt;
+console.log(
+  `uploaded ${result.bytes} bytes in ${Math.round(elapsedMs)}ms ` +
+    `(${Math.round((result.bytes / 1024 / 1024 / elapsedMs) * 1000)} MB/s)`,
+);
+```
+
+真机实测（100MB，App 进程 RSS 峰值增量）：
+
+| 方式 | 耗时 | 速度 | RSS 峰值增量 |
+| --- | --- | --- | --- |
+| 一次性 `Uint8Array(100MB)` | 912ms | 110 MB/s | **+275.3 MB** |
+
+内存峰值来自两份数据：JS 堆里的 `Uint8Array`（100MB）+ Chromium 网络栈的缓冲
+（Android WebView 与 App 是同一个进程）。
+**所以：小于几 MB 完全没问题；几十 MB 以上请改用上面的分块方式（场景二）。**
 
 **小文件（< 几 MB）** → 直接传 `Uint8Array`/`ArrayBuffer` 即可，不必分块：
 
