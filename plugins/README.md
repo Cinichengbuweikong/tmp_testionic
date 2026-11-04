@@ -13,7 +13,7 @@
 | [capacitor-system-info](./capacitor-system-info/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕/视口/安全区/系统栏/系统/WebView/内存/电量/网络 等 13 个独立只读 API |
 | [capacitor-native-rotation](./capacitor-native-rotation/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕方向：getRotation + rotationChanged 事件 + 主动锁定横屏/竖屏（视频全屏播放场景） |
 | [capacitor-fullscreen](./capacitor-fullscreen/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 沉浸式全屏：隐藏状态栏+导航栏，带状态事件（可监听/解除） |
-| [capacitor-keyboard-avoiding](./capacitor-keyboard-avoiding/) | ✅ 已验证 | 🔨 待 CI 验证 | ✅ | 键盘避让：keyboardChanged 事件（带高度）+ 可选自动避让（Android 补差 / iOS contentInset） |
+| [capacitor-keyboard-avoiding](./capacitor-keyboard-avoiding/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 键盘避让：keyboardChanged 事件（带高度）+ 可选自动避让（Android 补差 / iOS contentInset） |
 
 ## 新增插件的标准流程
 
