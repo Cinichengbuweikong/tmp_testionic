@@ -146,14 +146,19 @@ public class RotationPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     /// 请求界面旋转到目标方向（iOS 16+ 官方接口；iOS 15 用 KVC 兼容路径）。
+    ///
+    /// 注意：`requestGeometryUpdate` 是 **UIWindowScene** 的方法（不是 UIViewController 的），
+    /// 所以要先拿到 view 所在的 windowScene。
     private func requestOrientationChange(mask: UIInterfaceOrientationMask, preferred: UIInterfaceOrientation) {
         guard let vc = self.bridge?.viewController as? CAPBridgeViewController else {
             return
         }
         if #available(iOS 16.0, *) {
             vc.setNeedsUpdateOfSupportedInterfaceOrientations()
-            vc.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
-                CAPLog.print("[Rotation] requestGeometryUpdate failed: \(error)")
+            if let scene = vc.view.window?.windowScene {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
+                    CAPLog.print("[Rotation] requestGeometryUpdate failed: \(error)")
+                }
             }
         } else {
             UIDevice.current.setValue(preferred.rawValue, forKey: "orientation")
