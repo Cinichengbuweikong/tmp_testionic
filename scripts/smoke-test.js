@@ -80,6 +80,11 @@
   out.keyboardListenStart = await click('监听键盘');
   out.keyboardListenStop = await click('停止键盘监听');
 
+  // AppState：读状态 → 监听 → 停止监听
+  out.appState = await click('读取应用状态');
+  out.appStateListenStart = await click('监听状态变化');
+  out.appStateListenStop = await click('停止状态监听');
+
   // DataChannel：启动 → 上传 10MB → 下载 → 列表 → WS 回显 → 权限检查 → 停止
   out.dataChannelStart = await click('启动通道');
   out.dataChannelInfo = await click('读取通道信息');
@@ -116,7 +121,7 @@
   out.fullscreenListenStop = await click('取消全屏监听');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelList', 'dataChannelWs', 'storageAccess', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'appState', 'appStateListenStart', 'appStateListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelList', 'dataChannelWs', 'storageAccess', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -158,6 +163,15 @@
   }
   if (!out.dataChannelStart.includes('"running": true') || !out.dataChannelStart.includes('"port":')) {
     failures.push('dataChannelStart');
+  }
+  if (!out.appState.includes('"isActive"') || !out.appState.includes('"state": "active"')) {
+    failures.push('appState');
+  }
+  if (!out.appStateListenStart.includes('监听已开始')) {
+    failures.push('appStateListenStart');
+  }
+  if (!out.appStateListenStop.includes('监听已停止')) {
+    failures.push('appStateListenStop');
   }
   if (!out.dataChannelUpload.includes('"uploadedBytes": 10485760')) {
     failures.push('dataChannelUpload');

@@ -110,6 +110,18 @@
     </section>
 
     <section class="card">
+      <h2>AppState</h2>
+      <div class="actions">
+        <button @click="loadAppState">读取应用状态</button>
+        <button @click="startAppStateListen">监听状态变化</button>
+        <button @click="stopAppStateListen">停止状态监听</button>
+      </div>
+      <p class="hint">
+        切到后台再回到前台，output 会打印 stateChanged 事件（含 backgroundDuration 后台时长）。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>DataChannel</h2>
       <div class="actions">
         <button @click="dataChannelStart">启动通道</button>
@@ -170,6 +182,7 @@
 
 <script>
 import { Capacitor } from '@capacitor/core';
+import { AppState } from 'capacitor-app-state';
 import { DataChannel } from 'capacitor-data-channel';
 import { Fullscreen } from 'capacitor-fullscreen';
 import { KeyboardAvoiding } from 'capacitor-keyboard-avoiding';
@@ -190,6 +203,7 @@ export default {
       fullscreenHandle: null,
       keyboardHandle: null,
       dataChannelInfo: null,
+      appStateHandle: null,
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
         { label: '绿 #4CAF50', value: '#4CAF50' },
@@ -539,6 +553,28 @@ export default {
           }
         }
 
+        // AppState：状态结构 + 监听/解除
+        try {
+          const appStateInitial = await AppState.getState();
+          const appStateHandle = await AppState.addListener('stateChanged', () => {});
+          const appStateHasHandle = !!appStateHandle && typeof appStateHandle.remove === 'function';
+          await appStateHandle.remove();
+          results.appState = { initial: appStateInitial, hasHandle: appStateHasHandle };
+          const appStateOk = !!appStateInitial
+            && typeof appStateInitial.isActive === 'boolean'
+            && typeof appStateInitial.state === 'string'
+            && typeof appStateInitial.changedAt === 'number'
+            && typeof appStateInitial.backgroundDuration === 'number'
+            && appStateHasHandle;
+          if (!appStateOk) {
+            results.ok = false;
+            results.reason = `app-state check failed: ${JSON.stringify(results.appState)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.appStateError = String((err && err.message) || err);
+        }
+
         // WebViewToEdge：开 → 读安全区 → 关
         const toEdgeOn = await WebViewToEdge.setEnabled({ enabled: true });
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -855,6 +891,44 @@ export default {
         this.print('KeyboardAvoiding 监听已停止', { listening: false });
       } catch (err) {
         this.error('KeyboardAvoiding.removeListener', err);
+      }
+    },
+
+    async loadAppState() {
+      try {
+        const state = await AppState.getState();
+        this.print('AppState.getState 成功', state);
+      } catch (err) {
+        this.error('AppState.getState', err);
+      }
+    },
+
+    async startAppStateListen() {
+      try {
+        if (this.appStateHandle) {
+          this.print('AppState 监听', { status: '已在监听中，忽略重复开始' });
+          return;
+        }
+        this.appStateHandle = await AppState.addListener('stateChanged', (state) => {
+          this.print('stateChanged 事件', state);
+        });
+        this.print('AppState 监听已开始', { listening: true });
+      } catch (err) {
+        this.error('AppState.addListener', err);
+      }
+    },
+
+    async stopAppStateListen() {
+      try {
+        if (!this.appStateHandle) {
+          this.print('AppState 监听', { status: '当前没有监听' });
+          return;
+        }
+        await this.appStateHandle.remove();
+        this.appStateHandle = null;
+        this.print('AppState 监听已停止', { listening: false });
+      } catch (err) {
+        this.error('AppState.removeListener', err);
       }
     },
 

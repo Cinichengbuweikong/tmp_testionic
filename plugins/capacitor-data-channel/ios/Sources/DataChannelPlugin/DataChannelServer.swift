@@ -82,13 +82,13 @@ final class DataChannelServer {
         return sessions.count
     }
 
-    func registerWebSocketSession(_ session: HTTPConnection) {
+    fileprivate func registerWebSocketSession(_ session: HTTPConnection) {
         sessionsLock.lock()
         wsSessions.append(session)
         sessionsLock.unlock()
     }
 
-    func unregisterWebSocketSession(_ session: HTTPConnection) {
+    fileprivate func unregisterWebSocketSession(_ session: HTTPConnection) {
         sessionsLock.lock()
         wsSessions.removeAll { $0 === session }
         sessionsLock.unlock()
