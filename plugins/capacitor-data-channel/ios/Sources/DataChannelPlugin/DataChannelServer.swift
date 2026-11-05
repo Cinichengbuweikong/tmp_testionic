@@ -346,7 +346,7 @@ private final class HTTPConnection {
             beginRequest(bodyPrefix: bodyPrefix)
         case .uploading:
             writeBody(data)
-        case .sending, .done:
+        case .sending, .webSocket, .done:
             break
         }
     }
