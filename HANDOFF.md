@@ -303,6 +303,42 @@ D:\projs\testionic
 - 坑：JavaDoc 注释里手滑写 `*/` 导致注释提前结束、`android.util.Log` 没有 `debug()`
   （只有 `Log.d`）、NWConnection/NWListener 的队列必须是 **serial**（不能用 concurrent）。
 - 为后续「文件系统插件」预留：`rootPath` 绝对路径、`/list` 路由、统一 path 规则。
+- **2026-11-05 增强**（rootDir + WebSocket）：
+  - `rootDir` 三种写法：不传 = App 专属外部目录 `/sdcard/Android/data/<pkg>/files/dataChannel`
+    （无需权限）/ 相对路径 = App 私有目录 / 绝对路径 = 任意位置（受平台限制）；
+    新增 `checkAllFilesAccess` / `requestAllFilesAccess`（API 30+ MANAGE_EXTERNAL_STORAGE 设置页，
+    API 29- WRITE_EXTERNAL_STORAGE 运行时权限，iOS 沙盒恒 true）；
+  - **平台限制（实测）**：Android 10 + targetSdk 36 时 scoped storage 强制，公共目录（/sdcard/Download）
+    不可写，即使有 WRITE_EXTERNAL_STORAGE 也不行（`requestLegacyExternalStorage` 对 targetSdk>=30 失效）；
+    错误信息带 `SCOPED_STORAGE_BLOCKED` 提示。iOS 只能沙盒内路径。
+  - **WebSocket server**：同端口 `/ws`（RFC6455 子集：帧解析/mask/分片重组/ping-pong/close，默认 echo），
+    `ChannelInfo` 增加 `wsUrl`/`wsClients`/`webSocketEnabled`；`start({ wsEcho:false })` 关闭 echo。
+  - **WS 实测**：1MB 往返 45ms、10MB 往返 181ms（55 MB/s）、64KB 帧每帧 1.7ms（588fps）、空闲 CPU 0%。
+  - 坑：Swift 里 internal 方法参数用 private 类型（`HTTPConnection`）→ 必须 `fileprivate`；
+    Swift 单 target 不能混合 Swift 与 C/C++（见 C/C++ 调研文档）。
+
+### 5.10 capacitor-app-state（前后台状态）
+
+- `getState()` → `{ isActive, state, changedAt, lastBackgroundAt, backgroundDuration }`；
+  `stateChanged` 事件；`handle.remove()` 取消单个、`removeAllListeners()` 取消全部。
+- Android 用 `handleOnResume`/`handleOnPause`（只有 active/background）；
+  iOS 用 4 条 UIApplication 通知（active/inactive/background，inactive 是过渡态）。
+- 真机实测：HOME 切后台 → 事件 `background`；回前台 → 事件 `active` 且 `backgroundDuration=3232ms` ✓。
+- 用途：配合 data-channel 在切后台时暂停/提示（iOS 后台 socket 会被挂起）。
+
+### 5.11 capacitor-native-files（本地文件系统）
+
+- 11 个 API：`pickFiles`（**多选**）/ `pickFolders`（**单选**，Android SAF 系统限制）/
+  `readFile`（base64，offset/length，单次 16MB 上限）/ `writeFile`（create|append|overwrite）/
+  `deleteFile` / `listFolder` / `createFolder` / `deleteFolder` / `renameFolder` / `getInfo` /
+  `copyToAppStorage`（复制到 data-channel 默认根目录，返回 relativePath）。
+- **URI 语义**：Android 是 `content://`（SAF，无需存储权限）；iOS 是 `file://`（security-scoped，
+  附 bookmark）。**不是文件系统路径**——要路径就给 data-channel 用 `copyToAppStorage`。
+- 多选支持结论：文件多选两端都支持；**文件夹多选 Android 系统不支持**（`ACTION_OPEN_DOCUMENT_TREE`
+  只能单选），iOS 虽支持但为跨平台一致也做单选。
+- 真机实测：11 个方法全部注册；`getInfo` 对无效 URI 返回 `exists:false`（file:// 与 content:// 均正确）。
+  文件/文件夹选择器是系统 UI，需手动验证（未自动化）。
+- 与 data-channel 配合流程：`pickFiles` → `copyToAppStorage` → data-channel 上传。
 
 ## 6. Capacitor 8 插件开发手册（要点）
 
@@ -468,17 +504,27 @@ npm run build
   不是 UIViewController 的。
 - ✅ capacitor-native-statusbar **0.2.0**：修复暗色模式 force dark 导致白色失效/橙色偏暗——
   给自绘色块单独 `setForceDarkAllowed(false)`；实测 白色→rgb(228,232,227)、橙色→精确 #FF5722。
-- ✅ **capacitor-data-channel**（二进制数据通道，新增）：本地 HTTP Server 大文件传输；
-  真机实测 File 上传 105.8MB 仅 **806ms/131MB/s、内存 +4.2MB**；Range/401→404/CORS 预检全通过；
-  双端冒烟 PASS；iOS CI 待验证（详见 5.9 节）。
+- ✅ **capacitor-data-channel**（二进制数据通道）：本地 HTTP + WebSocket Server 大文件/实时流传输；
+  真机实测 File 上传 105.8MB **806ms/131MB/s、内存 +4.2MB**；WS 10MB 往返 181ms/55MB/s、
+  64KB 帧 1.7ms/588fps、空闲 CPU 0%；rootDir 支持默认/相对/绝对路径（Android 10 公共目录受
+  scoped storage 限制，已验证并给出明确错误）；Range/404/CORS 全通过；双端冒烟 PASS。
+  **iOS CI 待定**：Swift 编译错误（fileprivate）已修（198c1b6），运行验证待测（详见 5.9 节）。
+- ✅ **capacitor-app-state**（前后台状态，新增）：真机实测 HOME 切后台/回前台事件与
+  `backgroundDuration=3232ms` 全通过；iOS CI 待验证（详见 5.10 节）。
+- ✅ **capacitor-native-files**（本地文件系统，新增）：11 个 API；真机验证方法注册与
+  `getInfo` 无效 URI 行为；选择器为系统 UI 需手动验证；iOS CI 待验证（详见 5.11 节）。
+- 📄 **C/C++ 插件调研文档**：`docs/capacitor-cpp-bridge-research.md`（Android NDK+CMake / iOS SPM
+  双 target / 零拷贝 / 坑清单 / 推荐实现顺序），后续按文档实现 `capacitor-cpp-bridge` 模板。
 - ✅ capacitor-keyboard-avoiding（键盘避让）：真机实测键盘事件与补差逻辑全通过
   （键盘弹出 height 337.45css/928px、enable 无双重缩小、关闭事件正常）；双端冒烟 PASS；
   **iOS CI 全绿**（e4a1fe0 attempt 2；attempt 1 是模拟器 flaky——App 未启动、console 为空，
   重跑即过，遇到了就重跑）。
 - ⚠️ **未提交**：`src/assets/base.css`（`--vt-c-black: #202020`；暗色 `--color-background: var(--vt-c-black)`，
   原来 debug 用的 `red` 已替换）。用户倾向保留，待其确认后提交。
-- 真机（`32e93a6d`）为 MIUI 手势模式（无底部导航栏）；模拟器（`emulator-5554`）按需启动。
-- 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）。
+- 真机（`32e93a6d`）为 MIUI 手势模式（无底部导航栏）；模拟器（`emulator-5554`）按需启动
+  （2026-11-05 晚被用户关闭，需要时重新启动）。
+- 遗留可选任务：MIUI 状态栏图标强制控制（未攻破）；iOS 上 data-channel 的 WebView fetch 是否
+  受 ATS/混合内容限制（已加原生 self-test 区分，待 CI 结果确认）。
 
 ## 11. 新对话快速恢复 checklist
 
