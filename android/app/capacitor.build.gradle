@@ -10,12 +10,14 @@ android {
 apply from: "../capacitor-cordova-android-plugins/cordova.variables.gradle"
 dependencies {
     implementation project(':capacitor-status-bar')
+    implementation project(':capacitor-app-state')
     implementation project(':capacitor-data-channel')
     implementation project(':capacitor-fullscreen')
     implementation project(':capacitor-keyboard-avoiding')
     implementation project(':capacitor-native-basics')
     implementation project(':capacitor-native-statusbar')
     implementation project(':capacitor-native-rotation')
+    implementation project(':capacitor-native-files')
     implementation project(':capacitor-set-force-dark')
     implementation project(':capacitor-system-info')
     implementation project(':capacitor-webview-to-edge')

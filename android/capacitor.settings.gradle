@@ -5,6 +5,9 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 include ':capacitor-status-bar'
 project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacitor/status-bar/android')
 
+include ':capacitor-app-state'
+project(':capacitor-app-state').projectDir = new File('../plugins/capacitor-app-state/android')
+
 include ':capacitor-data-channel'
 project(':capacitor-data-channel').projectDir = new File('../plugins/capacitor-data-channel/android')
 
@@ -22,6 +25,9 @@ project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacit
 
 include ':capacitor-native-rotation'
 project(':capacitor-native-rotation').projectDir = new File('../plugins/capacitor-native-rotation/android')
+
+include ':capacitor-native-files'
+project(':capacitor-native-files').projectDir = new File('../plugins/capacitor-native-files/android')
 
 include ':capacitor-set-force-dark'
 project(':capacitor-set-force-dark').projectDir = new File('../plugins/capacitor-set-force-dark/android')
