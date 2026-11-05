@@ -105,8 +105,12 @@ final class DataChannelServer {
 
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        // 只使用回环接口（配合下面的连接来源校验，双重保证不对外暴露）
+        // 真机：强制只使用回环接口（避免监听 0.0.0.0 触发 iOS 本地网络权限）。
+        // 模拟器：requiredInterfaceType = .loopback 会导致 listener 接受不到连接
+        // （已知兼容性问题），而模拟器与宿主共享网络栈、外部无法连入，因此跳过。
+        #if !targetEnvironment(simulator)
         parameters.requiredInterfaceType = .loopback
+        #endif
 
         let newListener: NWListener
         do {
@@ -174,16 +178,21 @@ final class DataChannelServer {
     // MARK: - 连接
 
     private func accept(_ connection: NWConnection) {
-        // 只接受来自本机回环的连接（双重保险：requiredInterfaceType 之外再校验远端地址）
+        CAPLog.print("[DataChannel] accept connection from \(connection.endpoint)")
+        // 模拟器上 endpoint 可能不可用，跳过来源校验（模拟器网络是 NAT 的，外部连不进来）
+        #if !targetEnvironment(simulator)
         guard case let .hostPort(host, _) = connection.endpoint else {
+            CAPLog.print("[DataChannel] reject: endpoint is not hostPort")
             connection.cancel()
             return
         }
         let hostString = "\(host)".lowercased()
         if hostString != "127.0.0.1" && hostString != "::1" && hostString != "localhost" {
+            CAPLog.print("[DataChannel] reject: non-loopback host \(hostString)")
             connection.cancel()
             return
         }
+        #endif
 
         stateLock.lock()
         activeConnectionCount += 1
@@ -280,8 +289,12 @@ private final class HTTPConnection {
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
+                CAPLog.print("[DataChannel] connection ready")
                 self?.receiveMore()
-            case .failed, .cancelled:
+            case .failed(let error):
+                CAPLog.print("[DataChannel] connection failed: \(error)")
+                self?.finish()
+            case .cancelled:
                 self?.finish()
             default:
                 break
@@ -340,9 +353,11 @@ private final class HTTPConnection {
             let bodyPrefix = Data(headerData[headerEnd.upperBound...])
             headerData = Data()
             guard parseHeaders(headerPart) else {
+                CAPLog.print("[DataChannel] bad request headers")
                 sendAndClose(status: 400, reason: "Bad Request", json: ["error": "bad request"], origin: nil)
                 return
             }
+            CAPLog.print("[DataChannel] request \(method) \(path) origin=\(headers["origin"] ?? "-")")
             beginRequest(bodyPrefix: bodyPrefix)
         case .uploading:
             writeBody(data)
@@ -397,6 +412,12 @@ private final class HTTPConnection {
             finish()
             return
         }
+        // 健康检查（免 token，与 Android 侧行为一致）
+        if method == "GET", path == "/health" {
+            sendAndClose(status: 200, reason: "OK", json: ["ok": true, "name": "capacitor-data-channel"], origin: origin)
+            return
+        }
+
         if !isAuthorized() {
             // 鉴权失败统一 404（与未知路由不可区分），不泄露"需要认证的服务"
             sendAndClose(status: 404, reason: "Not Found", json: ["error": "not found"], origin: origin)
@@ -925,6 +946,7 @@ private final class HTTPConnection {
 
     private func sendAndClose(status: Int, reason: String, json: Any?, origin: String?) {
         guard !finished else { return }
+        CAPLog.print("[DataChannel] respond \(status) \(reason)")
         if let json = json {
             sendJSON(status: status, reason: reason, body: json, origin: origin)
             return
