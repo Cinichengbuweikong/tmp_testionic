@@ -65,7 +65,7 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
 
             let rawPort = call.getInt("port", 0)
             let requestedPort: UInt16 = (rawPort > 0 && rawPort <= 65535) ? UInt16(rawPort) : 0
-            let rootDirOption = call.getString("rootDir", nil)
+            let rootDirOption = call.getString("rootDir")
             let configuredMax = call.getDouble("maxBodyBytes", 536_870_912)
             self.maxBodyBytes = Int64(max(1024, configuredMax))
             self.wsEcho = call.getBool("wsEcho", true)

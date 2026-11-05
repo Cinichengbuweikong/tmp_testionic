@@ -313,7 +313,7 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("missing or invalid uri")
             return
         }
-        let relative = call.getString("relativePath", nil) ?? url.lastPathComponent
+        let relative = call.getString("relativePath") ?? url.lastPathComponent
         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             call.reject("cannot resolve documents directory")
             return
