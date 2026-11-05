@@ -2,6 +2,7 @@ import Foundation
 import Network
 import Security
 import CryptoKit
+import Capacitor
 
 /// DataChannel 本地 HTTP + WebSocket Server（iOS，纯 Foundation/Network 实现，零第三方依赖）。
 ///
