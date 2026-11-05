@@ -1,0 +1,31 @@
+{
+  "name": "capacitor-native-files",
+  "version": "0.1.0",
+  "description": "Capacitor 本地文件系统插件：系统文件/文件夹选择器、读写（新建/追加/更改）、删除、列目录、新建/删除/重命名文件夹，可与 data-channel 配合",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": ["capacitor", "plugin", "native", "files", "saf", "document-picker"],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": { "src": "android" },
+    "ios": { "src": "ios" }
+  }
+}

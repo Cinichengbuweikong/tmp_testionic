@@ -80,6 +80,9 @@
   out.keyboardListenStart = await click('监听键盘');
   out.keyboardListenStop = await click('停止键盘监听');
 
+  // NativeFiles：非交互 API（选择器需要手动操作）
+  out.nativeFiles = await click('测试 API');
+
   // AppState：读状态 → 监听 → 停止监听
   out.appState = await click('读取应用状态');
   out.appStateListenStart = await click('监听状态变化');
@@ -121,7 +124,7 @@
   out.fullscreenListenStop = await click('取消全屏监听');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'appState', 'appStateListenStart', 'appStateListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelList', 'dataChannelWs', 'storageAccess', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'nativeFiles', 'appState', 'appStateListenStart', 'appStateListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelList', 'dataChannelWs', 'storageAccess', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -163,6 +166,9 @@
   }
   if (!out.dataChannelStart.includes('"running": true') || !out.dataChannelStart.includes('"port":')) {
     failures.push('dataChannelStart');
+  }
+  if (!out.nativeFiles.includes('"exists": false')) {
+    failures.push('nativeFiles');
   }
   if (!out.appState.includes('"isActive"') || !out.appState.includes('"state": "active"')) {
     failures.push('appState');

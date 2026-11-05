@@ -110,6 +110,19 @@
     </section>
 
     <section class="card">
+      <h2>NativeFiles</h2>
+      <div class="actions">
+        <button @click="pickFiles">选择文件</button>
+        <button @click="pickFolders">选择文件夹</button>
+        <button @click="probeNativeFiles">测试 API</button>
+      </div>
+      <p class="hint">
+        选择器需要手动操作（会弹系统界面）；选中后结果含 uri/name/size。选中大文件后可用
+        copyToAppStorage 复制到 App 目录再交给 DataChannel 高速传输。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>AppState</h2>
       <div class="actions">
         <button @click="loadAppState">读取应用状态</button>
@@ -184,6 +197,7 @@
 import { Capacitor } from '@capacitor/core';
 import { AppState } from 'capacitor-app-state';
 import { DataChannel } from 'capacitor-data-channel';
+import { NativeFiles } from 'capacitor-native-files';
 import { Fullscreen } from 'capacitor-fullscreen';
 import { KeyboardAvoiding } from 'capacitor-keyboard-avoiding';
 import { NativeBasics } from 'capacitor-native-basics';
@@ -575,6 +589,20 @@ export default {
           results.appStateError = String((err && err.message) || err);
         }
 
+        // NativeFiles：非交互 API（选择器需要用户操作，不放进自检）
+        try {
+          const missingInfo = await NativeFiles.getInfo({ uri: 'file:///does-not-exist-xyz' });
+          results.nativeFiles = { info: missingInfo };
+          const nfOk = !!missingInfo && missingInfo.exists === false && typeof missingInfo.name === 'string';
+          if (!nfOk) {
+            results.ok = false;
+            results.reason = `native-files check failed: ${JSON.stringify(results.nativeFiles)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.nativeFilesError = String((err && err.message) || err);
+        }
+
         // WebViewToEdge：开 → 读安全区 → 关
         const toEdgeOn = await WebViewToEdge.setEnabled({ enabled: true });
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -891,6 +919,33 @@ export default {
         this.print('KeyboardAvoiding 监听已停止', { listening: false });
       } catch (err) {
         this.error('KeyboardAvoiding.removeListener', err);
+      }
+    },
+
+    async pickFiles() {
+      try {
+        const result = await NativeFiles.pickFiles({ multiple: true });
+        this.print('NativeFiles.pickFiles 成功', result);
+      } catch (err) {
+        this.error('NativeFiles.pickFiles', err);
+      }
+    },
+
+    async pickFolders() {
+      try {
+        const result = await NativeFiles.pickFolders();
+        this.print('NativeFiles.pickFolders 成功', result);
+      } catch (err) {
+        this.error('NativeFiles.pickFolders', err);
+      }
+    },
+
+    async probeNativeFiles() {
+      try {
+        const info = await NativeFiles.getInfo({ uri: 'file:///does-not-exist-xyz' });
+        this.print('NativeFiles.getInfo 成功', info);
+      } catch (err) {
+        this.error('NativeFiles.getInfo', err);
       }
     },
 
