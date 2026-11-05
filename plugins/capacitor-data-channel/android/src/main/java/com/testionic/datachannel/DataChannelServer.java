@@ -46,6 +46,14 @@ import android.util.Log;
  * HTTP 协议子集：HTTP/1.1 单请求单连接（Connection: close）、Content-Length 请求体、
  * 支持下载 Range（视频拖动进度条必需）。不支持 chunked 请求体（fetch 上传 Blob/File 时
  * 会带 Content-Length，满足需求）。
+ *
+ * ======================= WebSocket（实时双向二进制） =======================
+ *
+ * 同一个端口提供 `/ws` 升级端点（RFC 6455 子集）：WebView 用原生 `new WebSocket(wsUrl)`
+ * 即可与 native 实时互发二进制帧（ArrayBuffer），同样不经过 JSON/base64 桥。
+ * 默认 **echo 模式**（收到什么回什么），便于自测与作为后续扩展的起点；
+ * 后续开发者可以在 {@link #broadcast(byte[])} 或 wsLoop 的自定义分支里接入业务逻辑。
+ * 支持：文本/二进制帧、分片重组、ping/pong、close；单帧上限 64MB。
  */
 public class DataChannelServer {
 
@@ -58,22 +66,40 @@ public class DataChannelServer {
     private static final int MAX_HEADER_TOTAL = 32 * 1024;
     private static final int SOCKET_TIMEOUT_MS = 20000;
     private static final int COPY_BUFFER = 64 * 1024;
+    private static final int WS_MAX_FRAME_BYTES = 64 * 1024 * 1024;
+    private static final String WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     private final File root;
     private final String token;
     private final long maxBodyBytes;
+    private final boolean wsEcho;
     private final Listener listener;
 
     private ServerSocket serverSocket;
     private Thread acceptThread;
     private ExecutorService workers;
+    private ExecutorService wsExecutor;
     private volatile boolean running = false;
     private final AtomicInteger activeConnections = new AtomicInteger();
 
-    public DataChannelServer(File root, String token, long maxBodyBytes, Listener listener) {
+    private final java.util.Set<WsSession> wsSessions = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** 一个 WebSocket 连接（socket + 输出流 + 写锁）。 */
+    private static final class WsSession {
+        final Socket socket;
+        final OutputStream out;
+
+        WsSession(Socket socket, OutputStream out) {
+            this.socket = socket;
+            this.out = out;
+        }
+    }
+
+    public DataChannelServer(File root, String token, long maxBodyBytes, boolean wsEcho, Listener listener) {
         this.root = root;
         this.token = token;
         this.maxBodyBytes = maxBodyBytes;
+        this.wsEcho = wsEcho;
         this.listener = listener;
     }
 
@@ -83,6 +109,10 @@ public class DataChannelServer {
 
     public int activeConnections() {
         return activeConnections.get();
+    }
+
+    public int wsClientCount() {
+        return wsSessions.size();
     }
 
     /** 启动并返回实际监听端口。 */
@@ -96,6 +126,8 @@ public class DataChannelServer {
         // 只绑定回环地址：外部设备无法连接
         serverSocket = new ServerSocket(requestedPort, 16, InetAddress.getByName("127.0.0.1"));
         workers = Executors.newFixedThreadPool(4);
+        // WebSocket 是长连接，单独用 cached 线程池（避免占满 HTTP 工作线程）
+        wsExecutor = Executors.newCachedThreadPool();
         running = true;
         acceptThread = new Thread(this::acceptLoop, "DataChannelAccept");
         acceptThread.setDaemon(true);
@@ -105,6 +137,19 @@ public class DataChannelServer {
 
     public void stop() {
         running = false;
+        // 关闭所有 WebSocket 连接
+        for (WsSession session : wsSessions) {
+            try {
+                session.socket.close();
+            } catch (IOException ignored) {
+                // 忽略
+            }
+        }
+        wsSessions.clear();
+        if (wsExecutor != null) {
+            wsExecutor.shutdownNow();
+            wsExecutor = null;
+        }
         try {
             if (serverSocket != null) {
                 serverSocket.close();
@@ -158,11 +203,13 @@ public class DataChannelServer {
         String method = "-";
         String path = "-";
         int status = 500;
+        // WebSocket 升级后 socket 交给长连接线程，不能在这里关闭
+        boolean handedOff = false;
 
-        try (Socket s = socket) {
-            s.setSoTimeout(SOCKET_TIMEOUT_MS);
-            InputStream in = new BufferedInputStream(s.getInputStream(), 16 * 1024);
-            OutputStream out = new BufferedOutputStream(s.getOutputStream(), 16 * 1024);
+        try {
+            socket.setSoTimeout(SOCKET_TIMEOUT_MS);
+            InputStream in = new BufferedInputStream(socket.getInputStream(), 16 * 1024);
+            OutputStream out = new BufferedOutputStream(socket.getOutputStream(), 16 * 1024);
 
             String requestLine = readLine(in, MAX_HEADER_LINE);
             if (requestLine == null || requestLine.isEmpty()) {
@@ -218,6 +265,20 @@ public class DataChannelServer {
                 return;
             }
 
+            // WebSocket 升级（同端口 /ws）：交给长连接线程，本方法不再关闭 socket
+            if ("/ws".equals(path) && "websocket".equalsIgnoreCase(headers.get("upgrade"))) {
+                String key = headers.get("sec-websocket-key");
+                if (key == null || key.isEmpty()) {
+                    status = 400;
+                    writeError(out, 400, "missing Sec-WebSocket-Key", origin);
+                    return;
+                }
+                handedOff = true;
+                status = 101;
+                wsExecutor.execute(() -> runWebSocket(socket, in, out, key, origin));
+                return;
+            }
+
             String route = method + " " + path;
             switch (route) {
                 case "PUT /upload":
@@ -247,6 +308,13 @@ public class DataChannelServer {
         } catch (Exception e) {
             status = 500;
         } finally {
+            if (!handedOff) {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                    // 忽略
+                }
+            }
             if (listener != null) {
                 long durationMs = (System.nanoTime() - startedAt) / 1_000_000;
                 try {
@@ -256,6 +324,197 @@ public class DataChannelServer {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------- WebSocket
+
+    private void runWebSocket(Socket socket, InputStream in, OutputStream out, String key, String origin) {
+        WsSession session = new WsSession(socket, out);
+        wsSessions.add(session);
+        try {
+            socket.setSoTimeout(0); // 长连接：不设读超时
+            socket.setTcpNoDelay(true);
+            String accept = computeWsAccept(key);
+            String handshake =
+                "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: " + accept + "\r\n";
+            if (origin != null && isAllowedOrigin(origin)) {
+                handshake += "Access-Control-Allow-Origin: " + origin + "\r\n";
+            }
+            handshake += "\r\n";
+            synchronized (session) {
+                out.write(handshake.getBytes(StandardCharsets.ISO_8859_1));
+                out.flush();
+            }
+            Log.d("DataChannel", "websocket client connected (echo=" + wsEcho + ")");
+            wsLoop(in, session);
+        } catch (IOException ignored) {
+            // 客户端断开或网络异常
+        } finally {
+            wsSessions.remove(session);
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // 忽略
+            }
+            Log.d("DataChannel", "websocket client disconnected");
+        }
+    }
+
+    private void wsLoop(InputStream in, WsSession session) throws IOException {
+        ByteArrayOutputStream assembled = new ByteArrayOutputStream();
+        int assembledOpcode = -1;
+        while (running) {
+            int first = in.read();
+            if (first < 0) {
+                return;
+            }
+            int second = in.read();
+            if (second < 0) {
+                return;
+            }
+            boolean fin = (first & 0x80) != 0;
+            int opcode = first & 0x0F;
+            boolean masked = (second & 0x80) != 0;
+            long length = second & 0x7F;
+            if (length == 126) {
+                length = readU16(in);
+            } else if (length == 127) {
+                length = readU64(in);
+            }
+            if (length < 0 || length > WS_MAX_FRAME_BYTES) {
+                closeWs(session, 1009); // message too big
+                return;
+            }
+            byte[] mask = masked ? readN(in, 4) : null;
+            byte[] payload = readN(in, (int) length);
+            if (mask != null) {
+                for (int i = 0; i < payload.length; i++) {
+                    payload[i] ^= mask[i & 3];
+                }
+            }
+
+            switch (opcode) {
+                case 0x9: // ping → pong
+                    sendFrame(session, 0xA, payload);
+                    break;
+                case 0xA: // pong
+                    break;
+                case 0x8: // close
+                    sendFrame(session, 0x8, new byte[0]);
+                    return;
+                case 0x1: // text（首帧）
+                case 0x2: // binary（首帧）
+                    assembledOpcode = opcode;
+                    assembled.write(payload, 0, payload.length);
+                    break;
+                case 0x0: // continuation
+                    assembled.write(payload, 0, payload.length);
+                    break;
+                default:
+                    break;
+            }
+
+            if (fin && (opcode == 0x0 || opcode == 0x1 || opcode == 0x2)) {
+                byte[] message = assembled.toByteArray();
+                assembled.reset();
+                if (wsEcho) {
+                    sendFrame(session, assembledOpcode == 0x1 ? 0x1 : 0x2, message);
+                }
+                // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点
+            }
+        }
+    }
+
+    /** 向所有已连接的 WebSocket 客户端广播二进制帧（供 native 侧扩展使用）。 */
+    public int broadcast(byte[] data) {
+        int sent = 0;
+        for (WsSession session : wsSessions) {
+            try {
+                sendFrame(session, 0x2, data);
+                sent++;
+            } catch (IOException ignored) {
+                // 忽略单个连接失败
+            }
+        }
+        return sent;
+    }
+
+    private void sendFrame(WsSession session, int opcode, byte[] data) throws IOException {
+        ByteArrayOutputStream frame = new ByteArrayOutputStream(data.length + 10);
+        frame.write(0x80 | (opcode & 0x0F)); // FIN + opcode（服务端帧不加 mask）
+        int len = data.length;
+        if (len <= 125) {
+            frame.write(len);
+        } else if (len <= 65535) {
+            frame.write(126);
+            frame.write((len >> 8) & 0xFF);
+            frame.write(len & 0xFF);
+        } else {
+            frame.write(127);
+            for (int i = 7; i >= 0; i--) {
+                frame.write((int) (((long) len) >> (8 * i)) & 0xFF);
+            }
+        }
+        frame.write(data, 0, data.length);
+        synchronized (session) {
+            session.out.write(frame.toByteArray());
+            session.out.flush();
+        }
+    }
+
+    private void closeWs(WsSession session, int code) {
+        try {
+            sendFrame(session, 0x8, new byte[] { (byte) (code >> 8), (byte) (code & 0xFF) });
+        } catch (IOException ignored) {
+            // 忽略
+        }
+    }
+
+    private String computeWsAccept(String key) throws IOException {
+        try {
+            java.security.MessageDigest sha1 = java.security.MessageDigest.getInstance("SHA-1");
+            byte[] digest = sha1.digest((key + WS_MAGIC).getBytes(StandardCharsets.US_ASCII));
+            return android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IOException("SHA-1 unavailable", e);
+        }
+    }
+
+    private long readU16(InputStream in) throws IOException {
+        int b1 = in.read();
+        int b2 = in.read();
+        if (b1 < 0 || b2 < 0) {
+            throw new IOException("unexpected EOF");
+        }
+        return ((long) b1 << 8) | b2;
+    }
+
+    private long readU64(InputStream in) throws IOException {
+        long value = 0;
+        for (int i = 0; i < 8; i++) {
+            int b = in.read();
+            if (b < 0) {
+                throw new IOException("unexpected EOF");
+            }
+            value = (value << 8) | b;
+        }
+        return value;
+    }
+
+    private byte[] readN(InputStream in, int length) throws IOException {
+        byte[] buf = new byte[length];
+        int read = 0;
+        while (read < length) {
+            int n = in.read(buf, read, length - read);
+            if (n < 0) {
+                throw new IOException("unexpected EOF in frame");
+            }
+            read += n;
+        }
+        return buf;
     }
 
     // ---------------------------------------------------------------- 路由实现

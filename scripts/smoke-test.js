@@ -80,12 +80,14 @@
   out.keyboardListenStart = await click('监听键盘');
   out.keyboardListenStop = await click('停止键盘监听');
 
-  // DataChannel：启动 → 上传 10MB → 下载 → 列表 → 停止
+  // DataChannel：启动 → 上传 10MB → 下载 → 列表 → WS 回显 → 权限检查 → 停止
   out.dataChannelStart = await click('启动通道');
   out.dataChannelInfo = await click('读取通道信息');
   out.dataChannelUpload = await clickAndWait('上传 10MB', '上传完成', 20000);
   out.dataChannelDownload = await clickAndWait('下载测试文件', '下载完成', 20000);
   out.dataChannelList = await click('列出文件');
+  out.dataChannelWs = await clickAndWait('WS 回显 1MB', '回显完成', 20000);
+  out.storageAccess = await click('检查存储权限');
   out.dataChannelStop = await click('停止通道');
 
   // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
@@ -114,7 +116,7 @@
   out.fullscreenListenStop = await click('取消全屏监听');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelList', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelList', 'dataChannelWs', 'storageAccess', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -165,6 +167,12 @@
   }
   if (!out.dataChannelList.includes('upload-10mb.bin')) {
     failures.push('dataChannelList');
+  }
+  if (!out.dataChannelWs.includes('"sameLength": true') || !out.dataChannelWs.includes('"sameTail": true')) {
+    failures.push('dataChannelWebSocket');
+  }
+  if (!out.storageAccess.includes('"granted"')) {
+    failures.push('storageAccess');
   }
   if (!out.dataChannelStop.includes('"running": false')) {
     failures.push('dataChannelStop');

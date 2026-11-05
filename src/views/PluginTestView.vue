@@ -126,9 +126,16 @@
         <input ref="dcFileInput" class="kb-input" type="file" style="flex: 1" />
         <button @click="dataChannelUploadFile">上传所选文件</button>
       </div>
+      <div class="actions">
+        <button @click="dataChannelWebSocket">WS 回显 1MB</button>
+        <button @click="checkStorageAccess">检查存储权限</button>
+        <button @click="requestStorageAccess">申请存储权限</button>
+        <button @click="startWithCustomRoot">自定义目录启动</button>
+      </div>
       <p class="hint">
-        本地 HTTP server（仅 127.0.0.1 + token 鉴权）：用 fetch 直接收发原始二进制，
-        不经过 base64 / JSON 序列化。分块上传会复用同一个 8MB 缓冲区，内存占用恒定。
+        本地 HTTP + WebSocket server（仅 127.0.0.1 + token 鉴权）：用 fetch / WebSocket
+        直接收发原始二进制，不经过 base64 / JSON 序列化。分块上传会复用同一个 8MB 缓冲区，
+        内存占用恒定。
       </p>
     </section>
 
@@ -366,27 +373,37 @@ export default {
           results.keyboardAvoidingError = String((err && err.message) || err);
         }
 
-        // DataChannel：本地 HTTP server 全链路（上传/下载/鉴权/路径穿越/列表/删除）
+        // DataChannel：本地 HTTP + WebSocket server 全链路
         try {
           const ch = await DataChannel.start();
-          const health = await (await fetch(`${ch.baseUrl}/health`)).json();
+          // 所有请求带超时，避免某个请求挂起导致整个自检卡死（CI 会因此看不到结果）
+          const fetchT = async (url, options = {}, timeoutMs = 8000) => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+              return await fetch(url, { ...options, signal: controller.signal });
+            } finally {
+              clearTimeout(timer);
+            }
+          };
+          const health = await (await fetchT(`${ch.baseUrl}/health`)).json();
 
           // 1MB 上传（原始二进制，不经过 base64）
           const payload = new Uint8Array(1024 * 1024);
           for (let i = 0; i < payload.length; i += 4096) {
             payload[i] = i & 0xff;
           }
-          const uploadRes = await fetch(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
+          const uploadRes = await fetchT(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
             method: 'PUT',
             headers: { Authorization: `Bearer ${ch.token}` },
             body: payload,
           });
           const upload = await uploadRes.json();
 
-          const infoRes = await fetch(`${ch.baseUrl}/info?path=selftest/test.bin&token=${ch.token}`);
+          const infoRes = await fetchT(`${ch.baseUrl}/info?path=selftest/test.bin&token=${ch.token}`);
           const fileInfo = await infoRes.json();
 
-          const downloadRes = await fetch(`${ch.baseUrl}/download?path=selftest/test.bin&token=${ch.token}`);
+          const downloadRes = await fetchT(`${ch.baseUrl}/download?path=selftest/test.bin&token=${ch.token}`);
           const downloaded = await downloadRes.arrayBuffer();
           const downloadedBytes = new Uint8Array(downloaded);
           const same =
@@ -396,21 +413,83 @@ export default {
             downloadedBytes[downloadedBytes.length - 1] === payload[payload.length - 1];
 
           // 安全：无 token 应返回 404（伪装成未知路由，不泄露需要认证）
-          const noTokenRes = await fetch(`${ch.baseUrl}/download?path=selftest/test.bin`);
+          const noTokenRes = await fetchT(`${ch.baseUrl}/download?path=selftest/test.bin`);
           // 安全：路径穿越应 400
-          const traversalRes = await fetch(`${ch.baseUrl}/download?path=../escape.txt&token=${ch.token}`);
+          const traversalRes = await fetchT(`${ch.baseUrl}/download?path=../escape.txt&token=${ch.token}`);
           // 安全：未知路由应 404
-          const unknownRes = await fetch(`${ch.baseUrl}/nope?token=${ch.token}`);
+          const unknownRes = await fetchT(`${ch.baseUrl}/nope?token=${ch.token}`);
           // CORS 预检应 204
-          const preflightRes = await fetch(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
+          const preflightRes = await fetchT(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
             method: 'OPTIONS',
             headers: { 'Access-Control-Request-Method': 'PUT' },
           });
 
-          const listRes = await fetch(`${ch.baseUrl}/list?path=selftest&token=${ch.token}`);
+          const listRes = await fetchT(`${ch.baseUrl}/list?path=selftest&token=${ch.token}`);
           const list = await listRes.json();
 
-          await fetch(`${ch.baseUrl}/file?path=selftest&token=${ch.token}`, { method: 'DELETE' });
+          // WebSocket 回显（256KB 二进制往返）
+          const wsStartedAt = performance.now();
+          const wsResult = await new Promise((resolve) => {
+            let settled = false;
+            const done = (value) => {
+              if (!settled) {
+                settled = true;
+                resolve(value);
+              }
+            };
+            const wsPayload = new Uint8Array(256 * 1024);
+            wsPayload[0] = 0x11;
+            wsPayload[wsPayload.length - 1] = 0x22;
+            let ws;
+            try {
+              ws = new WebSocket(ch.wsUrl);
+            } catch (err) {
+              done({ error: 'construct: ' + ((err && err.message) || err) });
+              return;
+            }
+            ws.binaryType = 'arraybuffer';
+            const timer = setTimeout(() => {
+              try {
+                ws.close();
+              } catch (ignored) {
+                // 忽略
+              }
+              done({ error: 'timeout' });
+            }, 8000);
+            ws.onopen = () => {
+              ws.send(wsPayload.buffer);
+            };
+            ws.onmessage = (event) => {
+              clearTimeout(timer);
+              const received = new Uint8Array(event.data);
+              try {
+                ws.close();
+              } catch (ignored) {
+                // 忽略
+              }
+              done({
+                bytes: received.byteLength,
+                sameLength: received.byteLength === wsPayload.byteLength,
+                sameHead: received[0] === wsPayload[0],
+                sameTail: received[received.length - 1] === wsPayload[wsPayload.length - 1],
+                ms: Math.round(performance.now() - wsStartedAt),
+              });
+            };
+            ws.onerror = () => {
+              clearTimeout(timer);
+              try {
+                ws.close();
+              } catch (ignored) {
+                // 忽略
+              }
+              done({ error: 'ws error' });
+            };
+          });
+
+          // 存储权限检查（iOS 返回 sandbox，Android 返回 MANAGE/WRITE 状态）
+          const storageAccess = await DataChannel.checkAllFilesAccess();
+
+          await fetchT(`${ch.baseUrl}/file?path=selftest&token=${ch.token}`, { method: 'DELETE' });
           const stopInfo = await DataChannel.stop();
 
           results.dataChannel = {
@@ -426,6 +505,9 @@ export default {
             unknownStatus: unknownRes.status,
             preflightStatus: preflightRes.status,
             listCount: list.length,
+            wsUrl: ch.wsUrl,
+            webSocket: wsResult,
+            storageAccess,
             stopped: stopInfo.running === false,
           };
           const dcOk = !!ch && ch.running === true && ch.port > 0
@@ -438,6 +520,10 @@ export default {
             && unknownRes.status === 404
             && preflightRes.status === 204
             && Array.isArray(list) && list.length === 1
+            && wsResult.sameLength === true
+            && wsResult.sameHead === true
+            && wsResult.sameTail === true
+            && !!storageAccess && typeof storageAccess.granted === 'boolean'
             && stopInfo.running === false;
           if (!dcOk) {
             results.ok = false;
@@ -916,6 +1002,93 @@ export default {
         });
       } catch (err) {
         this.error('DataChannel 上传文件', err);
+      }
+    },
+
+    async dataChannelWebSocket() {
+      try {
+        const ch = await this.ensureDataChannel();
+        const size = 1024 * 1024;
+        const payload = new Uint8Array(size);
+        // 注意：crypto.getRandomValues 单次上限 65536 字节，不能一次填充 1MB
+        const filler = new Uint8Array(65536);
+        crypto.getRandomValues(filler);
+        for (let offset = 0; offset < size; offset += filler.length) {
+          payload.set(filler.subarray(0, Math.min(filler.length, size - offset)), offset);
+        }
+        const startedAt = performance.now();
+        const result = await new Promise((resolve, reject) => {
+          const ws = new WebSocket(ch.wsUrl);
+          ws.binaryType = 'arraybuffer';
+          const timer = setTimeout(() => {
+            try {
+              ws.close();
+            } catch (ignored) {
+              // 忽略
+            }
+            reject(new Error('WebSocket 回显超时（15s）'));
+          }, 15000);
+          ws.onopen = () => {
+            ws.send(payload.buffer);
+          };
+          ws.onmessage = (event) => {
+            clearTimeout(timer);
+            const received = new Uint8Array(event.data);
+            try {
+              ws.close();
+            } catch (ignored) {
+              // 忽略
+            }
+            resolve({
+              sentBytes: size,
+              receivedBytes: received.byteLength,
+              sameLength: received.byteLength === size,
+              sameHead: received[0] === payload[0],
+              sameTail: received[size - 1] === payload[size - 1],
+              roundTripMs: Math.round(performance.now() - startedAt),
+            });
+          };
+          ws.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('WebSocket 连接错误'));
+          };
+        });
+        this.print('DataChannel WebSocket 回显完成', result);
+      } catch (err) {
+        this.error('DataChannel WebSocket', err);
+      }
+    },
+
+    async checkStorageAccess() {
+      try {
+        const info = await DataChannel.checkAllFilesAccess();
+        this.print('DataChannel.checkAllFilesAccess 成功', info);
+      } catch (err) {
+        this.error('DataChannel.checkAllFilesAccess', err);
+      }
+    },
+
+    async requestStorageAccess() {
+      try {
+        const info = await DataChannel.requestAllFilesAccess();
+        this.print('DataChannel.requestAllFilesAccess 成功', info);
+      } catch (err) {
+        this.error('DataChannel.requestAllFilesAccess', err);
+      }
+    },
+
+    async startWithCustomRoot() {
+      try {
+        await DataChannel.stop();
+        const target =
+          Capacitor.getPlatform() === 'ios'
+            ? 'customData'
+            : '/sdcard/Android/data/com.myapp.testionic/files/customData';
+        const info = await DataChannel.start({ rootDir: target });
+        this.dataChannelInfo = info;
+        this.print('DataChannel 自定义目录启动成功', info);
+      } catch (err) {
+        this.error('DataChannel 自定义目录启动', err);
       }
     },
 

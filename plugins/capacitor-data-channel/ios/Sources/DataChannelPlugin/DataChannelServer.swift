@@ -1,11 +1,13 @@
 import Foundation
 import Network
 import Security
+import CryptoKit
 
-/// DataChannel 本地 HTTP Server（iOS，纯 Foundation/Network 实现，零第三方依赖）。
+/// DataChannel 本地 HTTP + WebSocket Server（iOS，纯 Foundation/Network 实现，零第三方依赖）。
 ///
 /// 与 Android 侧 `DataChannelServer.java` 协议完全一致：
-///   GET /health、PUT|POST /upload、GET /download（支持 Range）、GET /info、GET /list、DELETE /file
+///   HTTP: GET /health、PUT|POST /upload、GET /download（支持 Range）、GET /info、GET /list、DELETE /file
+///   WS:   GET /ws（Upgrade，RFC 6455 子集，默认 echo）
 ///
 /// 安全设计：
 ///  - `NWParameters.requiredInterfaceType = .loopback` + 连接来源校验：只服务本机回环；
@@ -26,23 +28,28 @@ final class DataChannelServer {
         static let chunkSize = 64 * 1024
         static let receiveTimeout: TimeInterval = 30
         static let startTimeout: TimeInterval = 5
+        static let wsMaxFrameBytes = 64 * 1024 * 1024
     }
 
     private let rootURL: URL
     private let token: String
     private let maxBodyBytes: Int64
+    private let wsEcho: Bool
     /// NWListener / NWConnection 需要串行队列
     private let queue = DispatchQueue(label: "capacitor.datachannel")
     private let stateLock = NSLock()
+    private let sessionsLock = NSLock()
+    private var wsSessions: [HTTPConnection] = []
 
     private var listener: NWListener?
     private var running = false
     private var activeConnectionCount = 0
 
-    init(root: URL, token: String, maxBodyBytes: Int64) {
+    init(root: URL, token: String, maxBodyBytes: Int64, wsEcho: Bool) {
         self.rootURL = root
         self.token = token
         self.maxBodyBytes = maxBodyBytes
+        self.wsEcho = wsEcho
     }
 
     var isRunning: Bool {
@@ -55,6 +62,36 @@ final class DataChannelServer {
         stateLock.lock()
         defer { stateLock.unlock() }
         return activeConnectionCount
+    }
+
+    var wsClients: Int {
+        sessionsLock.lock()
+        defer { sessionsLock.unlock() }
+        return wsSessions.count
+    }
+
+    /// 向所有已连接的 WebSocket 客户端广播二进制帧（供 native 侧扩展使用）。
+    @discardableResult
+    func broadcast(_ payload: Data) -> Int {
+        sessionsLock.lock()
+        let sessions = wsSessions
+        sessionsLock.unlock()
+        for session in sessions {
+            session.sendBinaryFrame(payload)
+        }
+        return sessions.count
+    }
+
+    func registerWebSocketSession(_ session: HTTPConnection) {
+        sessionsLock.lock()
+        wsSessions.append(session)
+        sessionsLock.unlock()
+    }
+
+    func unregisterWebSocketSession(_ session: HTTPConnection) {
+        sessionsLock.lock()
+        wsSessions.removeAll { $0 === session }
+        sessionsLock.unlock()
     }
 
     /// 启动并返回实际端口（port=0 时由系统分配）。
@@ -157,6 +194,8 @@ final class DataChannelServer {
             root: rootURL,
             token: token,
             maxBodyBytes: maxBodyBytes,
+            wsEcho: wsEcho,
+            server: self,
             queue: queue,
             onFinish: { [weak self] in
                 guard let self = self else { return }
@@ -177,6 +216,7 @@ private final class HTTPConnection {
         case headers
         case uploading
         case sending
+        case webSocket
         case done
     }
 
@@ -185,12 +225,15 @@ private final class HTTPConnection {
         static let maxHeaderLines = 64
         static let chunkSize = 64 * 1024
         static let receiveTimeout: TimeInterval = 30
+        static let wsMaxFrameBytes = 64 * 1024 * 1024
     }
 
     private let connection: NWConnection
     private let root: URL
     private let token: String
     private let maxBodyBytes: Int64
+    private let wsEcho: Bool
+    private weak var server: DataChannelServer?
     private let queue: DispatchQueue
     private let onFinish: () -> Void
 
@@ -207,11 +250,19 @@ private final class HTTPConnection {
     private var uploadTargetURL: URL?
     private var finished = false
 
+    // WebSocket 状态
+    private var wsBuffer: [UInt8] = []
+    private var wsAssembled = Data()
+    private var wsAssembledOpcode: UInt8 = 0
+    private var webSocketOpen = false
+
     init(
         connection: NWConnection,
         root: URL,
         token: String,
         maxBodyBytes: Int64,
+        wsEcho: Bool,
+        server: DataChannelServer,
         queue: DispatchQueue,
         onFinish: @escaping () -> Void
     ) {
@@ -219,6 +270,8 @@ private final class HTTPConnection {
         self.root = root
         self.token = token
         self.maxBodyBytes = maxBodyBytes
+        self.wsEcho = wsEcho
+        self.server = server
         self.queue = queue
         self.onFinish = onFinish
     }
@@ -350,6 +403,16 @@ private final class HTTPConnection {
             return
         }
 
+        // WebSocket 升级（同端口 /ws）
+        if path == "/ws", (headers["upgrade"] ?? "").lowercased() == "websocket" {
+            guard let key = headers["sec-websocket-key"], !key.isEmpty else {
+                sendAndClose(status: 400, reason: "Bad Request", json: ["error": "missing Sec-WebSocket-Key"], origin: origin)
+                return
+            }
+            beginWebSocket(key: key, origin: origin)
+            return
+        }
+
         if (method == "PUT" || method == "POST"), path == "/upload", bodyLength > 0 {
             guard prepareUpload() else { return }
             phase = .uploading
@@ -362,6 +425,166 @@ private final class HTTPConnection {
             return
         }
         handleRequest()
+    }
+
+    // MARK: WebSocket
+
+    private func beginWebSocket(key: String, origin: String?) {
+        guard let accept = Self.wsAccept(key) else {
+            finish()
+            return
+        }
+        var response = "HTTP/1.1 101 Switching Protocols\r\n"
+        response += "Upgrade: websocket\r\n"
+        response += "Connection: Upgrade\r\n"
+        response += "Sec-WebSocket-Accept: \(accept)\r\n"
+        if let origin = origin, Self.isAllowedOrigin(origin) {
+            response += "Access-Control-Allow-Origin: \(origin)\r\n"
+        }
+        response += "\r\n"
+
+        phase = .webSocket
+        webSocketOpen = true
+        server?.registerWebSocketSession(self)
+        connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] error in
+            guard let self = self else { return }
+            if error != nil {
+                self.finish()
+                return
+            }
+            self.receiveWebSocket()
+        })
+    }
+
+    private func receiveWebSocket() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            if error != nil {
+                self.finish()
+                return
+            }
+            if let data = data, !data.isEmpty {
+                self.wsBuffer.append(contentsOf: data)
+                self.processWebSocketFrames()
+            }
+            if isComplete {
+                self.finish()
+                return
+            }
+            if self.webSocketOpen {
+                self.receiveWebSocket()
+            }
+        }
+    }
+
+    private func processWebSocketFrames() {
+        while webSocketOpen {
+            guard wsBuffer.count >= 2 else { return }
+            let first = wsBuffer[0]
+            let second = wsBuffer[1]
+            let fin = (first & 0x80) != 0
+            let opcode = first & 0x0F
+            let masked = (second & 0x80) != 0
+            var length = Int(second & 0x7F)
+            var offset = 2
+            if length == 126 {
+                guard wsBuffer.count >= offset + 2 else { return }
+                length = (Int(wsBuffer[offset]) << 8) | Int(wsBuffer[offset + 1])
+                offset += 2
+            } else if length == 127 {
+                guard wsBuffer.count >= offset + 8 else { return }
+                var value: UInt64 = 0
+                for index in 0..<8 {
+                    value = (value << 8) | UInt64(wsBuffer[offset + index])
+                }
+                if value > UInt64(Limits.wsMaxFrameBytes) {
+                    closeWebSocket(code: 1009)
+                    return
+                }
+                length = Int(value)
+                offset += 8
+            }
+            let maskLength = masked ? 4 : 0
+            guard wsBuffer.count >= offset + maskLength + length else { return }
+            var payload = Array(wsBuffer[(offset + maskLength)..<(offset + maskLength + length)])
+            if masked {
+                let mask = Array(wsBuffer[offset..<(offset + 4)])
+                for index in 0..<payload.count {
+                    payload[index] ^= mask[index % 4]
+                }
+            }
+            wsBuffer.removeFirst(offset + maskLength + length)
+
+            switch opcode {
+            case 0x9: // ping → pong
+                sendFrame(opcode: 0xA, payload: Data(payload))
+            case 0xA: // pong
+                break
+            case 0x8: // close
+                sendFrame(opcode: 0x8, payload: Data())
+                finish()
+                return
+            case 0x1, 0x2:
+                wsAssembledOpcode = opcode
+                wsAssembled.append(contentsOf: payload)
+            case 0x0:
+                wsAssembled.append(contentsOf: payload)
+            default:
+                break
+            }
+
+            if fin, (opcode == 0x0 || opcode == 0x1 || opcode == 0x2) {
+                let message = wsAssembled
+                wsAssembled = Data()
+                if wsEcho {
+                    sendFrame(opcode: wsAssembledOpcode == 0x1 ? 0x1 : 0x2, payload: message)
+                }
+                // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点
+            }
+        }
+    }
+
+    /// 供 server.broadcast 调用的二进制帧发送。
+    func sendBinaryFrame(_ payload: Data) {
+        guard webSocketOpen else { return }
+        sendFrame(opcode: 0x2, payload: payload)
+    }
+
+    private func sendFrame(opcode: UInt8, payload: Data) {
+        guard webSocketOpen else { return }
+        var frame = Data()
+        frame.append(0x80 | (opcode & 0x0F))
+        let length = payload.count
+        if length <= 125 {
+            frame.append(UInt8(length))
+        } else if length <= 65535 {
+            frame.append(126)
+            frame.append(UInt8((length >> 8) & 0xFF))
+            frame.append(UInt8(length & 0xFF))
+        } else {
+            frame.append(127)
+            let value = UInt64(length)
+            for shift in stride(from: 56, through: 0, by: -8) {
+                frame.append(UInt8((value >> UInt64(shift)) & 0xFF))
+            }
+        }
+        frame.append(payload)
+        connection.send(content: frame, completion: .contentProcessed { _ in })
+    }
+
+    private func closeWebSocket(code: UInt16) {
+        var payload = Data()
+        payload.append(UInt8((code >> 8) & 0xFF))
+        payload.append(UInt8(code & 0xFF))
+        sendFrame(opcode: 0x8, payload: payload)
+        finish()
+    }
+
+    private static func wsAccept(_ key: String) -> String? {
+        let magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        guard let data = (key + magic).data(using: .utf8) else { return nil }
+        let digest = Insecure.SHA1.hash(data: data)
+        return Data(digest).base64EncodedString()
     }
 
     private func prepareUpload() -> Bool {
@@ -738,6 +961,10 @@ private final class HTTPConnection {
         }
         finished = true
         phase = .done
+        if webSocketOpen {
+            webSocketOpen = false
+            server?.unregisterWebSocketSession(self)
+        }
         try? uploadHandle?.close()
         uploadHandle = nil
         connection.cancel()
