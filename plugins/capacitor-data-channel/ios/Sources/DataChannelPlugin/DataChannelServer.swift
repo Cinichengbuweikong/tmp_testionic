@@ -41,6 +41,9 @@ final class DataChannelServer {
     private let stateLock = NSLock()
     private let sessionsLock = NSLock()
     private var wsSessions: [HTTPConnection] = []
+    /// 必须持有所有 HTTPConnection，否则它们会被立即释放、连接挂起（曾踩过的坑）
+    private let handlersLock = NSLock()
+    private var httpHandlers: [HTTPConnection] = []
 
     private var listener: NWListener?
     private var running = false
@@ -93,6 +96,21 @@ final class DataChannelServer {
         sessionsLock.lock()
         wsSessions.removeAll { $0 === session }
         sessionsLock.unlock()
+    }
+
+    fileprivate func registerHandler(_ handler: HTTPConnection) {
+        handlersLock.lock()
+        httpHandlers.append(handler)
+        handlersLock.unlock()
+    }
+
+    fileprivate func unregisterHandler(_ handler: HTTPConnection) {
+        handlersLock.lock()
+        httpHandlers.removeAll { $0 === handler }
+        handlersLock.unlock()
+        stateLock.lock()
+        activeConnectionCount = max(0, activeConnectionCount - 1)
+        stateLock.unlock()
     }
 
     /// 启动并返回实际端口（port=0 时由系统分配）。
@@ -174,6 +192,14 @@ final class DataChannelServer {
         running = false
         stateLock.unlock()
         current?.cancel()
+
+        // 兜底：主动结束所有进行中的连接（listener 取消后连接通常也会失败）
+        handlersLock.lock()
+        let pending = httpHandlers
+        handlersLock.unlock()
+        for handler in pending {
+            handler.shutdown()
+        }
     }
 
     // MARK: - 连接
@@ -206,14 +232,9 @@ final class DataChannelServer {
             maxBodyBytes: maxBodyBytes,
             wsEcho: wsEcho,
             server: self,
-            queue: queue,
-            onFinish: { [weak self] in
-                guard let self = self else { return }
-                self.stateLock.lock()
-                self.activeConnectionCount = max(0, self.activeConnectionCount - 1)
-                self.stateLock.unlock()
-            }
+            queue: queue
         )
+        registerHandler(handler)
         handler.start()
     }
 }
@@ -245,7 +266,6 @@ private final class HTTPConnection {
     private let wsEcho: Bool
     private weak var server: DataChannelServer?
     private let queue: DispatchQueue
-    private let onFinish: () -> Void
 
     private var phase: Phase = .headers
     private var headerData = Data()
@@ -273,8 +293,7 @@ private final class HTTPConnection {
         maxBodyBytes: Int64,
         wsEcho: Bool,
         server: DataChannelServer,
-        queue: DispatchQueue,
-        onFinish: @escaping () -> Void
+        queue: DispatchQueue
     ) {
         self.connection = connection
         self.root = root
@@ -283,7 +302,6 @@ private final class HTTPConnection {
         self.wsEcho = wsEcho
         self.server = server
         self.queue = queue
-        self.onFinish = onFinish
     }
 
     func start() {
@@ -978,6 +996,11 @@ private final class HTTPConnection {
         return Data(lines.utf8)
     }
 
+    /// 供 server 在 stop() 时强制结束连接。
+    func shutdown() {
+        finish()
+    }
+
     private func finish() {
         if finished {
             return
@@ -991,7 +1014,8 @@ private final class HTTPConnection {
         try? uploadHandle?.close()
         uploadHandle = nil
         connection.cancel()
-        onFinish()
+        // 通知 server 移除对自身的强引用（否则会泄漏）
+        server?.unregisterHandler(self)
     }
 
     // MARK: 工具
