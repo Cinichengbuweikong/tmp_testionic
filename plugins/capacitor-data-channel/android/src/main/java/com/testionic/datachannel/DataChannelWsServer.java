@@ -14,6 +14,7 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -382,12 +383,73 @@ public class DataChannelWsServer {
             if (fin && (opcode == 0x0 || opcode == 0x1 || opcode == 0x2)) {
                 byte[] message = assembled.toByteArray();
                 assembled.reset();
-                if (wsEcho) {
-                    sendFrame(session, assembledOpcode == 0x1 ? 0x1 : 0x2, message);
-                }
-                // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点
+                handleCompleteMessage(session, assembledOpcode == 0x1 ? 0x1 : 0x2, message);
             }
         }
+    }
+
+    /**
+     * 处理一条完整消息（自定义协议，因为 WebSocket 消息没有头）：
+     *
+     *   正常：[OTP 字符串(43 字符 ASCII)][0x00][payload 原始二进制]
+     *   错误：[0x00][错误文本 UTF-8]（Server→Client）
+     *
+     * - 按**第一个 0x00** 分割（OTP 是 base64url，永远不含 0x00；payload 可含 0x00）；
+     * - OTP 校验失败（不存在/已用过/被篡改）→ 回一条错误消息，**不回显数据**；
+     * - 校验成功 → （echo 模式）生成新的一次性 nonce，回
+     *   `[nonce][0x00][payload]`，JS 需用 `validateAndConsumeOTP` 验证该 nonce。
+     */
+    private void handleCompleteMessage(WsSession session, int opcode, byte[] message) throws IOException {
+        int separator = -1;
+        for (int i = 0; i < message.length; i++) {
+            if (message[i] == 0) {
+                separator = i;
+                break;
+            }
+        }
+        if (separator < 0) {
+            sendError(session, "missing OTP separator (0x00)");
+            return;
+        }
+        if (separator == 0) {
+            sendError(session, "missing OTP");
+            return;
+        }
+        String otp = new String(message, 0, separator, StandardCharsets.US_ASCII);
+        byte[] payload = Arrays.copyOfRange(message, separator + 1, message.length);
+        if (!otpStore.consume(otp, OtpStore.SCOPE_READWRITE, "")) {
+            Log.d(TAG, "drop message: invalid or reused OTP");
+            sendError(session, "invalid or reused OTP");
+            return;
+        }
+        if (!wsEcho) {
+            // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点（payload 已校验过 OTP）
+            return;
+        }
+        // 生成 Server→Client 的一次性 nonce（等待 JS 通过 validateAndConsumeOTP 消费）
+        String nonce;
+        try {
+            nonce = otpStore.create(OtpStore.SCOPE_READWRITE, "", false);
+        } catch (IllegalStateException e) {
+            Log.d(TAG, "cannot echo: too many pending nonces (is the WebView validating them?)");
+            sendError(session, "too many pending nonces");
+            return;
+        }
+        byte[] nonceBytes = nonce.getBytes(StandardCharsets.US_ASCII);
+        byte[] out = new byte[nonceBytes.length + 1 + payload.length];
+        System.arraycopy(nonceBytes, 0, out, 0, nonceBytes.length);
+        out[nonceBytes.length] = 0;
+        System.arraycopy(payload, 0, out, nonceBytes.length + 1, payload.length);
+        sendFrame(session, opcode == 0x1 ? 0x1 : 0x2, out);
+    }
+
+    /** 回一条错误消息：`[0x00][错误文本 UTF-8]`（二进制帧，便于客户端统一按 ArrayBuffer 处理）。 */
+    private void sendError(WsSession session, String error) throws IOException {
+        byte[] text = error.getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[1 + text.length];
+        out[0] = 0;
+        System.arraycopy(text, 0, out, 1, text.length);
+        sendFrame(session, 0x2, out);
     }
 
     private void sendFrame(WsSession session, int opcode, byte[] data) throws IOException {

@@ -1,7 +1,6 @@
 import { WebPlugin } from '@capacitor/core';
 
 import type {
-  ChannelInfo,
   DataChannelPlugin,
   HttpInfo,
   HttpOtpInfo,
@@ -37,8 +36,12 @@ export class DataChannelWeb extends WebPlugin implements DataChannelPlugin {
     throw new Error(`DataChannel.stopWebSocket(): ${NATIVE_ONLY}`);
   }
 
-  async getInfo(): Promise<ChannelInfo> {
-    return { http: null, webSocket: null };
+  async getHttpInfo(): Promise<HttpInfo> {
+    throw new Error(`DataChannel.getHttpInfo(): ${NATIVE_ONLY}`);
+  }
+
+  async getWsInfo(): Promise<WsInfo> {
+    throw new Error(`DataChannel.getWsInfo(): ${NATIVE_ONLY}`);
   }
 
   async createHttpOtp(_options: CreateHttpOtpOptions): Promise<HttpOtpInfo> {
@@ -47,6 +50,10 @@ export class DataChannelWeb extends WebPlugin implements DataChannelPlugin {
 
   async createWsOtp(): Promise<WsOtpInfo> {
     throw new Error(`DataChannel.createWsOtp(): ${NATIVE_ONLY}`);
+  }
+
+  async validateAndConsumeOTP(): Promise<{ valid: boolean }> {
+    return { valid: false };
   }
 
   async revokeOtp(): Promise<{ revoked: boolean }> {

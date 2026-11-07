@@ -287,24 +287,36 @@ D:\projs\testionic
   - `startHttp()` 失败时的错误信息改为提示"用 capacitor-native-files 授权"。
 - **2026-11-07 OTP 鉴权改造 + 双 server 分离**（用户主导设计，核心安全升级）：
   - **两个独立 server**：`startHttp/stopHttp`（HTTP）与 `startWebSocket/stopWebSocket`（WS），
-    各自随机端口、各自 OTP 表、各自连接限流；`getInfo()` → `{ http, webSocket }`（都是 null 或对象）；
+    各自随机端口、各自 OTP 表、各自连接限流；状态分开读：`getHttpInfo()` / `getWsInfo()`
+    （停止时也返回结构体，`running: false`）；
   - **OTP 替代长期 token**：OTP 通过 **Capacitor 桥**下发（`createHttpOtp` / `createWsOtp`），
     桥是进程内 `postMessage`，**抓包看不到生成过程**；抓包只能看到已作废的 OTP；
   - **OTP 规则**：一次性（默认）/ reusable（**仅 scope=read**，媒体用）；**写不允许 reusable**；
     **无 TTL**（= server 生命周期）；HTTP OTP 的 `path` **必填且精确匹配**；WS OTP 只一次性；
-    校验失败统一 404；OTP 上限 256；
+    OTP 固定 **43 字符**（32 字节随机 base64url）；上限 256；HTTP 校验失败统一 404；
   - **必须 revoke**（README 有加粗警告）：reusable OTP 用完不 revoke → server 运行期间永久有效；
     提供 `revokeOtp` / `revokeAllOtps({server})`；测试页/autotest 覆盖 revoke 前后行为；
   - **传递方式**：HTTP `Authorization: OTP <otp>`（普通）或 `?otp=`（媒体 URL）；
-    WS `Sec-WebSocket-Protocol: otp.<otp>`（不进 URL）；
+  - **WS 逐条 OTP（用户要求"每条消息一个新 OTP"）**：WebSocket 消息**没有头**，所以自定义协议
+    `[OTP(43 字符 ASCII)][0x00][payload 原始二进制]`；按**第一个 0x00** 分割（OTP 是 base64url
+    永不含 0x00，payload 可含 0x00）；错误消息为 `[0x00][错误文本 UTF-8]`；
+    - **Client→Server**：每条消息前 `createWsOtp()`；Server 校验失败 → 丢弃 + 回错误消息；
+    - **Server→Client**：Server 每条消息生成一次性 nonce 放进消息前缀；JS 必须调
+      **`validateAndConsumeOTP`** 验证并消费（否则表会堆积，满 256 时回 `too many pending nonces`）；
+    - 为什么反向验证：若 Server 通过桥"提前通知" OTP，桥事件与 WS 消息是两条通道、顺序无保证（竞态）；
+    - **helper（TS 导出）**：`encodeWsMessage(payload)` / `decodeWsMessage(data)`，内部自动
+      `createWsOtp` / `validateAndConsumeOTP`；`core.ts` 单独放 `registerPlugin` 避免循环依赖；
   - **两级连接限流**：未认证 4（防扫描/DoS）/ 已认证 16（`maxConnections` 可调），HTTP/WS 分开计数；
   - **威胁模型**（README 有表）：防普通网页/非 root App/重放；**不防 root 设备与 WebView 被注入**；
-  - **实测（真机）**：重放写/读 OTP → 404；OTP 绑 A 请求 B → 404；read OTP 写 → 404；
+  - **实测（真机 + autotest 全绿）**：重放写/读 OTP → 404；OTP 绑 A 请求 B → 404；read OTP 写 → 404；
     写+reusable → reject；穿越 path → reject；媒体 reusable 两次 200 → revoke 后 404；
-    WS 重放 → 连接被拒；6 个沉默连接 → pending 停在 4；getInfo 停止后 `{http:null,webSocket:null}`；
+    WS 握手重放 → 连接被拒；**WS 消息无 OTP → 错误消息**；**WS 消息重放 → 第二次错误消息**；
+    **validateAndConsumeOTP 首次 true / 再次 false**；payload 中的 0x00 正确保留；
+    6 个沉默连接 → pending 停在 4；stop 后 getHttpInfo/getWsInfo 各自 running:false；
   - 坑：Java `handleRequest` 的 catch 分支漏 `return`（编译报"缺少返回语句"）；
     `JSObject.put(key, null)` 会跳过 → 用 `org.json.JSONObject.NULL`；Swift 字典赋 nil 会**移除键** →
-    用 `NSNull()`；DELETE 请求的 CORS 预检 `Allow-Methods` 不含 DELETE（路由已删，测试改用 GET）。
+    用 `NSNull()`；DELETE 请求的 CORS 预检 `Allow-Methods` 不含 DELETE（路由已删，测试改用 GET）；
+    `verify-ios.mjs` 原来只从 `index.ts` 找 `registerPlugin`，拆出 `core.ts` 后要两个文件都看。
 - **2026-11-07 平台限制实测修正（重要，之前文档是错的）**：
   - 真机 Android 10（API 29）+ targetSdk 36 + `requestLegacyExternalStorage="true"`：
     `privateFlags` 含 `PRIVATE_FLAG_REQUEST_LEGACY_EXTERNAL_STORAGE` → **legacy 生效**；

@@ -58,7 +58,7 @@ import { DataChannel } from 'capacitor-data-channel';
 const http = await DataChannel.startHttp();
 // http = { running, port, baseUrl: 'http://127.0.0.1:41523', rootPath, maxBodyBytes, maxConnections, ... }
 
-// 上传：先通过桥拿一次性 OTP（写）
+// 上传：先通过桥拿一次性 OTP（写）每次写都需要新 OTP
 const w = await DataChannel.createHttpOtp({ scope: 'write', path: 'videos/clip.mp4' });
 await fetch(`${http.baseUrl}/upload?path=videos/clip.mp4`, {
   method: 'PUT',
@@ -66,7 +66,7 @@ await fetch(`${http.baseUrl}/upload?path=videos/clip.mp4`, {
   body: fileBlob,
 });
 
-// 下载：一次性 OTP（读）
+// 下载：一次性 OTP（读）默认每次读都需要 OTP  但为了方便 video audio 的场景 提供 reuseable 的长时间 OTP 来供播放使用
 const r = await DataChannel.createHttpOtp({ scope: 'read', path: 'videos/clip.mp4' });
 const blob = await (await fetch(`${http.baseUrl}/download?path=videos/clip.mp4&otp=${r.otp}`)).blob();
 
@@ -79,16 +79,26 @@ const media = await DataChannel.createHttpOtp({
 video.src = `${http.baseUrl}/download?path=videos/clip.mp4&otp=${media.otp}`;
 video.onended = () => DataChannel.revokeOtp({ otp: media.otp });
 
-// ---------- WebSocket：实时双向 ----------
+// ---------- WebSocket：实时双向（每条消息一个一次性 OTP）----------
+import { encodeWsMessage, decodeWsMessage } from 'capacitor-data-channel';
+
 const wsInfo = await DataChannel.startWebSocket();
-const wsOtp = await DataChannel.createWsOtp(); // 一次性
-const ws = new WebSocket(wsInfo.wsUrl, [`otp.${wsOtp.otp}`]); // 子协议传 OTP（不进 URL）
+const handshake = await DataChannel.createWsOtp(); // 仅用于握手
+const ws = new WebSocket(wsInfo.wsUrl, [`otp.${handshake.otp}`]); // 子协议传 OTP（不进 URL）
 ws.binaryType = 'arraybuffer';
-ws.onmessage = (event) => {
-  const bytes = new Uint8Array(event.data);
-  /* ... */
+
+// 发送：encodeWsMessage 内部 createWsOtp，拼成 [otp][0x00][payload]
+ws.send(await encodeWsMessage(new Uint8Array([1, 2, 3])));
+
+// 接收：decodeWsMessage 内部 validateAndConsumeOTP；ok=false 必须丢弃
+ws.onmessage = async (event) => {
+  const { ok, payload, error } = await decodeWsMessage(event.data);
+  if (!ok) {
+    console.warn('消息被篡改/重放，已丢弃:', error);
+    return;
+  }
+  // payload 是原始二进制（ArrayBuffer）
 };
-ws.send(new Uint8Array([1, 2, 3]));
 
 // ---------- 停止 ----------
 await DataChannel.stopHttp();
@@ -106,8 +116,9 @@ await DataChannel.stopWebSocket();
 | 有效期 | **无 TTL**（server 停止才失效） |
 | 使用次数 | 一次性 OTP 用 1 次；reusable 不限（直到 revoke） |
 | 数量上限 | 256 个（超出创建会报错） |
-| WS OTP | **只支持一次性**（双向含写入，不允许 reusable） |
-| 校验失败 | 统一返回 **404**（不泄露"需要 OTP"） |
+| **OTP 长度** | **固定 43 字符**（32 字节随机 → base64url 无填充）；协议本身不依赖长度（用 `0x00` 分隔） |
+| WS OTP | **只支持一次性**；**握手一个 + 每条消息各一个**（见「WebSocket 消息协议」） |
+| 校验失败 | HTTP 统一返回 **404**（不泄露"需要 OTP"）；WS 回一条**错误消息**（`[0x00][错误文本]`） |
 
 ## 数据目录（rootDir）
 
@@ -190,18 +201,56 @@ OTP 传递方式：
 | 项 | 说明 |
 | --- | --- |
 | 端点 | `ws://127.0.0.1:<port>/ws`（`wsInfo.wsUrl`） |
-| 鉴权 | **一次性 OTP**，通过 `Sec-WebSocket-Protocol: otp.<otp>` 传递（推荐，不进 URL）；也支持 `?otp=` |
+| 握手鉴权 | **一次性 OTP**，通过 `Sec-WebSocket-Protocol: otp.<otp>` 传递（不进 URL）；也支持 `?otp=` |
+| 消息鉴权 | **每条消息一个一次性 OTP**（见下「消息协议」） |
 | 支持 | 文本/二进制帧、分片重组、ping/pong、close；单帧上限 64MB |
-| 默认模式 | **echo**（收到什么回什么）；`startWebSocket({ wsEcho: false })` 关闭，留给业务接入 |
+| 默认模式 | **echo**（校验通过后原样回发）；`startWebSocket({ wsEcho: false })` 关闭，留给业务接入 |
+
+### WebSocket 消息协议（必须遵守）
+
+**WebSocket 消息本身没有"头"**（只有握手是 HTTP），所以 OTP 必须放在消息体里：
+
+```
+正常消息（双向）：[OTP 字符串(43 字符 ASCII)][0x00][payload 原始二进制]
+错误消息（Server→Client）：[0x00][错误文本 UTF-8]
+```
+
+| 规则 | 说明 |
+| --- | --- |
+| 分隔符 | **第一个 `0x00`**。OTP 是 base64url（`A-Za-z0-9_-`），永不含 `0x00`；payload 可以包含 `0x00`（不会误判） |
+| Client → Server | 每条消息前先 `createWsOtp()` 拿新 OTP 拼进消息；Server 校验失败 → **丢弃并回错误消息** |
+| Server → Client | Server 每条消息生成新的一次性 nonce 放进消息；JS 必须调 `validateAndConsumeOTP` 验证并消费 |
+| 错误消息 | 首字节 `0x00`（OTP 为空），与正常消息天然区分；JS 收到后返回错误，**不得使用 payload** |
+| nonce 堆积 | 插件不清理（由 JS 保证"每条都验证"）；表满 256 时回错误消息 `too many pending nonces` |
+
+> **为什么 Server→Client 用"反向验证"**：如果 Server 通过桥"提前通知" OTP，桥事件和 WS 消息是两条
+> 通道，**顺序无法保证**（竞态）。改成"Server 先记录 nonce → JS 收到消息后反向验证"就完全避免竞态。
+
+### 使用 helper（推荐）
 
 ```ts
+import { DataChannel, encodeWsMessage, decodeWsMessage } from 'capacitor-data-channel';
+
 const wsInfo = await DataChannel.startWebSocket();
-const wsOtp = await DataChannel.createWsOtp();
-const ws = new WebSocket(wsInfo.wsUrl, [`otp.${wsOtp.otp}`]);
+const handshake = await DataChannel.createWsOtp();
+const ws = new WebSocket(wsInfo.wsUrl, [`otp.${handshake.otp}`]);
 ws.binaryType = 'arraybuffer';
-ws.onopen = () => ws.send(frame);
-ws.onmessage = (event) => { /* ArrayBuffer */ };
+
+// 发送（内部 createWsOtp + 拼协议）
+ws.send(await encodeWsMessage(frame));
+
+// 接收（内部 validateAndConsumeOTP；ok=false 必须丢弃）
+ws.onmessage = async (event) => {
+  const { ok, payload, error } = await decodeWsMessage(event.data);
+  if (!ok) {
+    console.warn('discarded:', error);
+    return;
+  }
+  handleFrame(new Uint8Array(payload));
+};
 ```
+
+**性能**：每条消息一次桥调用（~1ms）——这是安全优先的代价；60fps 下每帧 16ms，占比约 6%。
 
 **推荐用法**（按实测）：
 
@@ -232,7 +281,11 @@ ws.onmessage = (event) => { /* ArrayBuffer */ };
 | `wsEcho` | `boolean` | `true` | echo 模式 |
 | `maxConnections` | `number` | 16 | 已认证连接并发上限（未认证固定 4） |
 
-### getInfo() → { http: HttpInfo | null, webSocket: WsInfo | null }
+### getHttpInfo() → HttpInfo
+
+### getWsInfo() → WsInfo
+
+（两个 server 独立，状态分开读取；停止时也返回结构体，`running: false`）
 
 ### createHttpOtp(options) → HttpOtpInfo
 
@@ -242,6 +295,16 @@ ws.onmessage = (event) => { /* ArrayBuffer */ };
 
 ### createWsOtp() → { otp, reusable: false }
 
+用于 **握手** 和 **每条 Client → Server 消息**（消息前缀 `[otp][0x00][payload]`）。只支持一次性。
+
+### validateAndConsumeOTP({ otp }) → { valid: boolean }
+
+验证并消费一个 OTP（用于 WebView 校验 **Server → Client** 的 WS 消息）：
+- `valid: true` → 消息合法（nonce 已消费，不可重放）；
+- `valid: false` → 消息被篡改/伪造/重放，**必须丢弃**。
+
+同时检查 HTTP 与 WS 的 OTP 表。
+
 ### revokeOtp({ otp }) → { revoked: boolean }
 
 ### revokeAllOtps({ server? }) → { revoked: number }
@@ -250,7 +313,7 @@ ws.onmessage = (event) => { /* ArrayBuffer */ };
 
 ### addListener('stateChanged', cb)
 
-start/stop 时派发，载荷同 `getInfo()`。
+start/stop 时派发，载荷为 `{ http: HttpInfo | null, webSocket: WsInfo | null }`。
 
 ### HttpInfo / WsInfo 字段
 
@@ -298,13 +361,14 @@ start/stop 时派发，载荷同 `getInfo()`。
 
 | 措施 | 说明 |
 | --- | --- |
-| **OTP（桥下发）** | 抓包看不到生成过程；一次性重放无效；reusable 用完 revoke |
+| **OTP（桥下发）** | 抓包看不到生成过程；**HTTP 每请求一个**、**WS 每条消息一个**（握手另算）；一次性重放无效；reusable 用完 revoke |
+| **WS 双向校验** | Client→Server 由 Server 校验；Server→Client 由 JS 调 `validateAndConsumeOTP` 反向验证（避免桥/WS 通道竞态） |
 | **只绑 127.0.0.1** | 外部设备无法访问 |
 | **随机端口** | 降低被扫描命中的概率 |
 | **Origin 白名单** | 只放行 `capacitor://localhost` / `https://localhost` 等；非法 Origin **静默断开** |
 | **两级连接限流** | 未认证 4（防扫描/DoS）/ 已认证 16（可配） |
 | **路径限制** | 只接受 rootDir 内的相对路径；拒绝 `..`、绝对路径、软链逃逸 |
-| **OTP 校验失败 404** | 与未知路由不可区分，不泄露服务存在 |
+| **校验失败行为** | HTTP 统一 404（与未知路由不可区分）；WS 回错误消息（`[0x00][错误文本]`），payload 丢弃 |
 | **日志** | 不记录 OTP/敏感信息 |
 
 ### 威胁模型（重要，请务必了解）
@@ -359,7 +423,8 @@ const state = await AppState.addListener('stateChanged', (s) => {
 
 | 项目 | 结果 |
 | --- | --- |
-| `startHttp` | running、端口随机、rootPath 正确、maxConnections 16、otpCount 0 |
+| `startHttp` / `getHttpInfo` | running、端口随机、rootPath 正确、maxConnections 16、otpCount 0 |
+| `getWsInfo`（未启动） | `running: false`、`wsUrl: ""` |
 | OTP 生成 | 43 字符 base64url（32 字节随机） |
 | 上传（write OTP） | 200 ✓ |
 | **重放写 OTP** | **404** ✓ |
@@ -372,11 +437,18 @@ const state = await AppState.addListener('stateChanged', (s) => {
 | 媒体 reusable ×2 | 200 / 200 ✓ |
 | **revoke 后** | **404** ✓ |
 | 无 OTP / 旧路由 | 404 / 404 / 404 ✓ |
-| WebSocket（子协议 OTP） | echo 正常 ✓ |
-| **WS 重放同一 OTP** | **连接被拒** ✓ |
+| WebSocket（握手 OTP） | 连接正常 ✓ |
+| **WS 握手重放同一 OTP** | **连接被拒** ✓ |
+| WS 消息（`[otp][0x00][payload]`） | echo 正常、payload 中的 `0x00` 保留 ✓ |
+| **WS 消息无 OTP** | **回错误消息**（`missing OTP separator`）✓ |
+| **WS 消息重放（同一 OTP 两次）** | 第 1 次 合法 / 第 2 次 **错误消息** ✓ |
+| **`validateAndConsumeOTP`** | 首次 `true` / 再次 `false` ✓ |
+| **WS 消息重放（同一 OTP 两次）** | 第 1 次 合法 / 第 2 次 **错误消息** ✓ |
 | **连接限流**（6 个沉默连接） | `pending` 停在 **4** ✓ |
-| `getInfo` 停止后 | `{ http: null, webSocket: null }` ✓ |
+| `stopHttp` / `stopWebSocket` 后 | 各自 `running: false` ✓ |
 | HTTP / WS 独立启停 | 各停各的 ✓ |
+
+> 真机 autotest 全绿（`ok: true`，含以上全部断言）。
 
 ## 开发
 

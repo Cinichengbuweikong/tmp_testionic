@@ -81,11 +81,18 @@ export interface DataChannelPlugin {
   stopWebSocket(): Promise<WsInfo>;
 
   /**
-   * 读取两个 server 的当前状态。
+   * 读取 HTTP server 的当前状态。
    *
    * @since 0.3.0
    */
-  getInfo(): Promise<ChannelInfo>;
+  getHttpInfo(): Promise<HttpInfo>;
+
+  /**
+   * 读取 WebSocket server 的当前状态。
+   *
+   * @since 0.3.0
+   */
+  getWsInfo(): Promise<WsInfo>;
 
   /**
    * 创建 HTTP OTP（通过桥下发，抓包看不到）。
@@ -102,13 +109,30 @@ export interface DataChannelPlugin {
   createHttpOtp(options: CreateHttpOtpOptions): Promise<HttpOtpInfo>;
 
   /**
-   * 创建 WebSocket OTP（一次性；WS 双向含写入，所以不允许 reusable）。
+   * 创建 WebSocket OTP（一次性）。
    *
-   * 用法：`new WebSocket(wsUrl, ['otp.' + otp])`。
+   * 用于两处：
+   * 1. **建立连接**：`new WebSocket(wsUrl, ['otp.' + otp])`（握手校验）；
+   * 2. **每条 Client → Server 消息**：消息体前缀 `[1 字节 otpLen][otp][payload]`。
    *
    * @since 0.3.0
    */
   createWsOtp(): Promise<WsOtpInfo>;
+
+  /**
+   * 验证并消费一个 OTP（用于 WebView 校验 **Server → Client** 的 WS 消息）。
+   *
+   * Server 每发一条消息，会生成一个一次性 nonce 并放进消息前缀
+   * （`[1 字节 otpLen][nonce][payload]`），同时记录在服务端 OTP 表里。
+   * JS 收到消息后调用本 API：
+   * - 返回 `valid: true` → 该消息来自本 App 的 native（合法），并且该 nonce 已被消费（不可重放）；
+   * - 返回 `valid: false` → 消息被篡改/伪造/重放，**必须丢弃**。
+   *
+   * 注意：本 API 会同时检查 HTTP 与 WS 的 OTP 表（消费成功即返回 true）。
+   *
+   * @since 0.3.0
+   */
+  validateAndConsumeOTP(options: { otp: string }): Promise<{ valid: boolean }>;
 
   /**
    * 撤销单个 OTP（媒体播放结束/页面卸载时调用）。

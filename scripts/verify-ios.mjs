@@ -87,10 +87,17 @@ for (const entry of entries) {
   }
 
   const jsName = /jsName\s*=\s*"([^"]+)"/.exec(swiftSource)?.[1];
-  const indexTs = await read(path.join(dir, 'src', 'index.ts'));
-  const registeredName = /registerPlugin<[^>]*>\(\s*['"]([^'"]+)['"]/.exec(indexTs)?.[1];
+  // registerPlugin 可能在 index.ts，也可能被拆到 core.ts（避免 helpers ↔ index 循环依赖）
+  let registerSources = '';
+  for (const candidate of ['index.ts', 'core.ts']) {
+    const candidatePath = path.join(dir, 'src', candidate);
+    if (await exists(candidatePath)) {
+      registerSources += '\n' + (await read(candidatePath));
+    }
+  }
+  const registeredName = /registerPlugin<[^>]*>\(\s*['"]([^'"]+)['"]/.exec(registerSources)?.[1];
   if (!jsName || !registeredName) {
-    problems.push(`${entry.name}: 无法解析 jsName（Swift）或 registerPlugin 名称（index.ts）`);
+    problems.push(`${entry.name}: 无法解析 jsName（Swift）或 registerPlugin 名称（index.ts / core.ts）`);
   } else if (jsName !== registeredName) {
     problems.push(`${entry.name}: jsName "${jsName}" 与 registerPlugin("${registeredName}") 不一致`);
   }

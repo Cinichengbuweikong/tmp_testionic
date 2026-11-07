@@ -193,7 +193,7 @@
 <script>
 import { Capacitor } from '@capacitor/core';
 import { AppState } from 'capacitor-app-state';
-import { DataChannel } from 'capacitor-data-channel';
+import { DataChannel, encodeWsMessage, decodeWsMessage } from 'capacitor-data-channel';
 import { NativeFiles } from 'capacitor-native-files';
 import { Fullscreen } from 'capacitor-fullscreen';
 import { KeyboardAvoiding } from 'capacitor-keyboard-avoiding';
@@ -491,9 +491,9 @@ export default {
             headers: { 'Access-Control-Request-Method': 'PUT' },
           });
 
-          // WebSocket：一次性 OTP 走子协议（不进 URL）
+          // WebSocket：握手一次性 OTP + 每条消息一次性 OTP（协议 [otp][0x00][payload]）
           const wsInfo = await DataChannel.startWebSocket();
-          const wsOtp = await DataChannel.createWsOtp();
+          const wsHandshakeOtp = await DataChannel.createWsOtp();
           const wsStartedAt = performance.now();
           const wsResult = await new Promise((resolve) => {
             let settled = false;
@@ -508,7 +508,7 @@ export default {
             wsPayload[wsPayload.length - 1] = 0x22;
             let ws;
             try {
-              ws = new WebSocket(wsInfo.wsUrl, [`otp.${wsOtp.otp}`]);
+              ws = new WebSocket(wsInfo.wsUrl, [`otp.${wsHandshakeOtp.otp}`]);
             } catch (err) {
               done({ error: 'construct: ' + ((err && err.message) || err) });
               return;
@@ -522,24 +522,40 @@ export default {
               }
               done({ error: 'timeout' });
             }, 8000);
-            ws.onopen = () => {
-              ws.send(wsPayload.buffer);
-            };
-            ws.onmessage = (event) => {
-              clearTimeout(timer);
-              const received = new Uint8Array(event.data);
+            ws.onopen = async () => {
               try {
-                ws.close();
-              } catch (ignored) {
-                // 忽略
+                // 每条消息：encodeWsMessage 内部 createWsOtp + 拼 [otp][0x00][payload]
+                ws.send(await encodeWsMessage(wsPayload));
+              } catch (err) {
+                clearTimeout(timer);
+                done({ error: 'encode: ' + ((err && err.message) || err) });
               }
-              done({
-                bytes: received.byteLength,
-                sameLength: received.byteLength === wsPayload.byteLength,
-                sameHead: received[0] === wsPayload[0],
-                sameTail: received[received.length - 1] === wsPayload[wsPayload.length - 1],
-                ms: Math.round(performance.now() - wsStartedAt),
-              });
+            };
+            ws.onmessage = async (event) => {
+              clearTimeout(timer);
+              try {
+                // 每条消息：decodeWsMessage 内部 validateAndConsumeOTP
+                const decoded = await decodeWsMessage(event.data);
+                try {
+                  ws.close();
+                } catch (ignored) {
+                  // 忽略
+                }
+                if (!decoded.ok) {
+                  done({ error: 'decode: ' + decoded.error });
+                  return;
+                }
+                const received = new Uint8Array(decoded.payload);
+                done({
+                  bytes: received.byteLength,
+                  sameLength: received.byteLength === wsPayload.byteLength,
+                  sameHead: received[0] === wsPayload[0],
+                  sameTail: received[received.length - 1] === wsPayload[wsPayload.length - 1],
+                  ms: Math.round(performance.now() - wsStartedAt),
+                });
+              } catch (err) {
+                done({ error: 'decode: ' + ((err && err.message) || err) });
+              }
             };
             ws.onerror = () => {
               clearTimeout(timer);
@@ -552,10 +568,10 @@ export default {
             };
           });
 
-          // 重放同一个 WS OTP → 连接必须被拒绝
+          // 重放同一个握手 OTP → 连接必须被拒绝
           const wsReplay = await new Promise((resolve) => {
             try {
-              const socket = new WebSocket(wsInfo.wsUrl, [`otp.${wsOtp.otp}`]);
+              const socket = new WebSocket(wsInfo.wsUrl, [`otp.${wsHandshakeOtp.otp}`]);
               const timer = setTimeout(() => {
                 try {
                   socket.close();
@@ -581,6 +597,93 @@ export default {
               resolve({ rejected: true });
             }
           });
+
+          // 消息级：无 OTP 的消息 → Server 回错误消息（消息被丢弃）
+          const wsNoOtp = await (async () => {
+            const handshake = await DataChannel.createWsOtp();
+            const ws = new WebSocket(wsInfo.wsUrl, [`otp.${handshake.otp}`]);
+            ws.binaryType = 'arraybuffer';
+            return await new Promise((resolve) => {
+              const timer = setTimeout(() => {
+                try {
+                  ws.close();
+                } catch (ignored) {
+                  // 忽略
+                }
+                resolve({ ok: null, error: 'timeout' });
+              }, 5000);
+              ws.onopen = () => {
+                ws.send(new Uint8Array([1, 2, 3])); // 不带 OTP
+              };
+              ws.onmessage = async (event) => {
+                clearTimeout(timer);
+                const decoded = await decodeWsMessage(event.data);
+                try {
+                  ws.close();
+                } catch (ignored) {
+                  // 忽略
+                }
+                resolve({ ok: decoded.ok, error: decoded.error });
+              };
+              ws.onerror = () => {
+                clearTimeout(timer);
+                resolve({ ok: null, error: 'ws error' });
+              };
+            });
+          })();
+
+          // 消息级：同一 OTP 重放 → 第二次必须被拒
+          const wsMessageReplay = await (async () => {
+            const handshake = await DataChannel.createWsOtp();
+            const msgOtp = await DataChannel.createWsOtp();
+            const payload = new Uint8Array([0xab, 0xcd]);
+            const otpBytes = new TextEncoder().encode(msgOtp.otp);
+            const frame = new Uint8Array(otpBytes.length + 1 + payload.length);
+            frame.set(otpBytes, 0);
+            frame[otpBytes.length] = 0;
+            frame.set(payload, otpBytes.length + 1);
+
+            const ws = new WebSocket(wsInfo.wsUrl, [`otp.${handshake.otp}`]);
+            ws.binaryType = 'arraybuffer';
+            const responses = [];
+            return await new Promise((resolve) => {
+              const timer = setTimeout(() => {
+                try {
+                  ws.close();
+                } catch (ignored) {
+                  // 忽略
+                }
+                resolve({ firstOk: null, secondOk: null, error: 'timeout' });
+              }, 6000);
+              ws.onopen = () => {
+                ws.send(frame); // 第 1 次：合法
+              };
+              ws.onmessage = async (event) => {
+                const decoded = await decodeWsMessage(event.data);
+                responses.push(decoded.ok);
+                if (responses.length === 1) {
+                  ws.send(frame); // 第 2 次：同一 OTP 重放
+                } else {
+                  clearTimeout(timer);
+                  try {
+                    ws.close();
+                  } catch (ignored) {
+                    // 忽略
+                  }
+                  resolve({ firstOk: responses[0], secondOk: responses[1] });
+                }
+              };
+              ws.onerror = () => {
+                clearTimeout(timer);
+                resolve({ firstOk: null, secondOk: null, error: 'ws error' });
+              };
+            });
+          })();
+
+          // validateAndConsumeOTP：有效 → true，再消费 → false
+          const validateOtp = await DataChannel.createWsOtp();
+          const validateFirst = await DataChannel.validateAndConsumeOTP({ otp: validateOtp.otp });
+          const validateAgain = await DataChannel.validateAndConsumeOTP({ otp: validateOtp.otp });
 
           const revoked = await DataChannel.revokeAllOtps();
           const stopHttp = await DataChannel.stopHttp();
@@ -611,6 +714,11 @@ export default {
             removedFileStatus: removedFileRes.status,
             preflightStatus: preflightRes.status,
             wsReplayRejected: wsReplay.rejected,
+            wsNoOtpOk: wsNoOtp.ok,
+            wsMessageReplayFirstOk: wsMessageReplay.firstOk,
+            wsMessageReplaySecondOk: wsMessageReplay.secondOk,
+            validateFirstValid: validateFirst.valid,
+            validateAgainValid: validateAgain.valid,
             revokedCount: revoked.revoked,
             httpStopped: stopHttp.running === false,
             wsStopped: stopWs.running === false,
@@ -639,6 +747,11 @@ export default {
             && wsResult.sameHead === true
             && wsResult.sameTail === true
             && wsReplay.rejected === true
+            && wsNoOtp.ok === false
+            && wsMessageReplay.firstOk === true
+            && wsMessageReplay.secondOk === false
+            && validateFirst.valid === true
+            && validateAgain.valid === false
             && stopHttp.running === false
             && stopWs.running === false;
           if (!dcOk) {
@@ -1081,25 +1194,34 @@ export default {
     },
 
     async ensureHttp() {
-      const info = await DataChannel.getInfo();
-      if (info.http && info.http.running) {
-        return info.http;
+      const info = await DataChannel.getHttpInfo();
+      if (info.running) {
+        return info;
       }
       return await DataChannel.startHttp();
     },
 
     async ensureWs() {
-      const info = await DataChannel.getInfo();
-      if (info.webSocket && info.webSocket.running) {
-        return info.webSocket;
+      const info = await DataChannel.getWsInfo();
+      if (info.running) {
+        return info;
       }
       return await DataChannel.startWebSocket();
+    },
+
+    async refreshDataChannelInfo() {
+      const [http, webSocket] = await Promise.all([
+        DataChannel.getHttpInfo(),
+        DataChannel.getWsInfo(),
+      ]);
+      this.dataChannelInfo = { http, webSocket };
+      return this.dataChannelInfo;
     },
 
     async startHttpServer() {
       try {
         const info = await DataChannel.startHttp();
-        this.dataChannelInfo = await DataChannel.getInfo();
+        await this.refreshDataChannelInfo();
         this.print('DataChannel.startHttp 成功', info);
       } catch (err) {
         this.error('DataChannel.startHttp', err);
@@ -1109,7 +1231,7 @@ export default {
     async stopHttpServer() {
       try {
         const info = await DataChannel.stopHttp();
-        this.dataChannelInfo = await DataChannel.getInfo();
+        await this.refreshDataChannelInfo();
         this.print('DataChannel.stopHttp 成功', info);
       } catch (err) {
         this.error('DataChannel.stopHttp', err);
@@ -1119,7 +1241,7 @@ export default {
     async startWsServer() {
       try {
         const info = await DataChannel.startWebSocket();
-        this.dataChannelInfo = await DataChannel.getInfo();
+        await this.refreshDataChannelInfo();
         this.print('DataChannel.startWebSocket 成功', info);
       } catch (err) {
         this.error('DataChannel.startWebSocket', err);
@@ -1129,7 +1251,7 @@ export default {
     async stopWsServer() {
       try {
         const info = await DataChannel.stopWebSocket();
-        this.dataChannelInfo = await DataChannel.getInfo();
+        await this.refreshDataChannelInfo();
         this.print('DataChannel.stopWebSocket 成功', info);
       } catch (err) {
         this.error('DataChannel.stopWebSocket', err);
@@ -1138,10 +1260,10 @@ export default {
 
     async loadDataChannelInfo() {
       try {
-        this.dataChannelInfo = await DataChannel.getInfo();
-        this.print('DataChannel.getInfo 成功', this.dataChannelInfo);
+        await this.refreshDataChannelInfo();
+        this.print('DataChannel 读取信息成功', this.dataChannelInfo);
       } catch (err) {
-        this.error('DataChannel.getInfo', err);
+        this.error('DataChannel 读取信息', err);
       }
     },
 
@@ -1281,11 +1403,11 @@ export default {
         for (let offset = 0; offset < size; offset += filler.length) {
           payload.set(filler.subarray(0, Math.min(filler.length, size - offset)), offset);
         }
-        // 一次性 WS OTP，通过子协议传递（不进 URL）
-        const otp = await DataChannel.createWsOtp();
+        // 建连：一次性 WS OTP，通过子协议传递（不进 URL）
+        const handshakeOtp = await DataChannel.createWsOtp();
         const startedAt = performance.now();
         const result = await new Promise((resolve, reject) => {
-          const ws = new WebSocket(wsInfo.wsUrl, [`otp.${otp.otp}`]);
+          const ws = new WebSocket(wsInfo.wsUrl, [`otp.${handshakeOtp.otp}`]);
           ws.binaryType = 'arraybuffer';
           const timer = setTimeout(() => {
             try {
@@ -1295,25 +1417,41 @@ export default {
             }
             reject(new Error('WebSocket 回显超时（15s）'));
           }, 15000);
-          ws.onopen = () => {
-            ws.send(payload.buffer);
-          };
-          ws.onmessage = (event) => {
-            clearTimeout(timer);
-            const received = new Uint8Array(event.data);
+          ws.onopen = async () => {
             try {
-              ws.close();
-            } catch (ignored) {
-              // 忽略
+              // 每条消息：内部 createWsOtp + 拼 [otp][0x00][payload]
+              ws.send(await encodeWsMessage(payload));
+            } catch (err) {
+              clearTimeout(timer);
+              reject(err);
             }
-            resolve({
-              sentBytes: size,
-              receivedBytes: received.byteLength,
-              sameLength: received.byteLength === size,
-              sameHead: received[0] === payload[0],
-              sameTail: received[size - 1] === payload[size - 1],
-              roundTripMs: Math.round(performance.now() - startedAt),
-            });
+          };
+          ws.onmessage = async (event) => {
+            clearTimeout(timer);
+            try {
+              // 每条消息：解析 + validateAndConsumeOTP 校验
+              const decoded = await decodeWsMessage(event.data);
+              try {
+                ws.close();
+              } catch (ignored) {
+                // 忽略
+              }
+              if (!decoded.ok) {
+                reject(new Error(`消息校验失败: ${decoded.error}`));
+                return;
+              }
+              const received = new Uint8Array(decoded.payload);
+              resolve({
+                sentBytes: size,
+                receivedBytes: received.byteLength,
+                sameLength: received.byteLength === size,
+                sameHead: received[0] === payload[0],
+                sameTail: received[size - 1] === payload[size - 1],
+                roundTripMs: Math.round(performance.now() - startedAt),
+              });
+            } catch (err) {
+              reject(err);
+            }
           };
           ws.onerror = () => {
             clearTimeout(timer);
@@ -1334,7 +1472,7 @@ export default {
             ? 'customData'
             : '/sdcard/Android/data/com.myapp.testionic/files/customData';
         const info = await DataChannel.startHttp({ rootDir: target });
-        this.dataChannelInfo = await DataChannel.getInfo();
+        await this.refreshDataChannelInfo();
         this.print('DataChannel 自定义目录启动成功', info);
       } catch (err) {
         this.error('DataChannel 自定义目录启动', err);

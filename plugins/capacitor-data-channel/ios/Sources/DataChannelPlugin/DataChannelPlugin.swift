@@ -27,9 +27,11 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "stopHttp", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startWebSocket", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopWebSocket", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getHttpInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getWsInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "createHttpOtp", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "createWsOtp", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "validateAndConsumeOTP", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "revokeOtp", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "revokeAllOtps", returnType: CAPPluginReturnPromise)
     ]
@@ -168,9 +170,15 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // ---------------------------------------------------------------- 状态
 
-    @objc func getInfo(_ call: CAPPluginCall) {
+    @objc func getHttpInfo(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            call.resolve(self.channelInfo())
+            call.resolve(self.httpInfo())
+        }
+    }
+
+    @objc func getWsInfo(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            call.resolve(self.wsInfo())
         }
     }
 
@@ -213,6 +221,22 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
         } catch {
             call.reject(error.localizedDescription)
         }
+    }
+
+    /// 验证并消费一个 OTP（WebView 校验 Server → Client 的 WS 消息用）。
+    @objc func validateAndConsumeOTP(_ call: CAPPluginCall) {
+        guard let otp = call.getString("otp"), !otp.isEmpty else {
+            call.reject("missing otp")
+            return
+        }
+        var valid = false
+        if let otps = httpOtps {
+            valid = otps.revoke(otp) || valid
+        }
+        if let otps = wsOtps {
+            valid = otps.revoke(otp) || valid
+        }
+        call.resolve(["valid": valid])
     }
 
     @objc func revokeOtp(_ call: CAPPluginCall) {

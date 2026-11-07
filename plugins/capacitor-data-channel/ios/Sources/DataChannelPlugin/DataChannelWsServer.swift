@@ -511,12 +511,64 @@ private final class WSConnection {
             if fin, (opcode == 0x0 || opcode == 0x1 || opcode == 0x2) {
                 let message = assembled
                 assembled = Data()
-                if wsEcho {
-                    sendFrame(opcode: assembledOpcode == 0x1 ? 0x1 : 0x2, payload: message)
-                }
-                // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点
+                handleCompleteMessage(opcode: assembledOpcode == 0x1 ? 0x1 : 0x2, message: message)
             }
         }
+    }
+
+    /// 处理一条完整消息（自定义协议）：
+    ///
+    ///   正常：[OTP 字符串(43 字符 ASCII)][0x00][payload 原始二进制]
+    ///   错误：[0x00][错误文本 UTF-8]（Server→Client）
+    ///
+    /// - 按**第一个 0x00** 分割（OTP 是 base64url，永远不含 0x00；payload 可含 0x00）；
+    /// - OTP 校验失败 → 回错误消息，不回显数据；
+    /// - 校验成功 → （echo 模式）生成新 nonce，回 `[nonce][0x00][payload]`，
+    ///   JS 需用 `validateAndConsumeOTP` 验证该 nonce。
+    private func handleCompleteMessage(opcode: UInt8, message: Data) {
+        guard let separator = message.firstIndex(of: 0) else {
+            sendError("missing OTP separator (0x00)")
+            return
+        }
+        let offset = message.distance(from: message.startIndex, to: separator)
+        if offset == 0 {
+            sendError("missing OTP")
+            return
+        }
+        let otpBytes = message[message.startIndex..<separator]
+        guard let otp = String(data: Data(otpBytes), encoding: .ascii) else {
+            sendError("invalid OTP encoding")
+            return
+        }
+        let payload = message.suffix(from: message.index(after: separator))
+        guard otpStore.consume(otp, scope: OtpStore.scopeReadWrite, path: "") else {
+            CAPLog.print("[DataChannelWs] drop message: invalid or reused OTP")
+            sendError("invalid or reused OTP")
+            return
+        }
+        if !wsEcho {
+            // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点（payload 已校验过 OTP）
+            return
+        }
+        let nonce: String
+        do {
+            nonce = try otpStore.create(scope: OtpStore.scopeReadWrite, path: "", reusable: false)
+        } catch {
+            CAPLog.print("[DataChannelWs] cannot echo: \(error.localizedDescription)")
+            sendError("too many pending nonces")
+            return
+        }
+        var out = Data(nonce.utf8)
+        out.append(0)
+        out.append(Data(payload))
+        sendFrame(opcode: opcode == 0x1 ? 0x1 : 0x2, payload: out)
+    }
+
+    /// 回一条错误消息：`[0x00][错误文本 UTF-8]`（二进制帧，便于客户端统一按 ArrayBuffer 处理）。
+    private func sendError(_ error: String) {
+        var out = Data([0])
+        out.append(Data(error.utf8))
+        sendFrame(opcode: 0x2, payload: out)
     }
 
     func sendBinaryFrame(_ payload: Data) {

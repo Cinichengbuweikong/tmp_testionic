@@ -170,16 +170,13 @@ public class DataChannelPlugin extends Plugin {
     // ---------------------------------------------------------------- 状态
 
     @PluginMethod
-    public void getInfo(PluginCall call) {
-        getBridge().executeOnMainThread(() -> {
-            JSObject ret = new JSObject();
-            boolean httpRunning = httpServer != null && httpServer.isRunning();
-            boolean wsRunning = wsServer != null && wsServer.isRunning();
-            // 用 JSONObject.NULL 显式写入 null（JSObject.put(key, null) 会被跳过）
-            ret.put("http", httpRunning ? httpInfo() : org.json.JSONObject.NULL);
-            ret.put("webSocket", wsRunning ? wsInfo() : org.json.JSONObject.NULL);
-            call.resolve(ret);
-        });
+    public void getHttpInfo(PluginCall call) {
+        getBridge().executeOnMainThread(() -> call.resolve(httpInfo()));
+    }
+
+    @PluginMethod
+    public void getWsInfo(PluginCall call) {
+        getBridge().executeOnMainThread(() -> call.resolve(wsInfo()));
     }
 
     // ---------------------------------------------------------------- OTP
@@ -216,7 +213,11 @@ public class DataChannelPlugin extends Plugin {
         }
     }
 
-    /** 创建 WebSocket OTP（一次性；WS 双向含写入，不允许 reusable）。 */
+    /**
+     * 创建 WebSocket OTP（一次性）。
+     *
+     * 用于两处：1) 建连握手；2) **每条 Client → Server 消息**（消息前缀 `[otp][0x00][payload]`）。
+     */
     @PluginMethod
     public void createWsOtp(PluginCall call) {
         if (wsServer == null || !wsServer.isRunning() || wsOtps == null) {
@@ -232,6 +233,34 @@ public class DataChannelPlugin extends Plugin {
         } catch (Exception e) {
             call.reject(e.getMessage());
         }
+    }
+
+    /**
+     * 验证并消费一个 OTP（WebView 校验 **Server → Client** 的 WS 消息用）。
+     *
+     * Server 每发一条消息会生成一次性 nonce 并记录；JS 收到后调本 API：
+     * - 返回 valid=true → 消息合法（且 nonce 已消费，不可重放）；
+     * - valid=false → 消息被篡改/伪造/重放，必须丢弃。
+     *
+     * 同时检查 HTTP 与 WS 的 OTP 表（任一中存在即消费并返回 true）。
+     */
+    @PluginMethod
+    public void validateAndConsumeOTP(PluginCall call) {
+        String otp = call.getString("otp", null);
+        if (otp == null || otp.isEmpty()) {
+            call.reject("missing otp");
+            return;
+        }
+        boolean valid = false;
+        if (httpOtps != null) {
+            valid = httpOtps.revoke(otp) || valid;
+        }
+        if (wsOtps != null) {
+            valid = wsOtps.revoke(otp) || valid;
+        }
+        JSObject ret = new JSObject();
+        ret.put("valid", valid);
+        call.resolve(ret);
     }
 
     @PluginMethod
