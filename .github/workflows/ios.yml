@@ -53,16 +53,26 @@ jobs:
       - name: Build app for simulator (unsigned)
         run: |
           set -o pipefail
+          # 不静默：把完整日志落到文件，失败时把前几条 error: 抛成 annotation（公开页面可直接看到）
           xcodebuild \
             -project ios/App/App.xcodeproj \
             -scheme App \
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/ios \
-            -quiet \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build
+            build > build-ios.log 2>&1 || true
+          status=$?
+          echo "----- last 40 lines -----"
+          tail -n 40 build-ios.log || true
+          if ! grep -q "BUILD SUCCEEDED" build-ios.log; then
+            echo "----- compile errors -----"
+            grep -E "error:" build-ios.log | head -n 20 || true
+            first_error=$(grep -m1 -E "error:" build-ios.log | sed 's/^ *//' || true)
+            echo "::error::${first_error:-iOS build failed (see log)}"
+            exit 1
+          fi
 
       - name: Run app in simulator and verify plugin (fail on error)
         run: |
