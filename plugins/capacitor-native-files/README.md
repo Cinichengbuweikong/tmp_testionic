@@ -1,23 +1,31 @@
 # capacitor-native-files
 
-本地**文件系统**插件：系统原生文件/文件夹选择器 + 文件读写 + 文件夹管理，可与
-[`capacitor-data-channel`](../capacitor-data-channel/) 配合实现"选择文件 → 高速传输"。
+本地**文件系统**插件：系统原生文件/文件夹选择器 + **真实绝对路径**读写 + 文件夹管理。
+
+> **0.2.0 起所有 API 都用真实文件系统绝对路径**（如 `/storage/emulated/0/Notes/a.md`），
+> 不再使用 `content://` URI。可以直接拼路径、算父/子目录——Markdown 阅读器、笔记树这类
+> 需要"按目录结构遍历"的应用可以正常实现。
+>
+> 与 [`capacitor-data-channel`](../capacitor-data-channel/) 配合：大数据读写走 data-channel，
+> 选择/遍历/管理文件走本插件。
 
 ## 能力一览
 
-| 功能 | API | 多选 |
+| 功能 | API | 说明 |
 | --- | --- | --- |
-| 选择文件（系统选择器） | `pickFiles()` | ✅ 支持（`multiple: true`） |
-| 选择文件夹（系统选择器） | `pickFolders()` | ❌ **单选**（Android SAF 系统限制，iOS 保持一致） |
-| 读文件 | `readFile()`（base64，可 offset/length 分块） | — |
-| 写文件 | `writeFile()`（create / append / overwrite） | — |
+| 选择文件 | `pickFiles()` | ✅ 多选（`multiple: true`） |
+| 选择文件夹 | `pickFolders()` | ❌ 单选（Android SAF 系统限制，iOS 保持一致） |
+| 读文件 | `readFile()` | base64；可 `offset`/`length` 分块，单次上限 16MB |
+| 写文件 | `writeFile()` | `create` / `overwrite` / `append`；父目录自动创建 |
 | 删除文件 | `deleteFile()` | — |
-| 列目录 | `listFolder()` | — |
-| 新建文件夹 | `createFolder()` | — |
-| 删除文件夹 | `deleteFolder()` | — |
-| 重命名文件夹 | `renameFolder()` | — |
-| 文件/文件夹信息 | `getInfo()` | — |
-| 复制到 App 存储（配合 data-channel） | `copyToAppStorage()` | — |
+| 列目录 | `listFolder()` | 文件夹优先排序，可 `recursive` |
+| 新建文件夹 | `createFolder()` | `path` 是完整目标路径（递归创建） |
+| 删除文件夹 | `deleteFolder()` | 空目录直接删；非空需 `recursive: true` |
+| 重命名 | `renameFolder()` | 返回新路径（文件/文件夹都可用） |
+| 信息 | `getInfo()` | `{ exists, isDirectory, size, mimeType, lastModified, readable, writable }` |
+| 所有文件访问权限 | `checkAllFilesAccess()` / `requestAllFilesAccess()` | Android 11+ 打开系统设置页 |
+| 常用目录 | `getAppDirectories()` | App 私有目录 / 公共目录 / 安装目录的绝对路径 |
+| 复制到 data-channel 根目录 | `copyToAppStorage()` | 返回相对路径 |
 
 ## 安装
 
@@ -26,175 +34,215 @@ npm install ./plugins/capacitor-native-files
 npx cap sync
 ```
 
-> **无需存储权限**：Android 用 SAF（Storage Access Framework），权限来自用户在选择器里的授权；
-> iOS 用 UIDocumentPicker + security-scoped URL。
-
-## URI 约定（重要）
-
-所有 API 的 `uri` 参数是**平台 URI**，不是普通文件路径：
-
-| 平台 | URI 形式 | 说明 |
-| --- | --- | --- |
-| Android | `content://...` | SAF 文档 URI（用户在系统选择器里授权的位置） |
-| iOS | `file://...` | 文件 URL（系统选择器授予 security-scoped 访问） |
-
-> 为什么不是 `/sdcard/...` 这样的路径？Android 10+ 的 scoped storage 不允许直接按路径访问
-> 公共目录，SAF 是官方推荐方式；iOS 则根本没有"共享文件系统"。
+> **Android 公共目录权限**（读写任意路径必需）：
 >
-> 需要"文件路径"（给 data-channel 用）时，用 `copyToAppStorage()` 复制到 App 自有目录。
+> | 版本 | 需要 |
+> | --- | --- |
+> | ≤ 9 | `WRITE_EXTERNAL_STORAGE` |
+> | 10 | `WRITE_EXTERNAL_STORAGE` + 宿主 `requestLegacyExternalStorage="true"` |
+> | **11+** | **`MANAGE_EXTERNAL_STORAGE`** → 调 `requestAllFilesAccess()` 让用户去系统设置里开启 |
+>
+> **App 私有目录**（`getAppDirectories().dirs.appExternalFilesDir` 等）**任何版本都免权限**。
+> iOS 没有"公共目录"概念，用系统选择器选择文件夹后由插件持久化 security-scoped bookmark。
+
+## 路径约定（重要）
+
+所有 API 的 `path` 参数都是**绝对路径**：
+
+| 平台 | 示例 |
+| --- | --- |
+| Android | `/storage/emulated/0/Notes/a.md`（内部存储）、`/storage/1A2B-3C4D/Books/x.md`（SD 卡） |
+| iOS | `/var/mobile/Containers/Data/Application/<uuid>/Documents/Notes/a.md`（沙盒）<br>用户选择的 iCloud/文件 App 目录也是绝对路径（插件持有 security-scoped bookmark） |
+
+系统选择器返回的 `content://`（Android）会在插件内解析成真实路径：
+
+- `primary:Download/x` → `/storage/emulated/0/Download/x`
+- `home:` → `/storage/emulated/0/Documents/...`
+- `<卷 UUID>:Music` → `/storage/<UUID>/Music`
+- MediaStore → 查 `_data` 列
+- **云盘 / 第三方 SAF provider 没有 1:1 文件路径** → 会被跳过并在 `unmapped` 里返回（不会静默失败）
 
 ## 用法
 
-### 选择文件（支持多选）
+### 0) 先拿常用目录（推荐）
 
 ```ts
 import { NativeFiles } from 'capacitor-native-files';
 
-const result = await NativeFiles.pickFiles({
-  multiple: true,
-  mimeTypes: ['image/*', 'video/*', 'application/pdf'], // 可选，MIME 过滤
-});
-
-if (result.cancelled) {
-  console.log('用户取消了选择');
-} else {
-  for (const file of result.files) {
-    console.log(file.uri, file.name, file.size, file.mimeType);
-  }
-  // iOS 额外返回 bookmark（可用于后续恢复访问）
-}
+const { platform, dirs } = await NativeFiles.getAppDirectories();
+// Android:
+// { appFilesDir, appCacheDir, appExternalFilesDir, appExternalCacheDir, appExternalRoot,
+//   apkPath, nativeLibDir, appDataDir,
+//   externalStorage, downloads, documents, pictures, dcim, movies, music, alarms, ... }
+// iOS: { home, documents, library, applicationSupport, caches, temporary, bundle, icloudDocuments }
+console.log(dirs.documents); // /storage/emulated/0/Documents
 ```
 
-### 选择文件夹（单选）
+### 1) 选文件夹 → 得到绝对路径 → 拼路径遍历（Markdown 阅读器场景）
 
 ```ts
-const result = await NativeFiles.pickFolders();
-if (!result.cancelled) {
-  const folder = result.folders[0];
-  console.log(folder.uri, folder.name);
-}
-```
+const { folders, cancelled } = await NativeFiles.pickFolders();
+if (cancelled) return;
 
-### 读 / 写 / 删除文件
+const root = folders[0].path;                  // 例如 /storage/emulated/0/Notes
+const { entries } = await NativeFiles.listFolder({ path: root });
 
-```ts
-// 读：base64（大文件用 offset/length 分块读，单次上限 16MB）
-const content = await NativeFiles.readFile({ uri: file.uri });
-console.log(content.size, content.bytes, content.base64);
-
-// 写：create（已存在则失败）/ append（追加）/ overwrite（覆盖）
-await NativeFiles.writeFile({
-  uri: file.uri,
-  base64: btoa('hello'),
-  mode: 'append',
-});
-
-// 删
-await NativeFiles.deleteFile({ uri: file.uri });
-```
-
-### 文件夹操作
-
-```ts
-// 列目录
-const { entries } = await NativeFiles.listFolder({ uri: folder.uri });
 for (const entry of entries) {
-  console.log(entry.name, entry.isDirectory, entry.size);
+  if (entry.isDirectory) {
+    // 直接拼子目录 —— 这就是"真实路径"的意义
+    const sub = await NativeFiles.listFolder({ path: entry.path });
+    console.log(`${entry.name}/`, sub.entries.map((e) => e.name));
+  } else if (entry.name.endsWith('.md')) {
+    const { base64 } = await NativeFiles.readFile({ path: entry.path });
+    const text = atob(base64);                 // 纯 ASCII 内容；中文见下方说明
+    console.log(entry.name, text.length);
+  }
 }
 
-// 新建子文件夹
-const created = await NativeFiles.createFolder({ parentUri: folder.uri, name: 'exports' });
-
-// 重命名
-const renamed = await NativeFiles.renameFolder({ uri: created.uri, newName: 'out' });
-
-// 删除（递归）
-await NativeFiles.deleteFolder({ uri: renamed.uri });
+// 新建/重命名/删除
+await NativeFiles.createFolder({ path: `${root}/drafts/2026` });
+await NativeFiles.renameFolder({ path: `${root}/drafts`, newName: 'drafts-old' });
+await NativeFiles.deleteFolder({ path: `${root}/drafts-old`, recursive: true });
 ```
 
-### 与 data-channel 配合（推荐流程）
+> **非 ASCII 文本**：`readFile` 返回 base64，`atob` 得到的是二进制字符串。
+> 读 UTF-8 文本请用：
+>
+> ```ts
+> const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+> const text = new TextDecoder('utf-8').decode(bytes);
+> ```
+>
+> 写文本反过来：`btoa(String.fromCharCode(...new TextEncoder().encode(text)))`（大文本请分块）。
+
+### 2) 选文件（多选）
 
 ```ts
-import { DataChannel } from 'capacitor-data-channel';
-import { NativeFiles } from 'capacitor-native-files';
-
-// 1) 系统选择器选文件
-const { files } = await NativeFiles.pickFiles({ multiple: false });
-// 2) 流式复制到 App 自有目录（data-channel 默认根目录）
-const copied = await NativeFiles.copyToAppStorage({ uri: files[0].uri });
-// 3) data-channel 高速上传/读取
-const ch = await DataChannel.start();
-const blob = await (await fetch(`${ch.baseUrl}/download?path=${copied.relativePath}&token=${ch.token}`)).blob();
+const { files, cancelled, unmapped } = await NativeFiles.pickFiles({
+  multiple: true,
+  mimeTypes: ['text/markdown', 'text/plain'],
+});
+// files: [{ path, name, size, lastModified, mimeType }]
+if (unmapped?.length) {
+  console.warn('这些来源没有真实路径（云盘等），已跳过：', unmapped);
+}
 ```
+
+### 3) 读写文件
+
+```ts
+// 写（父目录会自动创建）
+await NativeFiles.writeFile({
+  path: '/storage/emulated/0/Documents/hello.md',
+  base64: btoa('# hello'),
+  mode: 'overwrite',      // create | overwrite | append
+});
+
+// 读（base64；单次最多 16MB）
+const { base64, bytes, size } = await NativeFiles.readFile({ path: '.../hello.md' });
+
+// 分块读大文件
+const chunk = await NativeFiles.readFile({ path, offset: 0, length: 1024 * 1024 });
+
+// 删除（不可恢复）
+await NativeFiles.deleteFile({ path: '.../hello.md' });
+```
+
+### 4) 文件/目录信息（对应 data-channel 原来的 `GET /info`）
+
+```ts
+const info = await NativeFiles.getInfo({ path: '/storage/emulated/0/Notes/a.md' });
+// { path, name, exists, isDirectory, isFile, size, lastModified, readable, writable, mimeType }
+```
+
+### 5) 申请"所有文件访问权限"（Android 11+）
+
+```ts
+// 先查
+const status = await NativeFiles.checkAllFilesAccess();
+// { granted, androidVersion, requiresSettings, permission }
+
+// 再申请（Android 11+ 打开系统设置页；≤10 弹运行时权限；iOS 返回 applicable:false）
+const result = await NativeFiles.requestAllFilesAccess();
+console.log('granted:', result.granted);
+```
+
+> 没有该权限时，读写公共目录会 reject，错误信息里带
+> `Grant "All files access" via NativeFiles.requestAllFilesAccess() first.` 提示。
+
+### 6) 与 data-channel 配合
+
+```ts
+// 1) 选文件（拿到绝对路径）
+const { files } = await NativeFiles.pickFiles({ multiple: false });
+// 2) 复制进 data-channel 根目录（免权限），拿到相对路径
+const copied = await NativeFiles.copyToAppStorage({ path: files[0].path });
+// 3) data-channel 高速上传（data-channel 的 path 是相对 rootDir 的路径）
+const http = await DataChannel.startHttp();
+const otp = await DataChannel.createHttpOtp({ scope: 'write', path: copied.relativePath });
+await fetch(`${http.baseUrl}/upload?path=${copied.relativePath}`, {
+  method: 'PUT',
+  headers: { Authorization: `OTP ${otp.otp}` },
+  body: fileBlob,
+});
+```
+
+> 如果文件本来就在 data-channel 的 rootDir 下，可以跳过复制，直接用相对 rootDir 的路径。
 
 ## API 说明
 
-### pickFiles(options?) → PickFilesResult
-
-| 参数 | 类型 | 说明 |
+| 方法 | 参数 | 返回 |
 | --- | --- | --- |
-| `multiple` | `boolean` | 是否多选（默认 false） |
-| `mimeTypes` | `string[]` | MIME 过滤（如 `image/*`）；不传则不过滤 |
+| `pickFiles` | `{ multiple?, mimeTypes? }` | `{ files: FileEntry[], cancelled, unmapped?, warning? }` |
+| `pickFolders` | — | `{ folders: DirEntry[], cancelled }` |
+| `readFile` | `{ path, offset?, length? }` | `{ path, base64, bytes, size, offset }` |
+| `writeFile` | `{ path, base64, mode? }` | `{ path, bytes, size }` |
+| `deleteFile` | `{ path }` | `{ deleted, reason? }` |
+| `listFolder` | `{ path, recursive?, maxEntries? }` | `{ path, entries: FsEntry[], truncated }` |
+| `createFolder` | `{ path }` | `{ path, created }` |
+| `deleteFolder` | `{ path, recursive? }` | `{ deleted, reason?, hint? }` |
+| `renameFolder` | `{ path, newName }` | `{ renamed, path, from }` |
+| `getInfo` | `{ path }` | `PathInfo` |
+| `checkAllFilesAccess` | — | `{ granted, androidVersion, requiresSettings, permission }` |
+| `requestAllFilesAccess` | — | `{ granted, androidVersion }` / `{ granted, applicable: false, message }` |
+| `getAppDirectories` | — | `{ platform, dirs, androidVersion?, allFilesAccess? }` |
+| `copyToAppStorage` | `{ path, relativePath? }` | `{ absolutePath, relativePath, bytes }` |
 
-返回 `{ files: PickedFile[], cancelled: boolean }`；`PickedFile`：
+`FileEntry`：`{ path, name, isDirectory: false, size, lastModified, mimeType }`
+`DirEntry`：`{ path, name, isDirectory: true, size: 0, lastModified, mimeType: 'inode/directory' }`
 
-| 字段 | 说明 |
-| --- | --- |
-| `uri` | 平台 URI |
-| `name` | 显示名（含扩展名） |
-| `size` | 字节数（未知为 -1） |
-| `mimeType` | MIME 类型（未知为空串） |
-| `bookmark?` | iOS 的 security-scoped bookmark（base64） |
-
-### pickFolders(options?) → PickFoldersResult
-
-返回 `{ folders: FolderEntry[], cancelled: boolean }`（**最多 1 个**，单选）。
-
-### readFile(options) → ReadFileResult
-
-`{ uri, offset?, length? }` → `{ base64, bytes, size }`。
-**单次最多 16MB**（base64 走桥，大文件请分块或复制到 App 存储后用 data-channel）。
-
-### writeFile(options) → WriteFileResult
-
-`{ uri, base64, mode?: 'create' | 'append' | 'overwrite' }` → `{ bytes, size }`。
-`create` 时若文件已存在会 reject（`FILE_ALREADY_EXISTS`）。
-
-### listFolder / createFolder / deleteFolder / renameFolder / getInfo
-
-`FolderEntry`：`{ uri, name, isDirectory, size, mimeType, lastModified }`；
-`getInfo` 返回 `FileInfo`：`{ uri, name, exists, isDirectory, size, mimeType, lastModified }`。
-
-### copyToAppStorage(options) → CopyToAppStorageResult
-
-`{ uri, relativePath? }` → `{ absolutePath, relativePath, bytes }`。
-复制目标为 data-channel 的默认根目录（Android `/sdcard/Android/data/<pkg>/files/dataChannel`，
-iOS `Documents/dataChannel`），返回的 `relativePath` 可直接用于 data-channel 的 `path` 参数。
+**错误约定**：错误信息带明确前缀，便于程序判断：
+`NOT_FOUND` / `IS_A_DIRECTORY` / `NOT_A_DIRECTORY` / `PATH_EXISTS_AS_FILE` / `TARGET_EXISTS` /
+`FILE_ALREADY_EXISTS` / `PATH_MUST_BE_ABSOLUTE` / `INVALID_NAME` / `INVALID_RELATIVE_PATH` /
+`PERMISSION_DENIED`（附申请权限提示）。
 
 ## 平台差异与注意事项
 
 | 事项 | Android | iOS |
 | --- | --- | --- |
+| 公共目录 | ✅（需 `MANAGE_EXTERNAL_STORAGE`，API 30+） | 🚫 不存在，`downloads/pictures/...` 为 null |
 | 选择器 | SAF（`ACTION_OPEN_DOCUMENT` / `ACTION_OPEN_DOCUMENT_TREE`） | `UIDocumentPickerViewController` |
-| 文件多选 | ✅ | ✅ |
-| 文件夹多选 | ❌ 系统不支持 | ✅ 支持，但**本插件统一为单选**（跨平台一致） |
-| URI | `content://` | `file://` |
-| 权限 | 无（SAF 授权） | 无（security-scoped） |
-| 授权持久性 | `takePersistableUriPermission` 后重启仍有效（部分 provider 不支持） | App 重启后失效；返回的 `bookmark` 可用于恢复（当前版本尚未提供按 bookmark 恢复的 API） |
+| 文件夹多选 | ❌ 系统不支持 | 系统支持，但本插件统一单选（跨平台一致） |
+| 路径授权 | 权限（所有文件访问） | security-scoped bookmark（**已持久化到 UserDefaults，重启后仍可访问**） |
+| 云盘来源 | 无法映射成路径 → `unmapped` | 选择后即可用（bookmark 保存在本机） |
 
 **注意**：
-- 文件夹选择器返回的 URI 是"文件夹"，`listFolder` / `createFolder` 等都基于它；
-- 对 iOS，选中文件后 App 只有本次运行的访问权；要长期访问需持久化 bookmark；
-- 删除操作直接作用于真实文件，**不可恢复**，请二次确认。
 
-## 实测记录（真机 Redmi K30S / Android 10）
+1. **删除不可恢复**（直接作用到真实文件），请二次确认；
+2. iOS 对外部目录的访问依赖 bookmark：**同一条路径前缀下**（含子目录）都能访问；
+   如果用户移动了该文件夹，bookmark 可能失效，需要重新选择；
+3. Android 11+ 的 `MANAGE_EXTERNAL_STORAGE` 在 Google Play 有政策限制（上架需说明用途），
+   如果你的应用只读写自己的目录，用 `appExternalFilesDir` 即可，**不需要**该权限；
+4. `listFolder` 默认跳过隐藏文件（iOS `.skipsHiddenFiles`）；`maxEntries` 默认 5000。
 
-| 项目 | 结果 |
+## 实测记录（2026-11-07）
+
+| 环境 | 结果 |
 | --- | --- |
-| 方法注册 | 11 个方法全部可用 ✓ |
-| `getInfo(file:///does-not-exist-xyz)` | `{ exists: false, name: 'does-not-exist-xyz', size: -1 }` ✓ |
-| `getInfo(content://...)` | `{ exists: false }` ✓ |
-| 文件/文件夹选择器 | 系统 UI，需手动操作验证（未自动化） |
+| 模拟器 Pixel 6 / Android 16（已授予所有文件访问） | `getAppDirectories` 全部路径正确；**公共目录 `/storage/emulated/0/Documents` 建目录/写/读/列/改名/递归删全部通过**；`copyToAppStorage` 返回 `dataChannel/nf-copy/a.md` ✓ |
+| 真机 Redmi K30S / Android 10（WRITE_EXTERNAL_STORAGE 已授权） | 同上全部通过（`checkAllFilesAccess: { granted: true, permission: 'WRITE_EXTERNAL_STORAGE' }`）✓ |
+| autotest（App 私有目录全链路） | 写 37B → 读回一致 → info 37B → 列目录 → 改名 → 删除后 `exists:false` ✓ |
+| 选择器 | 系统 UI，需手动操作（未自动化） |
 
 ## 开发
 
@@ -204,5 +252,7 @@ npm install
 npm run build   # tsc → dist/esm
 ```
 
-- Android：`android/src/main/java/com/testionic/nativefiles/NativeFilesPlugin.java`（SAF + DocumentFile）
-- iOS：`ios/Sources/NativeFilesPlugin/NativeFilesPlugin.swift`（UIDocumentPicker + security-scoped）
+- Android：`android/src/main/java/com/testionic/nativefiles/NativeFilesPlugin.java`
+  （`java.io.File` 路径操作 + SAF 选择器 + URI→路径解析 + 所有文件访问权限）
+- iOS：`ios/Sources/NativeFilesPlugin/NativeFilesPlugin.swift`
+  （`FileManager` + `UIDocumentPicker` + security-scoped bookmark 持久化 + 最长祖先路径授权）

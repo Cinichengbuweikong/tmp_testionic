@@ -553,10 +553,15 @@ OTP 真正多出来的只有两点：
 ### 与 native-files / foreground-state 配合
 
 ```ts
-// 选文件 → 权限 → 传输
+// 选文件 →（可选）权限 → 复制进 data-channel 根目录 → 高速传输
 const { files } = await NativeFiles.pickFiles({ multiple: false });
-await NativeFiles.requestStorageAccess();          // 如需要公共目录
-const copied = await NativeFiles.copyToAppStorage({ uri: files[0].uri });
+
+// 需要读写公共目录（Android 11+）时先申请"所有文件访问权限"
+await NativeFiles.requestAllFilesAccess();
+
+// 复制到 data-channel 的默认根目录（免权限），返回相对路径
+const copied = await NativeFiles.copyToAppStorage({ path: files[0].path });
+
 const http = await DataChannel.startHttp();
 const otp = await DataChannel.createHttpOtp({ scope: 'write', path: copied.relativePath });
 await fetch(`${http.baseUrl}/upload?path=${copied.relativePath}`, {
@@ -570,6 +575,8 @@ const state = await ForegroundState.addListener('stateChanged', (s) => {
   if (!s.isActive) DataChannel.revokeAllOtps();
 });
 ```
+
+> native-files 从 0.2.0 起全部用**真实绝对路径**（`path`），不再有 `uri` 参数。
 
 ## Capacitor 的调用调度模型（为什么批量 OTP 有效）
 

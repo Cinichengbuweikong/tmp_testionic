@@ -80,8 +80,8 @@
   out.keyboardListenStart = await click('监听键盘');
   out.keyboardListenStop = await click('停止键盘监听');
 
-  // NativeFiles：非交互 API（选择器需要手动操作）
-  out.nativeFiles = await click('测试 API');
+  // NativeFiles：非交互 API（选择器需要手动操作；这里跑 App 私有目录的 path-based 全链路）
+  out.nativeFiles = await click('文件 API 自检');
 
   // AppState：读状态 → 监听 → 停止监听
   out.appState = await click('读取应用状态');
@@ -174,7 +174,7 @@
   if (!out.dataChannelInfo.includes('"http"') || !out.dataChannelInfo.includes('"webSocket"')) {
     failures.push('dataChannelInfo');
   }
-  if (!out.nativeFiles.includes('"exists": false')) {
+  if (!out.nativeFiles.includes('"infoAfterDeleteExists": false')) {
     failures.push('nativeFiles');
   }
   if (!out.appState.includes('"isActive"') || !out.appState.includes('"state": "active"')) {

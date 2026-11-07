@@ -114,11 +114,17 @@
       <div class="actions">
         <button @click="pickFiles">选择文件</button>
         <button @click="pickFolders">选择文件夹</button>
-        <button @click="probeNativeFiles">测试 API</button>
+        <button @click="probeNativeFiles">文件 API 自检</button>
+      </div>
+      <div class="actions">
+        <button @click="loadAppDirectories">应用目录</button>
+        <button @click="checkAllFilesAccess">检查全文件权限</button>
+        <button @click="requestAllFilesAccess">申请全文件权限</button>
       </div>
       <p class="hint">
-        选择器需要手动操作（会弹系统界面）；选中后结果含 uri/name/size。选中大文件后可用
-        copyToAppStorage 复制到 App 目录再交给 DataChannel 高速传输。
+        全部 API 使用<strong>真实绝对路径</strong>（可直接拼路径）；选择器需要手动操作。
+        读写公共目录（如 /storage/emulated/0/Documents）在 Android 11+ 需要「所有文件访问权限」，
+        App 私有目录（appExternalFilesDir 等）任何版本都免权限。
       </p>
     </section>
 
@@ -1041,11 +1047,16 @@ export default {
           results.foregroundStateError = String((err && err.message) || err);
         }
 
-        // NativeFiles：非交互 API（选择器需要用户操作，不放进自检）
+        // NativeFiles：path-based 全链路（选择器需要用户操作，不放进自检）
         try {
-          const missingInfo = await NativeFiles.getInfo({ uri: 'file:///does-not-exist-xyz' });
-          results.nativeFiles = { info: missingInfo };
-          const nfOk = !!missingInfo && missingInfo.exists === false && typeof missingInfo.name === 'string';
+          const { dir } = await this.nativeFilesSelfTest();
+          results.nativeFiles = dir;
+          const nfOk = dir.writeBytes > 0
+            && dir.contentOk === true
+            && dir.infoSize > 0
+            && dir.listCount >= 1
+            && dir.infoAfterRenameExists === true
+            && dir.infoAfterDeleteExists === false;
           if (!nfOk) {
             results.ok = false;
             results.reason = `native-files check failed: ${JSON.stringify(results.nativeFiles)}`;
@@ -1394,10 +1405,83 @@ export default {
 
     async probeNativeFiles() {
       try {
-        const info = await NativeFiles.getInfo({ uri: 'file:///does-not-exist-xyz' });
-        this.print('NativeFiles.getInfo 成功', info);
+        const { dir } = await this.nativeFilesSelfTest();
+        this.print('NativeFiles 自检成功', dir);
       } catch (err) {
-        this.error('NativeFiles.getInfo', err);
+        this.error('NativeFiles 自检', err);
+      }
+    },
+
+    /**
+     * path-based 全链路自检：在 App 私有目录里建目录 → 写 → 读 → info → 列目录 → 重命名 → 删除。
+     * 不依赖系统选择器，可被 autotest 调用。
+     */
+    async nativeFilesSelfTest() {
+      const dirsResult = await NativeFiles.getAppDirectories();
+      const base = dirsResult.dirs.appExternalFilesDir || dirsResult.dirs.appFilesDir;
+      if (!base) {
+        throw new Error('no app-private directory available');
+      }
+      const root = `${base}/nf-selftest`;
+      const file = `${root}/hello.txt`;
+      const content = `hello from native-files ${Date.now()}`;
+
+      await NativeFiles.createFolder({ path: root });
+      const write = await NativeFiles.writeFile({
+        path: file,
+        base64: btoa(content),
+        mode: 'overwrite',
+      });
+      const read = await NativeFiles.readFile({ path: file });
+      const contentOk = atob(read.base64) === content;
+      const info = await NativeFiles.getInfo({ path: file });
+      const list = await NativeFiles.listFolder({ path: root });
+      const renamed = await NativeFiles.renameFolder({ path: root, newName: 'nf-selftest2' });
+      const newFile = `${renamed.path}/hello.txt`;
+      const infoAfterRename = await NativeFiles.getInfo({ path: newFile });
+      await NativeFiles.deleteFile({ path: newFile });
+      await NativeFiles.deleteFolder({ path: renamed.path, recursive: true });
+      const infoAfterDelete = await NativeFiles.getInfo({ path: newFile });
+
+      return {
+        dir: {
+          base,
+          writeBytes: write.bytes,
+          readBytes: read.bytes,
+          contentOk,
+          infoSize: info.size,
+          listCount: list.entries.length,
+          renamedPath: renamed.path,
+          infoAfterRenameExists: infoAfterRename.exists,
+          infoAfterDeleteExists: infoAfterDelete.exists,
+        },
+      };
+    },
+
+    async loadAppDirectories() {
+      try {
+        const result = await NativeFiles.getAppDirectories();
+        this.print('NativeFiles.getAppDirectories 成功', result);
+      } catch (err) {
+        this.error('NativeFiles.getAppDirectories', err);
+      }
+    },
+
+    async checkAllFilesAccess() {
+      try {
+        const result = await NativeFiles.checkAllFilesAccess();
+        this.print('NativeFiles.checkAllFilesAccess 成功', result);
+      } catch (err) {
+        this.error('NativeFiles.checkAllFilesAccess', err);
+      }
+    },
+
+    async requestAllFilesAccess() {
+      try {
+        const result = await NativeFiles.requestAllFilesAccess();
+        this.print('NativeFiles.requestAllFilesAccess 成功', result);
+      } catch (err) {
+        this.error('NativeFiles.requestAllFilesAccess', err);
       }
     },
 

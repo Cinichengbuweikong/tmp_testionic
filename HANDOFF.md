@@ -451,17 +451,30 @@ D:\projs\testionic
 
 ### 5.11 capacitor-native-files（本地文件系统）
 
-- 11 个 API：`pickFiles`（**多选**）/ `pickFolders`（**单选**，Android SAF 系统限制）/
-  `readFile`（base64，offset/length，单次 16MB 上限）/ `writeFile`（create|append|overwrite）/
-  `deleteFile` / `listFolder` / `createFolder` / `deleteFolder` / `renameFolder` / `getInfo` /
-  `copyToAppStorage`（复制到 data-channel 默认根目录，返回 relativePath）。
-- **URI 语义**：Android 是 `content://`（SAF，无需存储权限）；iOS 是 `file://`（security-scoped，
-  附 bookmark）。**不是文件系统路径**——要路径就给 data-channel 用 `copyToAppStorage`。
-- 多选支持结论：文件多选两端都支持；**文件夹多选 Android 系统不支持**（`ACTION_OPEN_DOCUMENT_TREE`
-  只能单选），iOS 虽支持但为跨平台一致也做单选。
-- 真机实测：11 个方法全部注册；`getInfo` 对无效 URI 返回 `exists:false`（file:// 与 content:// 均正确）。
-  文件/文件夹选择器是系统 UI，需手动验证（未自动化）。
-- 与 data-channel 配合流程：`pickFiles` → `copyToAppStorage` → data-channel 上传。
+- **2026-11-07 大改（0.2.0）：URI → 真实绝对路径**（用户要求：Markdown 阅读器需要按目录结构拼路径遍历）。
+  - 所有 API 参数由 `uri` 改为 **`path`（绝对路径）**；返回值也带 `path`。
+  - Android：`java.io.File` 直接操作；选择器返回的 `content://` 由插件解析成路径
+    （`primary:`/`home:`/卷 UUID:/MediaStore `_data`；云盘等无 1:1 路径的 provider → 跳过并返回 `unmapped`）。
+  - iOS：`FileManager` + **security-scoped bookmark**；选择时把 URL 转 bookmark 按绝对路径存
+    UserDefaults（**重启后仍有效**），操作时找**最长的已授权祖先路径** start/stop access，
+    所以"拼出来的子路径"也能读写。
+  - 新增 `checkAllFilesAccess` / `requestAllFilesAccess`（Android 11+ 打开
+    `ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`，≤10 走运行时权限；iOS 返回 `applicable:false`）、
+    `getAppDirectories`（appFilesDir/appExternalFilesDir/apkPath/externalStorage/downloads/documents/
+    pictures/dcim/movies/music/alarms/... ，iOS 为 home/documents/library/applicationSupport/caches/
+    temporary/bundle/icloudDocuments，公共目录为 null）。
+  - `createFolder` 改为接收**完整路径**（递归创建）；`deleteFolder` 默认只能删空目录、`recursive:true` 递归；
+    `listFolder` 支持 `recursive`/`maxEntries`；`renameFolder` 返回**新路径**；新增 `getInfo`（path）；
+    `copyToAppStorage` 改为 `{ path, relativePath? }`。
+  - 权限与错误：错误信息带 `NOT_FOUND`/`IS_A_DIRECTORY`/`NOT_A_DIRECTORY`/`TARGET_EXISTS`/
+    `FILE_ALREADY_EXISTS`/`PATH_MUST_BE_ABSOLUTE`/`PERMISSION_DENIED`（附申请权限提示）等前缀。
+  - 实测：**模拟器 Android 16 + 真机 Android 10** 都在 `/storage/emulated/0/Documents` 下
+    createFolder/write/read/list/getInfo/rename/递归删除 全通过；`copyToAppStorage` 返回
+    `dataChannel/nf-copy/a.md`；autotest（App 私有目录全链路）ok:true；smoke PASS。
+- 其它 API：`pickFiles`（**多选**）/ `pickFolders`（**单选**，Android SAF 系统限制，iOS 为一致也单选）/
+  `readFile`（base64，offset/length，单次 16MB 上限）/ `writeFile`（create|append|overwrite）。
+- 文件夹多选结论：**Android 系统不支持**（`ACTION_OPEN_DOCUMENT_TREE` 只能单选），iOS 虽支持但统一单选。
+- 与 data-channel 配合：`pickFiles` → `copyToAppStorage({ path })` → data-channel 上传。
 
 ## 6. Capacitor 8 插件开发手册（要点）
 

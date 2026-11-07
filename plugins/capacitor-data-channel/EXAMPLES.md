@@ -329,18 +329,22 @@ function connect() {
 ### 5.1 用户选文件 → 上传（native-files）
 
 ```ts
+// native-files 0.2.0+：全部是真实绝对路径（path），可直接拼路径
 const { files } = await NativeFiles.pickFiles({ multiple: false });
 if (!files.length) return;
 
-// 需要写到公共目录时先授权（Android；iOS 沙盒内不需要）
-await NativeFiles.requestStorageAccess?.();
+// 需要读写公共目录（Android 11+）时先申请"所有文件访问权限"
+await NativeFiles.requestAllFilesAccess();
 
-const http = await DataChannel.startHttp({ rootDir: '/sdcard/Download/myApp' });
-const otp = await DataChannel.createHttpOtp({ scope: 'write', path: 'imported.bin' });
-const res = await fetch(`${http.baseUrl}/upload?path=imported.bin`, {
+// 复制到 data-channel 默认根目录（免权限），返回相对路径
+const copied = await NativeFiles.copyToAppStorage({ path: files[0].path });
+
+const http = await DataChannel.startHttp();
+const otp = await DataChannel.createHttpOtp({ scope: 'write', path: copied.relativePath });
+const res = await fetch(`${http.baseUrl}/upload?path=${copied.relativePath}`, {
   method: 'PUT',
   headers: { Authorization: `OTP ${otp.otp}` },
-  body: files[0].blob,               // native-files 返回的 Blob/File
+  body: fileBlob,                    // File / Blob（用户选中的文件）
 });
 ```
 

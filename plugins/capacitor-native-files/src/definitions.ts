@@ -1,235 +1,282 @@
-import type { PluginListenerHandle } from '@capacitor/core';
-
 /**
  * NativeFiles 插件（capacitor-native-files）。
  *
- * 提供**系统原生文件/文件夹选择器**与**文件系统读写**能力，路径统一用 URI 表示：
- * - Android：`content://` 或 `file://`（SAF 授权，无需存储权限）
- * - iOS：`file://`（系统选择器授权 + security-scoped bookmark）
+ * ======================= 路径语义（0.2.0 起）=======================
  *
- * 设计目标：与 `capacitor-data-channel` 配合——选中大文件后可以先 `copyToAppStorage()`
- * 复制到 App 自有目录，再用 data-channel 的高速 HTTP/WebSocket 传输。
+ * **所有 API 都用真实文件系统绝对路径**（如 `/storage/emulated/0/Notes/a.md`），不用 `content://`。
+ * 前端可以直接拼路径、算父目录/子目录：
  *
  * ```ts
- * // 1) 选择文件
- * const picked = await NativeFiles.pickFiles({ multiple: true });
- * // 2) 复制到 App 存储（返回 data-channel 可用的相对路径）
- * const copied = await NativeFiles.copyToAppStorage({ uri: picked.files[0].uri });
- * // 3) 交给 data-channel 上传
- * await fetch(`${ch.baseUrl}/upload?path=${copied.relativePath}`, { ... });
+ * const { folders } = await NativeFiles.pickFolders();
+ * const root = folders[0].path;                       // /storage/emulated/0/Notes
+ * const { entries } = await NativeFiles.listFolder({ path: `${root}/chapters` });
+ * const md = entries.find((e) => e.name === '01.md')!;
+ * const { base64 } = await NativeFiles.readFile({ path: md.path });
  * ```
+ *
+ * Android 选择器返回 `content://`，插件会解析成真实路径（internal storage / SD 卡）；
+ * 云盘等无法映射成路径的 provider 会被跳过，并在 `unmapped` 里返回。
+ *
+ * ======================= 权限（Android）=======================
+ *
+ * | 版本 | 需要 |
+ * |------|------|
+ * | ≤ 9 | `WRITE_EXTERNAL_STORAGE` |
+ * | 10 | `WRITE_EXTERNAL_STORAGE` + 宿主 `requestLegacyExternalStorage="true"` |
+ * | **11+** | **`MANAGE_EXTERNAL_STORAGE`** → `requestAllFilesAccess()` 打开系统设置 |
+ *
+ * App 私有目录（`getAppDirectories().dirs.appExternalFilesDir` 等）任何版本都免权限。
  */
 export interface NativeFilesPlugin {
   /**
-   * 打开系统文件选择器（支持多选）。
+   * 打开系统文件选择器（Android: `ACTION_OPEN_DOCUMENT`；iOS: `UIDocumentPicker`）。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
   pickFiles(options?: PickFilesOptions): Promise<PickFilesResult>;
 
   /**
-   * 打开系统文件夹选择器（**单选**：Android 的 SAF 不支持多选文件夹）。
+   * 打开系统文件夹选择器，返回**绝对路径**。
    *
-   * **重要**：iOS 上选择文件夹后，App 获得的是 security-scoped 授权；Android 上是 SAF tree URI。
-   * 两个平台都不保证长期有效（App 重启后 Android 需要重新确认，iOS 需要持久化 bookmark）。
+   * Android 系统限制只能单选；iOS 为跨平台一致也做单选。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
   pickFolders(options?: PickFoldersOptions): Promise<PickFoldersResult>;
 
   /**
-   * 读取文件内容（base64）。大文件建议配合 `offset`/`length` 分块读取，或先复制到 App 存储。
+   * 读取文件（base64 走桥；单次最多 16MB，可用 offset/length 分块）。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
   readFile(options: ReadFileOptions): Promise<ReadFileResult>;
 
   /**
-   * 写文件：`create`（新建，已存在则失败）/ `append`（追加）/ `overwrite`（覆盖）。
+   * 写入文件。`mode`：`create`（已存在则报错）/ `overwrite`（默认）/ `append`。
+   * 父目录不存在会自动创建。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
   writeFile(options: WriteFileOptions): Promise<WriteFileResult>;
 
   /**
-   * 删除文件。
+   * 删除文件（目录请用 `deleteFolder`）。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  deleteFile(options: { uri: string }): Promise<void>;
+  deleteFile(options: { path: string }): Promise<DeleteResult>;
 
   /**
-   * 列出文件夹内容（文件 + 子文件夹）。
+   * 列出目录内容（默认"文件夹优先 + 名称"排序）。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  listFolder(options: { uri: string }): Promise<ListFolderResult>;
+  listFolder(options: ListFolderOptions): Promise<ListFolderResult>;
 
   /**
-   * 在指定文件夹内新建子文件夹。
+   * 创建文件夹（`path` 是**完整目标路径**；父目录自动递归创建）。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  createFolder(options: { parentUri: string; name: string }): Promise<FolderEntry>;
+  createFolder(options: { path: string }): Promise<{ path: string; created: boolean }>;
 
   /**
-   * 删除文件夹（递归删除）。
+   * 删除文件夹。默认只能删空目录；`recursive: true` 递归删除。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  deleteFolder(options: { uri: string }): Promise<void>;
+  deleteFolder(options: { path: string; recursive?: boolean }): Promise<DeleteResult>;
 
   /**
-   * 重命名文件夹。
+   * 重命名文件夹（或文件）。返回**新路径**。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  renameFolder(options: { uri: string; newName: string }): Promise<FolderEntry>;
+  renameFolder(options: { path: string; newName: string }): Promise<{
+    renamed: boolean;
+    path: string;
+    from: string;
+  }>;
 
   /**
-   * 读取文件/文件夹元信息。
+   * 读取单个文件/目录的详细信息（对应 data-channel 原来的 `GET /info`）。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  getInfo(options: { uri: string }): Promise<FileInfo>;
+  getInfo(options: { path: string }): Promise<PathInfo>;
 
   /**
-   * 把文件复制到 App 自有目录（data-channel 的默认根目录），返回 data-channel 可用的相对路径。
-   * 用于"系统选择器选中的文件"交给 data-channel 做高速传输。
+   * 检查是否已获得"所有文件访问权限"（Android）。
+   * iOS 恒为 `{ granted: true, applicable: false }`。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  copyToAppStorage(options: CopyToAppStorageOptions): Promise<CopyToAppStorageResult>;
+  checkAllFilesAccess(): Promise<AllFilesAccessStatus>;
 
   /**
-   * 监听文件选择器被取消等事件（预留）。
+   * 申请"所有文件访问权限"（Android）。
    *
-   * @since 0.1.0
+   * - Android 11+：打开系统的"所有文件访问权限"设置页，返回后检查结果；
+   * - Android ≤ 10：请求 `WRITE_EXTERNAL_STORAGE` 运行时权限；
+   * - iOS：没有该权限概念，返回 `{ granted: true, applicable: false }`。
+   *
+   * @since 0.2.0
    */
-  addListener(
-    eventName: 'pickerCancelled',
-    listenerFunc: () => void,
-  ): Promise<PluginListenerHandle>;
+  requestAllFilesAccess(): Promise<AllFilesAccessStatus>;
 
   /**
-   * 移除本插件的所有监听。
+   * 返回 App 与系统常用目录的绝对路径（不主动创建）。
    *
-   * @since 0.1.0
+   * @since 0.2.0
    */
-  removeAllListeners(): Promise<void>;
+  getAppDirectories(): Promise<AppDirectoriesResult>;
+
+  /**
+   * 把文件复制到 data-channel 的默认根目录（`Android/data/<pkg>/files/dataChannel`），
+   * 返回相对路径，方便直接给 data-channel 上传。
+   *
+   * @since 0.2.0
+   */
+  copyToAppStorage(options: {
+    path: string;
+    relativePath?: string;
+  }): Promise<{ absolutePath: string; relativePath: string; bytes: number }>;
 }
 
-/** 选择文件参数。 */
 export interface PickFilesOptions {
-  /** 是否多选，默认 false。 */
+  /** 是否多选（默认 false）。 */
   multiple?: boolean;
-  /** MIME 类型过滤，如 `['image/*', 'application/pdf']`；不传则不过滤。 */
+  /** 只显示这些 MIME 类型（Android 用 EXTRA_MIME_TYPES；iOS 忽略）。 */
   mimeTypes?: string[];
 }
 
-/** 选中的文件。 */
-export interface PickedFile {
-  /** 文件 URI（Android content://file://，iOS file://）。 */
-  uri: string;
-  /** 显示名（含扩展名）。 */
-  name: string;
-  /** 字节数（未知时为 -1）。 */
-  size: number;
-  /** MIME 类型（未知时为空串）。 */
-  mimeType: string;
-  /** iOS 的 security-scoped bookmark（base64），可用于后续重新访问。 */
-  bookmark?: string;
-}
-
-export interface PickFilesResult {
-  /** 选中的文件；用户取消时为空数组。 */
-  files: PickedFile[];
-  /** 是否被用户取消。 */
-  cancelled: boolean;
-}
-
 export interface PickFoldersOptions {
-  /** 是否多选；Android 不支持多选文件夹，会忽略此参数。 */
+  /** 保留字段（两端目前都是单选）。 */
   multiple?: boolean;
 }
 
+/** 文件条目。 */
+export interface FileEntry {
+  /** 绝对路径。 */
+  path: string;
+  name: string;
+  isDirectory: false;
+  size: number;
+  lastModified: number;
+  mimeType: string;
+}
+
+/** 目录条目。 */
+export interface DirEntry {
+  /** 绝对路径。 */
+  path: string;
+  name: string;
+  isDirectory: true;
+  size: 0;
+  lastModified: number;
+  mimeType: 'inode/directory';
+}
+
+export type FsEntry = FileEntry | DirEntry;
+
+export interface PickFilesResult {
+  files: FileEntry[];
+  cancelled: boolean;
+  /** 无法映射成真实路径的 URI（云盘等 provider）。 */
+  unmapped?: string[];
+  warning?: string;
+}
+
 export interface PickFoldersResult {
-  /** 选中的文件夹（当前实现最多 1 个）。 */
-  folders: FolderEntry[];
+  folders: DirEntry[];
   cancelled: boolean;
 }
 
-/** 文件夹/文件条目。 */
-export interface FolderEntry {
-  uri: string;
-  name: string;
-  /** 是否为文件夹。 */
-  isDirectory: boolean;
-  size: number;
-  mimeType?: string;
-  /** 最后修改时间（毫秒，未知时 0）。 */
-  lastModified: number;
-}
-
 export interface ReadFileOptions {
-  uri: string;
-  /** 起始字节偏移，默认 0。 */
+  path: string;
+  /** 起始字节偏移（默认 0）。 */
   offset?: number;
-  /** 读取字节数，默认读到结尾。 */
+  /** 读取字节数（默认/上限 16MB）。 */
   length?: number;
 }
 
 export interface ReadFileResult {
-  /** base64 编码的内容。 */
+  path: string;
+  /** base64 编码内容。 */
   base64: string;
-  /** 实际读取的字节数。 */
+  /** 本次读取的字节数。 */
   bytes: number;
   /** 文件总大小。 */
   size: number;
+  offset: number;
 }
 
 export interface WriteFileOptions {
-  uri: string;
-  /** base64 编码的内容。 */
+  path: string;
+  /** base64 编码内容。 */
   base64: string;
-  /** 写入模式，默认 `overwrite`。 */
-  mode?: 'create' | 'append' | 'overwrite';
+  mode?: 'create' | 'overwrite' | 'append';
 }
 
 export interface WriteFileResult {
-  /** 实际写入的字节数。 */
+  path: string;
+  /** 本次写入字节数。 */
   bytes: number;
-  /** 写入后的文件总大小。 */
+  /** 写入后的文件大小。 */
   size: number;
+}
+
+export interface DeleteResult {
+  deleted: boolean;
+  reason?: string;
+  hint?: string;
+}
+
+export interface ListFolderOptions {
+  path: string;
+  /** 是否递归列出（默认 false）。 */
+  recursive?: boolean;
+  /** 最多返回多少条（默认 5000）。 */
+  maxEntries?: number;
 }
 
 export interface ListFolderResult {
-  /** 子条目（按名称排序）。 */
-  entries: FolderEntry[];
+  path: string;
+  entries: FsEntry[];
+  /** 是否因为 maxEntries 被截断。 */
+  truncated: boolean;
 }
 
-export interface FileInfo {
-  uri: string;
+/** 文件/目录信息。 */
+export interface PathInfo {
+  path: string;
   name: string;
   exists: boolean;
   isDirectory: boolean;
+  isFile: boolean;
   size: number;
-  mimeType: string;
   lastModified: number;
+  readable: boolean;
+  writable: boolean;
+  mimeType: string;
 }
 
-export interface CopyToAppStorageOptions {
-  /** 源文件 URI。 */
-  uri: string;
-  /** 目标相对路径（相对 data-channel 根目录），默认用源文件名。 */
-  relativePath?: string;
+export interface AllFilesAccessStatus {
+  granted: boolean;
+  /** iOS 上为 false（没有该权限概念）。 */
+  applicable?: boolean;
+  /** iOS 时的说明。 */
+  message?: string;
+  androidVersion?: number;
+  requiresSettings?: boolean;
+  permission?: string;
 }
 
-export interface CopyToAppStorageResult {
-  /** App 自有目录内的绝对路径。 */
-  absolutePath: string;
-  /** data-channel 可用的相对路径。 */
-  relativePath: string;
-  /** 复制的字节数。 */
-  bytes: number;
+export interface AppDirectoriesResult {
+  platform: 'android' | 'ios' | 'web';
+  /** key → 绝对路径（不存在/不适用为 null）。 */
+  dirs: Record<string, string | null>;
+  androidVersion?: number;
+  /** Android：是否已获得所有文件访问权限。 */
+  allFilesAccess?: boolean;
 }

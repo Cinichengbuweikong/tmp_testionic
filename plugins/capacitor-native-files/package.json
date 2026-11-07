@@ -1,7 +1,7 @@
 {
   "name": "capacitor-native-files",
-  "version": "0.1.0",
-  "description": "Capacitor 本地文件系统插件：系统文件/文件夹选择器、读写（新建/追加/更改）、删除、列目录、新建/删除/重命名文件夹，可与 data-channel 配合",
+  "version": "0.2.0",
+  "description": "Capacitor 文件系统插件：系统选择器 + 真实绝对路径读写/遍历（可拼路径）+ 所有文件访问权限 + 常用目录；与 data-channel 配合做高速传输",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -12,7 +12,7 @@
     "Package.swift",
     "dist/"
   ],
-  "keywords": ["capacitor", "plugin", "native", "files", "saf", "document-picker"],
+  "keywords": ["capacitor", "plugin", "native", "files", "path", "document-picker", "storage"],
   "license": "MIT",
   "scripts": {
     "build": "tsc",
