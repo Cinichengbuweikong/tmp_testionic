@@ -353,6 +353,16 @@ D:\projs\testionic
     324ms 下载 20MB ✓；smoke PASS；
   - 文档：README 新增「断点续传上传（offset + finalize）」+ 错误码链接；新增 **EXAMPLES.md**
     （上传/续传/下载/媒体/WS/错误处理/性能调优/陷阱）；INTRO 同步。
+  - **坑（重要）**：
+    - **autotest 用例必须幂等**：续传用例一开始写死 `selftest/resumable.bin`，上一轮 finalize 留下的
+      最终文件让"finalize 前目标不存在"断言变成 200 → 改为每次 `Math.random()` 后缀的唯一路径；
+    - **中断用例必须有兜底**：XHR abort 在部分平台可能不回调 `onabort/onerror/onload` → 整个 autotest
+      会挂住、CI 报 "marker not found"；加 3s 兜底 resolve；
+    - **CI 不能用固定 sleep 等 autotest**：iOS workflow 原来 `sleep 45`，用例变多后超时 → 改为轮询
+      `PLUGIN_AUTOTEST_RESULT`（最长 180s，找到即继续）；
+    - 排查技巧：CI 日志需要鉴权时，job summary（`Publish autotest result to job summary`）里的
+      `::error::` 注解会出现在 **job 页面 HTML** 里，可以直接抓 HTML 判断是 "marker not found"
+      还是 "reported a failure"。
 - **2026-11-07 data-channel 文档定稿**：README 新增「Capacitor 调用调度模型」「安全讨论与最终结论」
   （token→OTP 动机、OTP 与 token 的等价/差异、保留逐条 OTP 的取舍、不做传输加密的 5 条推理、
   承诺/不承诺清单、提高门槛的优先项）「性能建议」；新增 [INTRO.md](plugins/capacitor-data-channel/INTRO.md)
