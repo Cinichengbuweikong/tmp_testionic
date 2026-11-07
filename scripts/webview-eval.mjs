@@ -88,3 +88,7 @@ if (details) {
 }
 
 console.log(JSON.stringify(response.result?.result?.value ?? null, null, 2));
+
+// 显式退出：某些情况下 CDP WebSocket 的底层连接不会释放，会让 node 一直挂住，
+// 进而把依赖它的脚本（如性能采样循环 / CI）卡死。
+process.exit(0);

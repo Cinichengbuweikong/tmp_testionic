@@ -120,6 +120,38 @@ await DataChannel.stopWebSocket();
 | WS OTP | **只支持一次性**；**握手一个 + 每条消息各一个**（见「WebSocket 消息协议」） |
 | 校验失败 | HTTP 统一返回 **404**（不泄露"需要 OTP"）；WS 回一条**错误消息**（`[0x00][错误文本]`） |
 
+## 批量 OTP（高频小包优化）
+
+**背景**：Capacitor 的插件调用在两端都是**串行**的（Android 单 `HandlerThread("CapacitorPlugins")`；
+iOS 串行 `DispatchQueue(label: "bridge")`），并且每个调用响应都会回到**主线程**执行一次 JS。
+所以"每条消息一次 `createWsOtp`"会把 ~2ms 的往返延迟逐条累加。
+
+**批量 API** 把 N 次调用压成 1 次：
+
+```ts
+import { createWsOtpPool, encodeWsMessageWithOtp, decodeWsMessagesBatch } from 'capacitor-data-channel';
+
+const pool = await createWsOtpPool(64);          // 一次桥调用拿 64 个
+ws.send(encodeWsMessageWithOtp(pool.take(), frame));  // 同步拼包，无桥往返
+
+// 接收侧批量校验（先验证、后交付）
+const results = await decodeWsMessagesBatch(bufferedMessages);
+for (const r of results) if (r.ok) handle(r.payload);
+```
+
+| API | 说明 |
+| --- | --- |
+| `createWsOtps({ count })` | 一次生成 N 个 WS OTP（1..256） |
+| `createHttpOtps({ count, scope, path, reusable })` | 一次生成 N 个 HTTP OTP |
+| `validateAndConsumeOtps({ otps })` → `{ results }` | 批量验证并消费（返回即已全部验证） |
+| helper `createWsOtpPool(n)` / `encodeWsMessageWithOtp(otp, payload)` | 发送侧：池 + 同步拼包 |
+| helper `decodeWsMessagesBatch(messages)` | 接收侧：批量验证后交付 |
+
+**实测收益**（真机，300KB × 500 顺序往返）：**15.89 ms/条 → 10.33 ms/条**（-35%），吞吐 63 → 97 条/s。
+
+⚠️ 批量 OTP 仍是**一次性**：每个 OTP 在 Server 校验（或被 `validateAndConsumeOtps` 消费）后失效；
+池用尽要重新 `createWsOtps`。批量创建时"活跃 OTP + 请求数"不得超过 256。
+
 ## 数据目录（rootDir）
 
 `startHttp({ rootDir })` 支持三种写法：
@@ -419,6 +451,37 @@ const state = await AppState.addListener('stateChanged', (s) => {
 });
 ```
 
+## 性能实测（真机 Redmi K30S / Android 10）
+
+CPU 用 `/proc/<pid>/stat` 精确采样（10ms 时间片），先扣 idle 基线；PSS 取 `dumpsys meminfo` 峰值。
+
+| 场景 | 吞吐 / 延迟 | App 进程 CPU | 峰值 PSS |
+| --- | --- | --- | --- |
+| HTTP 上传 100MB | **93 MB/s** | — | +46MB |
+| HTTP 下载 100MB | **322~333 MB/s** | — | — |
+| WS 1KB 往返（逐条 OTP） | 4.76 ms/条（210 条/s） | — | — |
+| WS 300KB 往返（逐条 OTP） | 15.89 ms/条（63 条/s） | 31.8 CPU·s / 32.2s | +12MB |
+| WS 300KB 往返（**批量 OTP 池**） | **10.33 ms/条（97 条/s）** | 6.4 CPU·s / 5.5s | — |
+| WS 1.5MB 往返 | 37.4 ms/条（40 MB/s） | 4.96 CPU·s / 4.8s | +21MB |
+| WS 300KB 流水线（窗口 16） | 49.3 MB/s（168 条/s） | 10.2 CPU·s / 5.4s | +25MB |
+| OTP 桥调用 | create 1.98ms / validate 2.12ms | — | — |
+| idle | — | 0.58 CPU·s / 8.25s（7%） | 109.6MB |
+
+**为什么是这样**：
+
+- Capacitor 插件调用**串行**（见上节），单次 await ≈ 2ms 往返；并发/批量时原生吞吐 ≈ **0.57ms/次**；
+- 每条消息两次 OTP 调用 → 小包（1KB）有 **86%** 的时间在等桥；300KB 约 26%；1.5MB 约 11%；
+- HTTP 大文件只受 1 次 OTP 影响（≈0.2%），基本无感；
+- 高频调用会让插件线程 + 主线程持续繁忙（实测 400 次 OTP 调用期间 rAF 从 79 → 57 fps），
+  所以**持续高频**场景建议用批量 OTP，避免长时间压满。
+
+**模拟器**（Pixel_6 / Android 16 / WHPX 4 核 + 软件 GPU）：OTP 桥往返 18.2ms、1KB 18.8ms/条、
+300KB 43.0ms/条、HTTP 上传 39~41 MB/s —— 整体慢 2.4~4.6×，**不代表真机**。
+
+**电池**：充电状态下 `dumpsys battery` 与 batterystats 的放电数据不可用（MIUI 在 `--reset` 后
+没有 "Estimated power use" 段），所以本轮用 **CPU·秒** 作为能耗代理（能耗的物理来源）。
+需要真实 mAh 时请拔掉 USB、锁屏、跑 5 分钟循环后读 batterystats 的放电步进。
+
 ## 实测记录（真机 Redmi K30S / Android 10）
 
 | 项目 | 结果 |
@@ -443,6 +506,10 @@ const state = await AppState.addListener('stateChanged', (s) => {
 | **WS 消息无 OTP** | **回错误消息**（`missing OTP separator`）✓ |
 | **WS 消息重放（同一 OTP 两次）** | 第 1 次 合法 / 第 2 次 **错误消息** ✓ |
 | **`validateAndConsumeOTP`** | 首次 `true` / 再次 `false` ✓ |
+| **批量 OTP**（`createWsOtps({count:8})`） | 8 个互不重复 ✓ |
+| **批量拼包 + `decodeWsMessagesBatch`** | 全部 `ok` ✓ |
+| **批量 nonce 再验证** | 全部 `false`（已消费）✓ |
+| **`createHttpOtps({count:3})`** | 3 个，第一个下载 200 ✓ |
 | **WS 消息重放（同一 OTP 两次）** | 第 1 次 合法 / 第 2 次 **错误消息** ✓ |
 | **连接限流**（6 个沉默连接） | `pending` 停在 **4** ✓ |
 | `stopHttp` / `stopWebSocket` 后 | 各自 `running: false` ✓ |

@@ -1,4 +1,11 @@
 export * from './definitions';
 export { DataChannel } from './core';
-export { encodeWsMessage, decodeWsMessage } from './helpers';
+export {
+  encodeWsMessage,
+  encodeWsMessageWithOtp,
+  decodeWsMessage,
+  decodeWsMessagesBatch,
+  createWsOtpPool,
+  WsOtpPool,
+} from './helpers';
 export type { DecodedWsMessage } from './helpers';

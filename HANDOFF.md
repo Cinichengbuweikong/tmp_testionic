@@ -317,6 +317,23 @@ D:\projs\testionic
     `JSObject.put(key, null)` 会跳过 → 用 `org.json.JSONObject.NULL`；Swift 字典赋 nil 会**移除键** →
     用 `NSNull()`；DELETE 请求的 CORS 预检 `Allow-Methods` 不含 DELETE（路由已删，测试改用 GET）；
     `verify-ios.mjs` 原来只从 `index.ts` 找 `registerPlugin`，拆出 `core.ts` 后要两个文件都看。
+- **2026-11-07 Capacitor 原生调用调度实测 + 批量 OTP**（用户要求先查清调度模型）：
+  - **Android**：`Bridge` 里 `HandlerThread("CapacitorPlugins")` → `taskHandler.post()` 逐条执行
+    → **所有插件调用串行在单线程**；响应 `webView.post(() -> evaluateJavascript)` → **主线程**；
+  - **iOS**：`CapacitorBridge.dispatchQueue = DispatchQueue(label: "bridge")`（串行队列）→ 插件调用串行；
+    响应 `DispatchQueue.main.async { evaluateJavaScript }` → **主线程**；
+  - 因此：**JS 并发调原生 = 原生排队串行执行**，但往返延迟可流水（实测 100 次顺序 198ms=1.98ms/次，
+    100 次并发 57ms=**0.57ms/次**，加速 3.44×）；
+  - 实测性能（真机 Redmi K30S / Android 10，`/proc` 精确 CPU）：HTTP 上传 93MB/s、下载 322~333MB/s
+    （峰值 PSS +46MB）；WS 1KB 4.76ms/条、300KB 15.89ms/条、1.5MB 37.4ms/条、流水线 49.3MB/s；
+    峰值 PSS 均回落到基线（无泄漏）；400 次 OTP 调用期间 rAF 79→57fps（有可感知掉帧）；
+  - **批量 OTP（0.4.0）**：`createWsOtps({count})` / `createHttpOtps({count,...})` /
+    `validateAndConsumeOtps({otps})`；TS helper：`createWsOtpPool(n)`、`encodeWsMessageWithOtp`（同步）、
+    `decodeWsMessagesBatch`（先验证后交付）。上限 256（活跃 + 请求数）。
+    实测：300KB 顺序往返 **15.89 → 10.33ms/条（-35%）**，吞吐 63 → 97 条/s；autotest 覆盖
+    "8 个不重复 / 批量拼包全部 ok / 批量 nonce 再验证全 false / HTTP 批量 3 个可用"；
+  - 坑：`webview-eval.mjs` 在 CDP `ws.close()` 后 node 偶发不退出（会让采样/CI 卡死）→ 结尾加
+    `process.exit(0)`；`.perf/` 基准脚本里"流水线 + 批量校验"版本有死锁（未修复，改用顺序池版本取证）。
 - **2026-11-07 平台限制实测修正（重要，之前文档是错的）**：
   - 真机 Android 10（API 29）+ targetSdk 36 + `requestLegacyExternalStorage="true"`：
     `privateFlags` 含 `PRIVATE_FLAG_REQUEST_LEGACY_EXTERNAL_STORAGE` → **legacy 生效**；

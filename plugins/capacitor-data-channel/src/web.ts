@@ -52,6 +52,20 @@ export class DataChannelWeb extends WebPlugin implements DataChannelPlugin {
     throw new Error(`DataChannel.createWsOtp(): ${NATIVE_ONLY}`);
   }
 
+  async createWsOtps(): Promise<{ otps: string[]; count: number }> {
+    throw new Error(`DataChannel.createWsOtps(): ${NATIVE_ONLY}`);
+  }
+
+  async createHttpOtps(
+    _options: CreateHttpOtpOptions & { count: number },
+  ): Promise<{ otps: string[]; count: number; scope: string; path: string; reusable: boolean }> {
+    throw new Error(`DataChannel.createHttpOtps(): ${NATIVE_ONLY}`);
+  }
+
+  async validateAndConsumeOtps(): Promise<{ results: boolean[] }> {
+    return { results: [] };
+  }
+
   async validateAndConsumeOTP(): Promise<{ valid: boolean }> {
     return { valid: false };
   }

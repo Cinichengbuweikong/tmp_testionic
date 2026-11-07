@@ -55,6 +55,37 @@ final class OtpStore {
         return otp
     }
 
+    /// 批量生成 N 个 OTP（一次桥调用）。
+    ///
+    /// Capacitor 的插件调用是串行的（iOS 上是串行 `DispatchQueue(label: "bridge")`），
+    /// 每条消息单独 createWsOtp 会把往返延迟累加；批量生成把 N 次调用压成 1 次。
+    func createBatch(count: Int, scope: String, path: String, reusable: Bool) throws -> [String] {
+        guard count >= 1 else {
+            throw OtpError.invalid("count must be >= 1")
+        }
+        let normalizedScope = try Self.normalizeScope(scope)
+        let normalizedPath = try Self.normalizePath(path)
+        if reusable && normalizedScope != Self.scopeRead {
+            throw OtpError.invalid("reusable OTP is only allowed with scope=read (write must use a fresh one-time OTP)")
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        if otps.count + count > Self.maxOtps {
+            throw OtpError.invalid(
+                "not enough OTP capacity: active=\(otps.count), requested=\(count), max=\(Self.maxOtps)"
+            )
+        }
+        var created: [String] = []
+        created.reserveCapacity(count)
+        for _ in 0..<count {
+            let otp = Self.randomToken()
+            otps[otp] = Record(scope: normalizedScope, path: normalizedPath, reusable: reusable)
+            created.append(otp)
+        }
+        return created
+    }
+
     /// 校验并消费 OTP。一次性 OTP 通过后立即删除（并发下也不会重放）。
     func consume(_ otp: String?, scope: String, path: String) -> Bool {
         guard let otp = otp, !otp.isEmpty else {

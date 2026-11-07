@@ -3,6 +3,7 @@ package com.testionic.datachannel;
 import android.content.Context;
 import android.util.Log;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -260,6 +261,110 @@ public class DataChannelPlugin extends Plugin {
         }
         JSObject ret = new JSObject();
         ret.put("valid", valid);
+        call.resolve(ret);
+    }
+
+    /**
+     * 批量创建 WebSocket OTP（一次桥调用生成 N 个）。
+     *
+     * 适用：WS 高频小包场景。先批量生成，再用 `encodeWsMessageWithOtp(otp, payload)` 同步拼包发送，
+     * 把"每条消息一次 createWsOtp"压成"每 N 条一次"。
+     *
+     * 参数：{ count: 1..256 }（与当前活跃 OTP 数之和不得超过 256）
+     */
+    @PluginMethod
+    public void createWsOtps(PluginCall call) {
+        if (wsServer == null || !wsServer.isRunning() || wsOtps == null) {
+            call.reject("WebSocket server is not running; call startWebSocket() first");
+            return;
+        }
+        Integer rawCount = call.getInt("count", 1);
+        int count = rawCount == null ? 1 : Math.max(1, Math.min(256, rawCount));
+        try {
+            java.util.List<String> otps = wsOtps.createBatch(count, OtpStore.SCOPE_READWRITE, "", false);
+            JSArray arr = new JSArray();
+            for (String otp : otps) {
+                arr.put(otp);
+            }
+            JSObject ret = new JSObject();
+            ret.put("otps", arr);
+            ret.put("count", otps.size());
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject(e.getMessage());
+        }
+    }
+
+    /**
+     * 批量创建 HTTP OTP（一次桥调用生成 N 个）。
+     * 参数：{ count, scope?, path(必填), reusable? }
+     */
+    @PluginMethod
+    public void createHttpOtps(PluginCall call) {
+        if (httpServer == null || !httpServer.isRunning() || httpOtps == null) {
+            call.reject("HTTP server is not running; call startHttp() first");
+            return;
+        }
+        String path = call.getString("path", null);
+        if (path == null || path.trim().isEmpty()) {
+            call.reject("missing path: an HTTP OTP must be bound to a specific file/folder");
+            return;
+        }
+        String scope = call.getString("scope", OtpStore.SCOPE_READ);
+        String effectiveScope = (scope == null || scope.trim().isEmpty()) ? OtpStore.SCOPE_READ : scope.trim();
+        Boolean reusableOption = call.getBoolean("reusable", Boolean.FALSE);
+        boolean reusable = reusableOption != null && reusableOption;
+        Integer rawCount = call.getInt("count", 1);
+        int count = rawCount == null ? 1 : Math.max(1, Math.min(256, rawCount));
+        try {
+            java.util.List<String> otps = httpOtps.createBatch(count, effectiveScope, path, reusable);
+            JSArray arr = new JSArray();
+            for (String otp : otps) {
+                arr.put(otp);
+            }
+            JSObject ret = new JSObject();
+            ret.put("otps", arr);
+            ret.put("count", otps.size());
+            ret.put("scope", effectiveScope);
+            ret.put("path", OtpStore.normalizePath(path));
+            ret.put("reusable", reusable);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject(e.getMessage());
+        }
+    }
+
+    /**
+     * 批量验证并消费 OTP（用于 WebView 校验 Server → Client 的 WS 消息）。
+     *
+     * ⚠️ 只在调用方能够接受"先攒 K 条、验证后再交付"的延迟时使用；本 API 返回时已全部验证，
+     * 未通过的结果必须丢弃。
+     *
+     * 参数：{ otps: string[] } → 返回 { results: boolean[] }（顺序一致）
+     */
+    @PluginMethod
+    public void validateAndConsumeOtps(PluginCall call) {
+        JSArray input = call.getArray("otps");
+        if (input == null) {
+            call.reject("missing otps");
+            return;
+        }
+        JSArray results = new JSArray();
+        for (int i = 0; i < input.length(); i++) {
+            String otp = input.optString(i, null);
+            boolean valid = false;
+            if (otp != null && !otp.isEmpty()) {
+                if (httpOtps != null) {
+                    valid = httpOtps.revoke(otp) || valid;
+                }
+                if (wsOtps != null) {
+                    valid = wsOtps.revoke(otp) || valid;
+                }
+            }
+            results.put(valid);
+        }
+        JSObject ret = new JSObject();
+        ret.put("results", results);
         call.resolve(ret);
     }
 

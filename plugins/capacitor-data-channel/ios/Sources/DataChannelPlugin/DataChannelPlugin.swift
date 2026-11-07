@@ -31,7 +31,10 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getWsInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "createHttpOtp", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "createWsOtp", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "createWsOtps", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "createHttpOtps", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "validateAndConsumeOTP", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "validateAndConsumeOtps", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "revokeOtp", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "revokeAllOtps", returnType: CAPPluginReturnPromise)
     ]
@@ -237,6 +240,74 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
             valid = otps.revoke(otp) || valid
         }
         call.resolve(["valid": valid])
+    }
+
+    /// 批量创建 WebSocket OTP（一次桥调用生成 N 个；高频小包场景用）。
+    @objc func createWsOtps(_ call: CAPPluginCall) {
+        guard let otps = wsOtps, let server = wsServer, server.isRunning else {
+            call.reject("WebSocket server is not running; call startWebSocket() first")
+            return
+        }
+        let count = max(1, min(256, call.getInt("count", 1)))
+        do {
+            let created = try otps.createBatch(count: count, scope: OtpStore.scopeReadWrite, path: "", reusable: false)
+            call.resolve(["otps": created, "count": created.count])
+        } catch {
+            call.reject(error.localizedDescription)
+        }
+    }
+
+    /// 批量创建 HTTP OTP（一次桥调用生成 N 个）。
+    @objc func createHttpOtps(_ call: CAPPluginCall) {
+        guard let otps = httpOtps, let server = httpServer, server.isRunning else {
+            call.reject("HTTP server is not running; call startHttp() first")
+            return
+        }
+        guard let path = call.getString("path"), !path.trimmingCharacters(in: .whitespaces).isEmpty else {
+            call.reject("missing path: an HTTP OTP must be bound to a specific file/folder")
+            return
+        }
+        let scope = call.getString("scope", OtpStore.scopeRead) ?? OtpStore.scopeRead
+        let reusable = call.getBool("reusable", false)
+        let count = max(1, min(256, call.getInt("count", 1)))
+        do {
+            let created = try otps.createBatch(count: count, scope: scope, path: path, reusable: reusable)
+            let normalizedPath = (try? OtpStore.normalizePath(path)) ?? path
+            call.resolve([
+                "otps": created,
+                "count": created.count,
+                "scope": scope,
+                "path": normalizedPath,
+                "reusable": reusable
+            ])
+        } catch {
+            call.reject(error.localizedDescription)
+        }
+    }
+
+    /// 批量验证并消费 OTP（返回结果已全部验证；未通过项必须丢弃）。
+    @objc func validateAndConsumeOtps(_ call: CAPPluginCall) {
+        let raw = call.getArray("otps") ?? []
+        let input: [String] = raw.compactMap { $0 as? String }
+        if input.isEmpty {
+            call.reject("missing otps")
+            return
+        }
+        var results: [Bool] = []
+        results.reserveCapacity(input.count)
+        for otp in input {
+            var valid = false
+            if !otp.isEmpty {
+                if let otps = httpOtps {
+                    valid = otps.revoke(otp) || valid
+                }
+                if let otps = wsOtps {
+                    valid = otps.revoke(otp) || valid
+                }
+            }
+            results.append(valid)
+        }
+        call.resolve(["results": results])
     }
 
     @objc func revokeOtp(_ call: CAPPluginCall) {

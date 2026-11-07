@@ -193,7 +193,15 @@
 <script>
 import { Capacitor } from '@capacitor/core';
 import { AppState } from 'capacitor-app-state';
-import { DataChannel, encodeWsMessage, decodeWsMessage } from 'capacitor-data-channel';
+import {
+  DataChannel,
+  encodeWsMessage,
+  encodeWsMessageWithOtp,
+  decodeWsMessage,
+  decodeWsMessagesBatch,
+  createWsOtpPool,
+  WsOtpPool,
+} from 'capacitor-data-channel';
 import { NativeFiles } from 'capacitor-native-files';
 import { Fullscreen } from 'capacitor-fullscreen';
 import { KeyboardAvoiding } from 'capacitor-keyboard-avoiding';
@@ -685,6 +693,70 @@ export default {
           const validateFirst = await DataChannel.validateAndConsumeOTP({ otp: validateOtp.otp });
           const validateAgain = await DataChannel.validateAndConsumeOTP({ otp: validateOtp.otp });
 
+          // 批量 OTP：一次桥调用生成 8 个，且互不重复
+          const batchWs = await DataChannel.createWsOtps({ count: 8 });
+          const batchUnique = batchWs.count === 8 && new Set(batchWs.otps).size === 8;
+
+          // 用其中 2 个发消息（同步拼包）→ 批量解码（先验证、后交付）
+          const batchPool = new WsOtpPool(batchWs.otps.slice(0, 2));
+          const batchHandshake = await DataChannel.createWsOtp();
+          const batchResponses = await (async () => {
+            const socket = new WebSocket(wsInfo.wsUrl, [`otp.${batchHandshake.otp}`]);
+            socket.binaryType = 'arraybuffer';
+            const payloads = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])];
+            const received = [];
+            return await new Promise((resolve) => {
+              const timer = setTimeout(() => {
+                try {
+                  socket.close();
+                } catch (ignored) {
+                  // 忽略
+                }
+                resolve({ received });
+              }, 6000);
+              socket.onopen = () => {
+                for (const item of payloads) {
+                  socket.send(encodeWsMessageWithOtp(batchPool.take(), item));
+                }
+              };
+              socket.onmessage = (event) => {
+                received.push(event.data);
+                if (received.length === payloads.length) {
+                  clearTimeout(timer);
+                  try {
+                    socket.close();
+                  } catch (ignored) {
+                    // 忽略
+                  }
+                  resolve({ received });
+                }
+              };
+              socket.onerror = () => {
+                clearTimeout(timer);
+                resolve({ received });
+              };
+            });
+          })();
+          const batchDecoded = batchResponses.received.length
+            ? await decodeWsMessagesBatch(batchResponses.received)
+            : [];
+          const batchAllOk = batchDecoded.length === 2 && batchDecoded.every((item) => item.ok === true);
+          // 服务端 nonce 已被批量解码消费 → 再次批量验证应全部 false
+          const extractOtp = (buf) => {
+            const bytes = new Uint8Array(buf);
+            const separator = bytes.indexOf(0);
+            return separator > 0 ? new TextDecoder().decode(bytes.subarray(0, separator)) : null;
+          };
+          const batchNonces = batchResponses.received.map(extractOtp).filter(Boolean);
+          const batchReplay = await DataChannel.validateAndConsumeOtps({ otps: batchNonces });
+          const batchReplayAllFalse = batchReplay.results.length > 0 && batchReplay.results.every((v) => v === false);
+
+          // HTTP 批量 OTP：生成 3 个，第一个可用
+          const batchHttp = await DataChannel.createHttpOtps({ count: 3, scope: 'read', path: 'selftest/test.bin' });
+          const batchHttpUse = await fetchT(
+            `${http.baseUrl}/download?path=selftest/test.bin&otp=${batchHttp.otps[0]}`,
+          );
+
           const revoked = await DataChannel.revokeAllOtps();
           const stopHttp = await DataChannel.stopHttp();
           const stopWs = await DataChannel.stopWebSocket();
@@ -719,6 +791,12 @@ export default {
             wsMessageReplaySecondOk: wsMessageReplay.secondOk,
             validateFirstValid: validateFirst.valid,
             validateAgainValid: validateAgain.valid,
+            batchWsCount: batchWs.count,
+            batchUnique,
+            batchAllOk,
+            batchReplayAllFalse,
+            batchHttpCount: batchHttp.otps.length,
+            batchHttpUseStatus: batchHttpUse.status,
             revokedCount: revoked.revoked,
             httpStopped: stopHttp.running === false,
             wsStopped: stopWs.running === false,
@@ -752,6 +830,11 @@ export default {
             && wsMessageReplay.secondOk === false
             && validateFirst.valid === true
             && validateAgain.valid === false
+            && batchUnique === true
+            && batchAllOk === true
+            && batchReplayAllFalse === true
+            && batchHttp.otps.length === 3
+            && batchHttpUse.status === 200
             && stopHttp.running === false
             && stopWs.running === false;
           if (!dcOk) {
@@ -1405,6 +1488,8 @@ export default {
         }
         // 建连：一次性 WS OTP，通过子协议传递（不进 URL）
         const handshakeOtp = await DataChannel.createWsOtp();
+        // 发送侧：批量取 4 个 OTP，避免每条消息一次桥调用
+        const pool = await createWsOtpPool(4);
         const startedAt = performance.now();
         const result = await new Promise((resolve, reject) => {
           const ws = new WebSocket(wsInfo.wsUrl, [`otp.${handshakeOtp.otp}`]);
@@ -1417,10 +1502,10 @@ export default {
             }
             reject(new Error('WebSocket 回显超时（15s）'));
           }, 15000);
-          ws.onopen = async () => {
+          ws.onopen = () => {
             try {
-              // 每条消息：内部 createWsOtp + 拼 [otp][0x00][payload]
-              ws.send(await encodeWsMessage(payload));
+              // 同步拼包（OTP 来自预取池，无桥往返）
+              ws.send(encodeWsMessageWithOtp(pool.take(), payload));
             } catch (err) {
               clearTimeout(timer);
               reject(err);

@@ -120,6 +120,42 @@ export interface DataChannelPlugin {
   createWsOtp(): Promise<WsOtpInfo>;
 
   /**
+   * **批量**创建 WebSocket OTP（一次桥调用生成 N 个）。
+   *
+   * 为什么需要：Capacitor 的插件调用是**串行**的（Android 单 `HandlerThread` / iOS 串行
+   * `DispatchQueue`），每条消息一次 `createWsOtp` 会累加往返延迟；批量生成把 N 次调用压成 1 次，
+   * 高频小包场景能省掉绝大部分桥开销。配合 `encodeWsMessageWithOtp`（同步）使用。
+   *
+   * @param options.count 1..256（与当前活跃 OTP 数之和不得超过 256）
+   * @since 0.4.0
+   */
+  createWsOtps(options: { count: number }): Promise<{ otps: string[]; count: number }>;
+
+  /**
+   * **批量**创建 HTTP OTP（一次桥调用生成 N 个）。
+   *
+   * @param options.count 1..256；其余参数同 `createHttpOtp`
+   * @since 0.4.0
+   */
+  createHttpOtps(options: CreateHttpOtpOptions & { count: number }): Promise<{
+    otps: string[];
+    count: number;
+    scope: string;
+    path: string;
+    reusable: boolean;
+  }>;
+
+  /**
+   * **批量**验证并消费 OTP（用于 WebView 校验 Server → Client 的 WS 消息）。
+   *
+   * ⚠️ 只有在你能够接受"先攒 K 条、验证后再交付"的延迟时才用；返回时结果已全部验证，
+   * 未通过项必须丢弃。
+   *
+   * @since 0.4.0
+   */
+  validateAndConsumeOtps(options: { otps: string[] }): Promise<{ results: boolean[] }>;
+
+  /**
    * 验证并消费一个 OTP（用于 WebView 校验 **Server → Client** 的 WS 消息）。
    *
    * Server 每发一条消息，会生成一个一次性 nonce 并放进消息前缀

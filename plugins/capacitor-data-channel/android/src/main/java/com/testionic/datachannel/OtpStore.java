@@ -67,6 +67,42 @@ public class OtpStore {
     }
 
     /**
+     * 批量生成 N 个 OTP（一次桥调用）。
+     *
+     * 目的：Capacitor 的插件调用是**串行**的（Android 单 HandlerThread / iOS 串行 queue），
+     * 每条消息单独 createWsOtp 会把往返延迟累加；批量生成把 N 次调用压成 1 次，
+     * 大幅降低高频小包场景的桥开销。
+     *
+     * @param count 1..MAX_OTPS（且与当前活跃数之和不得超过 MAX_OTPS）
+     */
+    public java.util.List<String> createBatch(int count, String scope, String path, boolean reusable) {
+        if (count < 1) {
+            throw new IllegalArgumentException("count must be >= 1");
+        }
+        String normalizedScope = normalizeScope(scope);
+        String normalizedPath = normalizePath(path);
+        if (reusable && !SCOPE_READ.equals(normalizedScope)) {
+            throw new IllegalArgumentException("reusable OTP is only allowed with scope=read (write must use a fresh one-time OTP)");
+        }
+        synchronized (this) {
+            if (otps.size() + count > MAX_OTPS) {
+                throw new IllegalStateException(
+                    "not enough OTP capacity: active=" + otps.size() + ", requested=" + count + ", max=" + MAX_OTPS
+                );
+            }
+            java.util.List<String> created = new java.util.ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                byte[] bytes = new byte[32];
+                random.nextBytes(bytes);
+                String otp = toBase64Url(bytes);
+                otps.put(otp, new Record(normalizedScope, normalizedPath, reusable));
+                created.add(otp);
+            }
+            return created;
+        }
+    }
+
+    /**
      * 校验并消费 OTP。
      *
      * @param otp         请求携带的 OTP
