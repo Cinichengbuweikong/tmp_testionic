@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import Capacitor
+import CryptoKit
 
 /// DataChannel **HTTP** Server（iOS，NWListener 手写 HTTP 实现）。
 ///
@@ -245,6 +246,9 @@ private final class HTTPConnection {
     private var headers: [String: String] = [:]
     private var bodyLength: Int64 = 0
     private var bodyReceived: Int64 = 0
+    private var hasContentLength = false
+    private var chunkedMode = false
+    private var chunkOffset: Int64 = 0
     private var uploadHandle: FileHandle?
     private var uploadPartURL: URL?
     private var uploadTargetURL: URL?
@@ -307,6 +311,11 @@ private final class HTTPConnection {
                 self.handleReceived(data)
             }
             if isComplete && !self.finished {
+                if self.phase == .uploading && self.bodyReceived < self.bodyLength {
+                    CAPLog.print(
+                        "[DataChannelHttp] upload interrupted by client: \(self.bodyReceived)/\(self.bodyLength) bytes"
+                    )
+                }
                 self.finish()
                 return
             }
@@ -371,8 +380,10 @@ private final class HTTPConnection {
         headers = parsed
         if let rawLength = headers["content-length"], let value = Int64(rawLength) {
             bodyLength = value
+            hasContentLength = true
         } else {
             bodyLength = 0
+            hasContentLength = false
         }
         return true
     }
@@ -380,7 +391,7 @@ private final class HTTPConnection {
     private func beginRequest(bodyPrefix: Data) {
         let origin = headers["origin"]
         if bodyLength > maxBodyBytes {
-            sendAndClose(status: 413, reason: "Payload Too Large", json: ["error": "payload too large"], origin: origin)
+            fail(status: 413, code: "E_PAYLOAD_TOO_LARGE", message: "payload too large: \(bodyLength) > \(maxBodyBytes)")
             return
         }
         if method == "OPTIONS" {
@@ -396,8 +407,9 @@ private final class HTTPConnection {
             return
         }
 
-        // OTP 鉴权（一次性/可复用由 OTP 自身属性决定）
-        let neededScope = (method == "PUT" || method == "POST") ? OtpStore.scopeWrite : OtpStore.scopeRead
+        // OTP 鉴权（一次性/可复用由 OTP 自身属性决定）；
+        // /upload 的所有方法（含 GET status）都要求 write 权限，便于续传流程统一用 write OTP
+        let neededScope = (method == "PUT" || method == "POST" || path == "/upload") ? OtpStore.scopeWrite : OtpStore.scopeRead
         let otp = extractOtp()
         guard otpStore.consume(otp, scope: neededScope, path: query["path"] ?? "") else {
             sendAndClose(status: 404, reason: "Not Found", json: ["error": "not found"], origin: origin)
@@ -409,11 +421,35 @@ private final class HTTPConnection {
         }
         authenticated = true
 
-        if (method == "PUT" || method == "POST"), path == "/upload", bodyLength > 0 {
-            guard prepareUpload() else { return }
-            phase = .uploading
-            writeBody(bodyPrefix)
-            return
+        // ---- /upload：单次 / 分块（offset）/ finalize / status ----
+        if path == "/upload" {
+            if method == "GET" {
+                handleUploadStatus()
+                return
+            }
+            if method == "PUT" || method == "POST" {
+                if Self.isTruthy(query["append"]) {
+                    fail(
+                        status: 400,
+                        code: "E_APPEND_DEPRECATED",
+                        message: "append=1 is deprecated: a chunk interrupted mid-flight corrupts the target file. " +
+                            "Use PUT /upload?path=...&offset=<bytes>&total=<bytes>, then POST /upload?path=...&finalize=1&total=<bytes>"
+                    )
+                    return
+                }
+                if Self.isTruthy(query["finalize"]) {
+                    handleFinalizeRequest()
+                    return
+                }
+                guard prepareUpload() else { return }
+                phase = .uploading
+                if bodyLength > 0 {
+                    writeBody(bodyPrefix)
+                } else {
+                    completeUpload()
+                }
+                return
+            }
         }
 
         if bodyLength > 0 {
@@ -430,35 +466,107 @@ private final class HTTPConnection {
         return query["otp"]
     }
 
+    /// 统一错误体：`{"error": "...", "code": "E_...", "size"?: N}`。
+    private func fail(status: Int, code: String, message: String? = nil, size: Int64? = nil) {
+        var body: [String: Any] = [
+            "error": message ?? code,
+            "code": code
+        ]
+        if let size = size {
+            body["size"] = size
+        }
+        sendAndClose(status: status, reason: Self.statusText(status), json: body, origin: headers["origin"])
+    }
+
     private func prepareUpload() -> Bool {
         guard let target = try? resolveSafePath(query["path"]) else {
-            sendAndClose(status: 400, reason: "Bad Request", json: ["error": "invalid path"], origin: headers["origin"])
+            fail(status: 400, code: "E_INVALID_PATH", message: "invalid path")
+            return false
+        }
+        if !hasContentLength {
+            fail(
+                status: 411,
+                code: "E_LENGTH_REQUIRED",
+                message: "Content-Length required (chunked transfer-encoding not supported)"
+            )
+            return false
+        }
+        if bodyLength > maxBodyBytes {
+            fail(
+                status: 413,
+                code: "E_PAYLOAD_TOO_LARGE",
+                message: "payload too large: \(bodyLength) > \(maxBodyBytes)"
+            )
             return false
         }
         let parent = target.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: parent.path) {
-            try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        }
-        let append = Self.isAppend(query["append"])
-        var handle: FileHandle?
-        if append {
-            if !FileManager.default.fileExists(atPath: target.path) {
-                FileManager.default.createFile(atPath: target.path, contents: nil)
+            do {
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            } catch {
+                fail(status: 500, code: "E_IO", message: "cannot create parent directory: \(error.localizedDescription)")
+                return false
             }
-            handle = try? FileHandle(forWritingTo: target)
-            handle?.seekToEndOfFile()
-            uploadPartURL = target
-        } else {
-            let part = URL(fileURLWithPath: target.path + ".part")
-            FileManager.default.createFile(atPath: part.path, contents: nil)
+        }
+
+        let part = URL(fileURLWithPath: target.path + ".part")
+        let total = Self.parseLong(query["total"], fallback: -1)
+        let chunked = query["offset"] != nil
+        chunkedMode = chunked
+        chunkOffset = 0
+
+        if chunked {
+            let offset = Self.parseLong(query["offset"], fallback: -1)
+            guard offset >= 0 else {
+                fail(status: 400, code: "E_BAD_REQUEST", message: "invalid offset")
+                return false
+            }
+            chunkOffset = offset
+            if offset > 0 {
+                guard FileManager.default.fileExists(atPath: part.path) else {
+                    fail(
+                        status: 409,
+                        code: "E_NO_PART",
+                        message: "no partial upload for this path; restart from offset=0",
+                        size: 0
+                    )
+                    return false
+                }
+                let actual = Self.fileSize(part)
+                if actual != offset {
+                    fail(
+                        status: 409,
+                        code: "E_OFFSET_MISMATCH",
+                        message: "offset mismatch: expected \(offset), actual \(actual)",
+                        size: actual
+                    )
+                    return false
+                }
+            }
+            if total >= 0, offset + bodyLength > total {
+                fail(status: 400, code: "E_BAD_REQUEST", message: "chunk exceeds total: offset + length > total")
+                return false
+            }
+        }
+
+        var handle: FileHandle?
+        if chunked && chunkOffset > 0 {
             handle = try? FileHandle(forWritingTo: part)
-            uploadPartURL = part
+            handle?.seekToEndOfFile()
+        } else {
+            // 新建/截断 .part
+            guard FileManager.default.createFile(atPath: part.path, contents: nil) else {
+                fail(status: 500, code: "E_IO", message: "cannot create partial file")
+                return false
+            }
+            handle = try? FileHandle(forWritingTo: part)
         }
         guard let writer = handle else {
-            sendAndClose(status: 500, reason: "Internal Server Error", json: ["error": "cannot open file"], origin: headers["origin"])
+            fail(status: 500, code: "E_IO", message: "cannot open partial file")
             return false
         }
         uploadHandle = writer
+        uploadPartURL = part
         uploadTargetURL = target
         bodyReceived = 0
         return true
@@ -476,7 +584,15 @@ private final class HTTPConnection {
         }
         let slice = data.prefix(Int(min(Int64(data.count), remaining)))
         if !slice.isEmpty {
-            writer.write(Data(slice))
+            do {
+                try writer.write(contentsOf: Data(slice))
+            } catch {
+                CAPLog.print("[DataChannelHttp] upload write failed: \(error.localizedDescription)")
+                try? writer.close()
+                uploadHandle = nil
+                fail(status: 500, code: "E_IO", message: "write failed: \(error.localizedDescription)")
+                return
+            }
             bodyReceived += Int64(slice.count)
         }
         if bodyReceived >= bodyLength {
@@ -485,25 +601,186 @@ private final class HTTPConnection {
     }
 
     private func completeUpload() {
-        try? uploadHandle?.close()
-        uploadHandle = nil
+        if let writer = uploadHandle {
+            do {
+                try writer.close()
+            } catch {
+                CAPLog.print("[DataChannelHttp] close failed: \(error.localizedDescription)")
+            }
+            uploadHandle = nil
+        }
+        guard let part = uploadPartURL, let target = uploadTargetURL else {
+            finish()
+            return
+        }
+        if chunkedMode {
+            let partSize = Self.fileSize(part)
+            sendJSON(
+                status: 200,
+                reason: "OK",
+                body: [
+                    "path": query["path"] ?? "",
+                    "bytes": bodyReceived,
+                    "offset": chunkOffset,
+                    "partSize": partSize,
+                    "finalized": false,
+                    "chunked": true
+                ],
+                origin: headers["origin"]
+            )
+            return
+        }
+        // 单次上传：原子落地；失败清理 .part
+        do {
+            if FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.removeItem(at: target)
+            }
+            try FileManager.default.moveItem(at: part, to: target)
+        } catch {
+            try? FileManager.default.removeItem(at: part)
+            fail(status: 500, code: "E_FINALIZE", message: "rename failed: \(error.localizedDescription)")
+            return
+        }
+        sendJSON(
+            status: 200,
+            reason: "OK",
+            body: [
+                "path": query["path"] ?? "",
+                "bytes": bodyReceived,
+                "size": Self.fileSize(target),
+                "finalized": true
+            ],
+            origin: headers["origin"]
+        )
+    }
 
-        let append = Self.isAppend(query["append"])
-        if !append, let part = uploadPartURL, let target = uploadTargetURL {
-            try? FileManager.default.removeItem(at: target)
-            try? FileManager.default.moveItem(at: part, to: target)
+    /// POST /upload?path=...&finalize=1&total=N[&sha256=..]：校验 .part 后原子落地。
+    private func handleFinalizeRequest() {
+        guard let target = try? resolveSafePath(query["path"]) else {
+            fail(status: 400, code: "E_INVALID_PATH", message: "invalid path")
+            return
         }
-        var size: Int64 = 0
-        if let target = uploadTargetURL, let attributes = try? FileManager.default.attributesOfItem(atPath: target.path) {
-            size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        let part = URL(fileURLWithPath: target.path + ".part")
+        guard FileManager.default.fileExists(atPath: part.path) else {
+            fail(status: 404, code: "E_NO_PART", message: "no partial upload for this path", size: 0)
+            return
         }
-        let body: [String: Any] = [
-            "path": query["path"] ?? "",
-            "bytes": bodyReceived,
-            "size": size,
-            "appended": append
-        ]
-        sendJSON(status: 200, reason: "OK", body: body, origin: headers["origin"])
+        let size = Self.fileSize(part)
+        let total = Self.parseLong(query["total"], fallback: -1)
+        if total >= 0, size != total {
+            fail(
+                status: 409,
+                code: "E_SIZE_MISMATCH",
+                message: "size mismatch: expected \(total), actual \(size)",
+                size: size
+            )
+            return
+        }
+        if let expected = query["sha256"]?.trimmingCharacters(in: .whitespaces), !expected.isEmpty {
+            guard let actual = Self.sha256Hex(part) else {
+                fail(status: 500, code: "E_IO", message: "cannot hash partial file", size: size)
+                return
+            }
+            if actual.lowercased() != expected.lowercased() {
+                fail(
+                    status: 409,
+                    code: "E_HASH_MISMATCH",
+                    message: "sha256 mismatch: expected \(expected), actual \(actual)",
+                    size: size
+                )
+                return
+            }
+        }
+        do {
+            if FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.removeItem(at: target)
+            }
+            try FileManager.default.moveItem(at: part, to: target)
+        } catch {
+            fail(status: 500, code: "E_FINALIZE", message: "rename failed: \(error.localizedDescription)", size: size)
+            return
+        }
+        sendJSON(
+            status: 200,
+            reason: "OK",
+            body: [
+                "path": query["path"] ?? "",
+                "size": Self.fileSize(target),
+                "finalized": true
+            ],
+            origin: headers["origin"]
+        )
+    }
+
+    /// GET /upload?path=...&status=1：查询 .part 进度（断点续传用）。
+    private func handleUploadStatus() {
+        guard let target = try? resolveSafePath(query["path"]) else {
+            fail(status: 400, code: "E_INVALID_PATH", message: "invalid path")
+            return
+        }
+        let part = URL(fileURLWithPath: target.path + ".part")
+        let partExists = FileManager.default.fileExists(atPath: part.path)
+        let exists = FileManager.default.fileExists(atPath: target.path)
+        sendJSON(
+            status: 200,
+            reason: "OK",
+            body: [
+                "path": query["path"] ?? "",
+                "partExists": partExists,
+                "partSize": partExists ? Self.fileSize(part) : 0,
+                "exists": exists,
+                "size": exists ? Self.fileSize(target) : 0
+            ],
+            origin: headers["origin"]
+        )
+    }
+
+    // MARK: 上传工具
+
+    static func isTruthy(_ value: String?) -> Bool {
+        guard let value = value?.lowercased().trimmingCharacters(in: .whitespaces) else { return false }
+        return value == "1" || value == "true" || value == "yes"
+    }
+
+    static func parseLong(_ value: String?, fallback: Int64) -> Int64 {
+        guard let raw = value?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return fallback }
+        return Int64(raw) ?? fallback
+    }
+
+    static func fileSize(_ url: URL) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    static func sha256Hex(_ url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk: Data
+            do {
+                guard let data = try handle.read(upToCount: 64 * 1024), !data.isEmpty else { break }
+                chunk = data
+            } catch {
+                return nil
+            }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func statusText(_ status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 204: return "No Content"
+        case 206: return "Partial Content"
+        case 400: return "Bad Request"
+        case 404: return "Not Found"
+        case 409: return "Conflict"
+        case 411: return "Length Required"
+        case 413: return "Payload Too Large"
+        default: return "Internal Server Error"
+        }
     }
 
     // MARK: 路由
@@ -515,29 +792,9 @@ private final class HTTPConnection {
             sendAndClose(status: 200, reason: "OK", json: ["ok": true, "name": "capacitor-data-channel"], origin: origin)
         case ("GET", "/download"):
             handleDownload(origin: origin)
-        case ("PUT", "/upload"), ("POST", "/upload"):
-            handleEmptyUpload(origin: origin)
         default:
             sendAndClose(status: 404, reason: "Not Found", json: ["error": "not found"], origin: origin)
         }
-    }
-
-    private func handleEmptyUpload(origin: String?) {
-        guard let target = try? resolveSafePath(query["path"]) else {
-            sendAndClose(status: 400, reason: "Bad Request", json: ["error": "invalid path"], origin: origin)
-            return
-        }
-        let parent = target.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parent.path) {
-            try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        }
-        FileManager.default.createFile(atPath: target.path, contents: nil)
-        sendAndClose(
-            status: 200,
-            reason: "OK",
-            json: ["path": query["path"] ?? "", "bytes": 0, "size": 0],
-            origin: origin
-        )
     }
 
     private func handleDownload(origin: String?) {
@@ -717,11 +974,6 @@ private final class HTTPConnection {
     }
 
     // MARK: 工具
-
-    private static func isAppend(_ value: String?) -> Bool {
-        guard let value = value?.lowercased() else { return false }
-        return value == "1" || value == "true"
-    }
 
     private static func isAllowedOrigin(_ origin: String) -> Bool {
         let normalized = origin.trimmingCharacters(in: .whitespaces).lowercased()

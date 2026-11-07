@@ -14,6 +14,7 @@
 > [`capacitor-native-files`](../capacitor-native-files/)。
 >
 > 📖 想先了解"这个插件是做什么的、适不适合我"？看 [插件介绍（INTRO.md）](INTRO.md)。
+> 🧩 想要可复制的完整代码？看 [使用示例（EXAMPLES.md）](EXAMPLES.md)。
 
 **实测性能**（真机 Redmi K30S / Android 10）：
 
@@ -215,20 +216,53 @@ android:networkSecurityConfig="@xml/network_security_config"
 </dict>
 ```
 
-## HTTP 路由（只有三个）
+## HTTP 路由
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/health` | **免 OTP** | 连通性自检（无敏感信息） |
-| PUT / POST | `/upload?path=<相对路径>&append=0\|1` | write OTP | 原始二进制上传（流式写盘）；`append=1` 追加 → `{path,bytes,size,appended}` |
-| GET | `/download?path=<相对路径>` | read OTP | 流式下载；支持 `Range` → **206**（视频拖动必需） |
+| PUT | `/upload?path=X` | write OTP | **单次上传**（写 `.part` → 校验 → 原子 rename） |
+| PUT | `/upload?path=X&offset=N&total=T` | write OTP | **分块上传**：校验 `.part` 长度 == N 后追加；返回 `{partSize}` |
+| POST | `/upload?path=X&finalize=1&total=T[&sha256=..]` | write OTP | **落地**：校验总长/哈希后 `rename(.part → X)`，失败不落地 |
+| GET | `/upload?path=X&status=1` | write OTP | **查询进度**：`{partExists, partSize, exists, size}`（断点续传用） |
+| GET | `/download?path=X` | read OTP | 流式下载；支持 `Range` → **206**（视频拖动必需） |
 | OPTIONS | 任意 | **免 OTP** | CORS 预检（浏览器预检不带 Authorization） |
 
 OTP 传递方式：
 - **Header**：`Authorization: OTP <otp>`（推荐，普通请求）
-- **Query**：`?otp=<otp>`（媒体 `<video src>` / `<img src>` 必须用这个，因为不能加 header）
+- **Query**：`?otp=<otp>`（媒体 `<video src>` / `<img src>` / `GET /upload?status=1` 这种不能加 header 的场景）
+
+错误体统一为 `{"error": "...", "code": "E_...", "size"?: N}`；完整错误码表见
+[EXAMPLES.md 第 6 节](EXAMPLES.md#6-错误码与处理建议)。
 
 > `/info`、`/list`、`/file` 等文件管理路由**已移除**——那些属于 `capacitor-native-files`。
+
+### 断点续传上传（offset + finalize）
+
+**为什么这样设计**：分块上传必然可能中断（断网、切后台、进程被杀）。如果直接 append 到目标文件，
+"块传一半"会静默污染文件。因此：
+
+- 所有分块先写 `X.part`，**目标文件只在 finalize 时原子出现**；
+- 每次 append 前校验 `offset == .part` 实际长度 → 错位会被 409 挡住，不会拼错；
+- finalize 校验 `total`（可选 `sha256`）后才 rename。
+
+```
+PUT  /upload?path=X&offset=0&total=T           # 第 1 块（新建/截断 .part）
+PUT  /upload?path=X&offset=<n>&total=T         # 后续块（校验 .part 长度 == n）
+GET  /upload?path=X&status=1                   # 断点续传：查询已有 partSize
+POST /upload?path=X&finalize=1&total=T&sha256=…# 校验后原子落地
+```
+
+| 情况 | 行为 |
+| --- | --- |
+| 中途断开 | `.part` 保留已写字节；**目标文件不变**；用 `status` 续传 |
+| offset 不匹配 | **409** `E_OFFSET_MISMATCH` + `size`（服务端实际字节数） |
+| 没有 `.part` 却 offset > 0 | **409** `E_NO_PART`（从 0 重来） |
+| finalize 总长不符 | **409** `E_SIZE_MISMATCH`，`.part` 保留 |
+| finalize sha256 不符 | **409** `E_HASH_MISMATCH`，`.part` 保留 |
+| 旧的 `append=1` | **400** `E_APPEND_DEPRECATED`（已废弃，避免误用） |
+
+完整代码见 [EXAMPLES.md 1.3 断点续传](EXAMPLES.md#13-断点续传完整流程含-sha256-校验)。
 
 ## WebSocket（实时双向二进制）
 
@@ -374,7 +408,7 @@ start/stop 时派发，载荷为 `{ http: HttpInfo | null, webSocket: WsInfo | n
 
 | 方式 | 105~110MB 文件 | 速度 | RSS 增量 |
 | --- | --- | --- | --- |
-| 分块 8MB×13 复用缓冲 + `append=1`（**首选**） | 920ms | 109 MB/s | +42.8MB |
+| 分块 8MB×13 复用缓冲 + `offset`/`finalize`（**首选**） | 920ms | 109 MB/s | +42.8MB |
 | File 直传（用户选的磁盘文件原样转发） | 806ms | 131 MB/s | **+4.2MB** |
 | 一次性 `Uint8Array(100MB)` | 912ms | 110 MB/s | +275.3MB |
 | 整体生成后包装 `new File([buf])` | 698ms | 143 MB/s | 上传阶段 +0.6MB |
@@ -598,7 +632,7 @@ CPU 用 `/proc/<pid>/stat` 精确采样（10ms 时间片），先扣 idle 基线
 | 场景 | 建议 |
 | --- | --- |
 | 大文件（> 10MB） | 走 **HTTP**（上传 93 MB/s、下载 322 MB/s；内存峰值 +46MB 且会回落） |
-| 前端生成的数据上传 | **分块 + 复用 buffer**（8MB/块，`append=1`），不要一次性 `Uint8Array(100MB)` |
+| 前端生成的数据上传 | **分块 + 复用 buffer**（8MB/块，`offset` + `finalize`），不要一次性 `Uint8Array(100MB)` |
 | 用户选的磁盘文件 | 直接 `body: file`（RSS 增量最小，实测 +4.2MB） |
 | 高频小消息（WS） | **批量 OTP 池**：`createWsOtpPool(64)` + `encodeWsMessageWithOtp`（-35% 延迟） |
 | 接收侧高频 | `decodeWsMessagesBatch`（先验证后交付）或单条 `decodeWsMessage` |
@@ -635,6 +669,14 @@ CPU 用 `/proc/<pid>/stat` 精确采样（10ms 时间片），先扣 idle 基线
 | **批量拼包 + `decodeWsMessagesBatch`** | 全部 `ok` ✓ |
 | **批量 nonce 再验证** | 全部 `false`（已消费）✓ |
 | **`createHttpOtps({count:3})`** | 3 个，第一个下载 200 ✓ |
+| **断点续传 offset** | 第 1/2 块 200；**offset 错位 → 409 `E_OFFSET_MISMATCH` + size** ✓ |
+| **续传 status** | `partSize` 与服务端一致（200KB）✓ |
+| **finalize 总长不符** | **409 `E_SIZE_MISMATCH`**，目标文件不存在（404）✓ |
+| **finalize + sha256 正确** | 200，落地 300KB，内容 8/8/9 三段校验通过 ✓ |
+| **finalize sha256 错误** | **409 `E_HASH_MISMATCH`** ✓ |
+| **旧的 `append=1`** | **400 `E_APPEND_DEPRECATED`** ✓ |
+| **中断上传**（XHR abort） | 目标文件不存在（404），`.part` 可续传 ✓ |
+| **手工续传**（20MB：8+8 → status 16MB → 续 4MB → finalize） | 324ms，下载 20MB ✓ |
 | **连接限流**（6 个沉默连接） | `pending` 停在 **4** ✓ |
 | `stopHttp` / `stopWebSocket` 后 | 各自 `running: false` ✓ |
 | HTTP / WS 独立启停 | 各停各的 ✓ |

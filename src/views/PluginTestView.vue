@@ -499,6 +499,118 @@ export default {
             headers: { 'Access-Control-Request-Method': 'PUT' },
           });
 
+          // ---- 断点续传协议：offset / status / finalize / sha256 ----
+          const rsPath = 'selftest/resumable.bin';
+          const rsChunk = 100 * 1024;
+          const rsTotal = rsChunk * 3;
+          const rs1 = new Uint8Array(rsChunk).fill(7);
+          const rs2 = new Uint8Array(rsChunk).fill(8);
+          const rs3 = new Uint8Array(rsChunk).fill(9);
+          const putChunk = async (offset, body) => {
+            const otp = await DataChannel.createHttpOtp({ scope: 'write', path: rsPath });
+            return fetchT(`${http.baseUrl}/upload?path=${rsPath}&offset=${offset}&total=${rsTotal}`, {
+              method: 'PUT',
+              headers: { Authorization: `OTP ${otp.otp}` },
+              body,
+            });
+          };
+          const rsC1 = await putChunk(0, rs1);
+          const rsC2 = await putChunk(rsChunk, rs2);
+          // offset 不匹配 → 409 + 实际 size
+          const rsBadOffset = await putChunk(12345, rs3);
+          const rsBadOffsetJson = await rsBadOffset.json();
+          // status → partSize
+          const rsStatusOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsPath });
+          const rsStatus = await (
+            await fetchT(`${http.baseUrl}/upload?path=${rsPath}&status=1&otp=${rsStatusOtp.otp}`)
+          ).json();
+          // finalize 总长不对 → 409，且最终文件不存在
+          const rsFinBadOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsPath });
+          const rsFinBad = await fetchT(`${http.baseUrl}/upload?path=${rsPath}&finalize=1&total=999999`, {
+            method: 'POST',
+            headers: { Authorization: `OTP ${rsFinBadOtp.otp}` },
+          });
+          const rsFinBadJson = await rsFinBad.json();
+          const rsBeforeFinalOtp = await DataChannel.createHttpOtp({ scope: 'read', path: rsPath });
+          const rsBeforeFinal = await fetchT(`${http.baseUrl}/download?path=${rsPath}&otp=${rsBeforeFinalOtp.otp}`);
+          // 补齐第三块 → 正确 finalize（带 sha256）
+          const rsC3 = await putChunk(rsChunk * 2, rs3);
+          const rsFull = new Uint8Array(rsTotal);
+          rsFull.set(rs1, 0);
+          rsFull.set(rs2, rsChunk);
+          rsFull.set(rs3, rsChunk * 2);
+          const rsDigest = await crypto.subtle.digest('SHA-256', rsFull);
+          const rsSha = Array.from(new Uint8Array(rsDigest))
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('');
+          const rsFinOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsPath });
+          const rsFin = await fetchT(
+            `${http.baseUrl}/upload?path=${rsPath}&finalize=1&total=${rsTotal}&sha256=${rsSha}`,
+            { method: 'POST', headers: { Authorization: `OTP ${rsFinOtp.otp}` } },
+          );
+          const rsFinJson = await rsFin.json();
+          // 内容校验：8 + 8 + 9 三段
+          const rsVerifyOtp = await DataChannel.createHttpOtp({ scope: 'read', path: rsPath });
+          const rsVerify = new Uint8Array(
+            await (await fetchT(`${http.baseUrl}/download?path=${rsPath}&otp=${rsVerifyOtp.otp}`)).arrayBuffer(),
+          );
+          const rsContentOk =
+            rsVerify.length === rsTotal &&
+            rsVerify[0] === 7 &&
+            rsVerify[rsChunk] === 8 &&
+            rsVerify[rsChunk * 2] === 9;
+          // sha256 错误 → 409
+          const rsHashPath = 'selftest/hash.bin';
+          const rsHashOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsHashPath });
+          await fetchT(`${http.baseUrl}/upload?path=${rsHashPath}&offset=0&total=4`, {
+            method: 'PUT',
+            headers: { Authorization: `OTP ${rsHashOtp.otp}` },
+            body: new Uint8Array([1, 2, 3, 4]),
+          });
+          const rsHashFinOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsHashPath });
+          const rsHash = await fetchT(
+            `${http.baseUrl}/upload?path=${rsHashPath}&finalize=1&total=4&sha256=${'0'.repeat(64)}`,
+            { method: 'POST', headers: { Authorization: `OTP ${rsHashFinOtp.otp}` } },
+          );
+          const rsHashJson = await rsHash.json();
+          // append=1 已废弃 → 400
+          const rsAppendOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsPath });
+          const rsAppend = await fetchT(`${http.baseUrl}/upload?path=${rsPath}&append=1`, {
+            method: 'PUT',
+            headers: { Authorization: `OTP ${rsAppendOtp.otp}` },
+            body: new Uint8Array([1]),
+          });
+          const rsAppendJson = await rsAppend.json();
+          // 中断上传：目标文件不应出现（.part 可能残留部分数据，可用 status 续传）
+          const rsAbortPath = 'selftest/aborted.bin';
+          const rsAbortBody = new Uint8Array(200 * 1024).fill(1);
+          const rsAbortOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsAbortPath });
+          const rsAbort = await new Promise((resolve) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('PUT', `${http.baseUrl}/upload?path=${rsAbortPath}&offset=0&total=${rsAbortBody.length}`);
+            xhr.setRequestHeader('Authorization', `OTP ${rsAbortOtp.otp}`);
+            xhr.onload = () => resolve({ status: xhr.status, aborted: false });
+            xhr.onerror = () => resolve({ status: 0, aborted: true });
+            xhr.onabort = () => resolve({ status: 0, aborted: true });
+            xhr.send(rsAbortBody);
+            setTimeout(() => {
+              try {
+                xhr.abort();
+              } catch (ignored) {
+                // 忽略
+              }
+            }, 20);
+          });
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          const rsAbortStatusOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsAbortPath });
+          const rsAbortStatus = await (
+            await fetchT(`${http.baseUrl}/upload?path=${rsAbortPath}&status=1&otp=${rsAbortStatusOtp.otp}`)
+          ).json();
+          const rsAbortDownloadOtp = await DataChannel.createHttpOtp({ scope: 'read', path: rsAbortPath });
+          const rsAbortDownload = await fetchT(
+            `${http.baseUrl}/download?path=${rsAbortPath}&otp=${rsAbortDownloadOtp.otp}`,
+          );
+
           // WebSocket：握手一次性 OTP + 每条消息一次性 OTP（协议 [otp][0x00][payload]）
           const wsInfo = await DataChannel.startWebSocket();
           const wsHandshakeOtp = await DataChannel.createWsOtp();
@@ -785,6 +897,26 @@ export default {
             removedListStatus: removedListRes.status,
             removedFileStatus: removedFileRes.status,
             preflightStatus: preflightRes.status,
+            rsC1Status: rsC1.status,
+            rsC2Status: rsC2.status,
+            rsBadOffsetStatus: rsBadOffset.status,
+            rsBadOffsetCode: rsBadOffsetJson.code,
+            rsBadOffsetSize: rsBadOffsetJson.size,
+            rsStatusPartSize: rsStatus.partSize,
+            rsFinBadStatus: rsFinBad.status,
+            rsFinBadCode: rsFinBadJson.code,
+            rsBeforeFinalStatus: rsBeforeFinal.status,
+            rsC3Status: rsC3.status,
+            rsFinStatus: rsFin.status,
+            rsFinSize: rsFinJson.size,
+            rsContentOk,
+            rsHashStatus: rsHash.status,
+            rsHashCode: rsHashJson.code,
+            rsAppendStatus: rsAppend.status,
+            rsAppendCode: rsAppendJson.code,
+            rsAbortAborted: rsAbort.aborted,
+            rsAbortExists: rsAbortStatus.exists,
+            rsAbortDownloadStatus: rsAbortDownload.status,
             wsReplayRejected: wsReplay.rejected,
             wsNoOtpOk: wsNoOtp.ok,
             wsMessageReplayFirstOk: wsMessageReplay.firstOk,
@@ -821,6 +953,25 @@ export default {
             && removedListRes.status === 404
             && removedFileRes.status === 404
             && preflightRes.status === 204
+            && rsC1.status === 200
+            && rsC2.status === 200
+            && rsBadOffset.status === 409
+            && rsBadOffsetJson.code === 'E_OFFSET_MISMATCH'
+            && rsBadOffsetJson.size === rsChunk * 2
+            && rsStatus.partSize === rsChunk * 2
+            && rsFinBad.status === 409
+            && rsFinBadJson.code === 'E_SIZE_MISMATCH'
+            && rsBeforeFinal.status === 404
+            && rsC3.status === 200
+            && rsFin.status === 200
+            && rsFinJson.size === rsTotal
+            && rsContentOk === true
+            && rsHash.status === 409
+            && rsHashJson.code === 'E_HASH_MISMATCH'
+            && rsAppend.status === 400
+            && rsAppendJson.code === 'E_APPEND_DEPRECATED'
+            && rsAbortStatus.exists === false
+            && rsAbortDownload.status === 404
             && wsResult.sameLength === true
             && wsResult.sameHead === true
             && wsResult.sameTail === true
@@ -1403,41 +1554,60 @@ export default {
         const chunkMB = 8;
         const chunkSize = chunkMB * 1024 * 1024;
         const totalBytes = totalMB * 1024 * 1024;
-        const chunkCount = Math.ceil(totalBytes / chunkSize);
-        const path = 'test/100mb-chunked.bin';
+        const path = 'test/100mb-resumable.bin';
         // 复用同一个缓冲区：JS 侧内存恒定（这是分块上传的核心优势）
         if (!this.dcChunkBuffer || this.dcChunkBuffer.byteLength !== chunkSize) {
           this.dcChunkBuffer = new Uint8Array(chunkSize);
           crypto.getRandomValues(this.dcChunkBuffer.subarray(0, 65536));
         }
         const startedAt = performance.now();
-        let uploaded = 0;
-        for (let i = 0; i < chunkCount; i++) {
+
+        // 1) 查询已有进度：上次中断留下的 .part 会自动续传
+        const statusOtp = await DataChannel.createHttpOtp({ scope: 'write', path });
+        const status = await (
+          await fetch(`${http.baseUrl}/upload?path=${path}&status=1&otp=${statusOtp.otp}`)
+        ).json();
+        let uploaded = status.partExists && status.partSize > 0 && status.partSize < totalBytes ? status.partSize : 0;
+        const resumedFrom = uploaded;
+
+        // 2) 按 offset 逐块上传（每块一个 write OTP）
+        let chunks = 0;
+        while (uploaded < totalBytes) {
           const size = Math.min(chunkSize, totalBytes - uploaded);
-          // 写操作：每块都需要新的 OTP（一次性）
           const otp = await DataChannel.createHttpOtp({ scope: 'write', path });
           const res = await fetch(
-            `${http.baseUrl}/upload?path=${path}${i === 0 ? '' : '&append=1'}`,
+            `${http.baseUrl}/upload?path=${path}&offset=${uploaded}&total=${totalBytes}`,
             {
               method: 'PUT',
-              headers: {
-                Authorization: `OTP ${otp.otp}`,
-                'Content-Type': 'application/octet-stream',
-              },
+              headers: { Authorization: `OTP ${otp.otp}` },
               body: this.dcChunkBuffer.subarray(0, size),
             },
           );
           if (!res.ok) {
-            throw new Error(`chunk ${i} failed: HTTP ${res.status} ${await res.text()}`);
+            const err = await res.json().catch(() => ({}));
+            throw new Error(`chunk@${uploaded} failed: HTTP ${res.status} ${err.code || ''} ${err.error || ''}`);
           }
-          await res.json();
-          uploaded += size;
+          const json = await res.json();
+          uploaded = json.partSize;
+          chunks++;
+        }
+
+        // 3) finalize：校验总长度后原子落地（可选 &sha256=）
+        const finOtp = await DataChannel.createHttpOtp({ scope: 'write', path });
+        const finRes = await fetch(`${http.baseUrl}/upload?path=${path}&finalize=1&total=${totalBytes}`, {
+          method: 'POST',
+          headers: { Authorization: `OTP ${finOtp.otp}` },
+        });
+        const fin = await finRes.json();
+        if (!finRes.ok) {
+          throw new Error(`finalize failed: HTTP ${finRes.status} ${fin.code} ${fin.error}`);
         }
         const elapsedMs = performance.now() - startedAt;
         this.print('DataChannel 分块上传完成', {
-          totalBytes: uploaded,
-          chunks: chunkCount,
+          size: fin.size,
+          chunks,
           chunkMB,
+          resumedFrom,
           elapsedMs: Math.round(elapsedMs),
           speedMBps: Math.round(((totalMB * 1000) / Math.max(1, elapsedMs)) * 100) / 100,
         });

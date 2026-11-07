@@ -12,7 +12,7 @@
 | [capacitor-webview-to-edge](./capacitor-webview-to-edge/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 运行时开关：WebView 内容铺满整屏（延伸进状态栏），并提供安全区 insets |
 | [capacitor-system-info](./capacitor-system-info/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕/视口/安全区/系统栏/系统/WebView/内存/电量/网络 等 13 个独立只读 API |
 | [capacitor-native-rotation](./capacitor-native-rotation/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 屏幕方向：getRotation + rotationChanged 事件 + 主动锁定横屏/竖屏（视频全屏播放场景） |
-| [capacitor-data-channel](./capacitor-data-channel/) | ✅ 已验证 | 🔨 待 CI 验证 | ✅ | 原生↔WebView 二进制数据通道：**HTTP/WS 独立启停** + **OTP 鉴权**（桥下发、一次性、可 revoke；**WS 每条消息一个 OTP**、**批量 OTP**）+ 两级连接限流；只负责传输，权限/文件管理交给 native-files。详见 [INTRO](./capacitor-data-channel/INTRO.md) |
+| [capacitor-data-channel](./capacitor-data-channel/) | ✅ 已验证 | 🔨 待 CI 验证 | ✅ | 原生↔WebView 二进制数据通道：**HTTP/WS 独立启停** + **OTP 鉴权**（桥下发、一次性、可 revoke；**WS 每条消息一个 OTP**、**批量 OTP**）+ **断点续传上传**（offset/status/finalize + sha256）+ 两级连接限流；只负责传输，权限/文件管理交给 native-files。详见 [INTRO](./capacitor-data-channel/INTRO.md) / [EXAMPLES](./capacitor-data-channel/EXAMPLES.md) |
 | [capacitor-app-state](./capacitor-app-state/) | ✅ 已验证 | 🔨 待 CI 验证 | ✅ | 应用前后台状态：getState + stateChanged 事件（含 backgroundDuration 后台时长），支持取消单个/所有监听 |
 | [capacitor-native-files](./capacitor-native-files/) | ✅ 已验证（非交互 API） | 🔨 待 CI 验证 | ✅ | 本地文件系统：系统文件/文件夹选择器、读写（新建/追加/更改）、删除、列目录、新建/删除/重命名文件夹；copyToAppStorage 配合 data-channel |
 | [capacitor-fullscreen](./capacitor-fullscreen/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 沉浸式全屏：隐藏状态栏+导航栏，带状态事件（可监听/解除） |

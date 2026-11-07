@@ -334,6 +334,25 @@ D:\projs\testionic
     "8 个不重复 / 批量拼包全部 ok / 批量 nonce 再验证全 false / HTTP 批量 3 个可用"；
   - 坑：`webview-eval.mjs` 在 CDP `ws.close()` 后 node 偶发不退出（会让采样/CI 卡死）→ 结尾加
     `process.exit(0)`；`.perf/` 基准脚本里"流水线 + 批量校验"版本有死锁（未修复，改用顺序池版本取证）。
+- **2026-11-07 data-channel 上传协议加固（断点续传 + 结构化错误）**：
+  - 旧 `append=1` 的问题：块传一半断开会把**半块字节留在目标文件**里，后续 resume 静默拼错；
+    且中断时 `copyExactly` 抛异常直接进 catch（**不返回错误体、不打日志**）；
+  - 新协议：分块写 `X.part`，`PUT ...&offset=<n>&total=<T>`（**append 前校验 .part 长度 == n**），
+    `GET ...&status=1` 查进度，`POST ...&finalize=1&total=<T>[&sha256=]` 校验后原子 rename；
+    `append=1` **废弃** → 400 `E_APPEND_DEPRECATED`；`/upload` 的所有方法都要求 write OTP；
+  - 错误统一 `{error, code, size?}`：`E_INVALID_PATH/E_BAD_REQUEST/E_LENGTH_REQUIRED/
+    E_PAYLOAD_TOO_LARGE/E_OFFSET_MISMATCH/E_NO_PART/E_SIZE_MISMATCH/E_HASH_MISMATCH/
+    E_FINALIZE/E_IO/E_APPEND_DEPRECATED`；409 系列带服务端实际 `size`；
+  - **中断处理**：对端断开（EOF/reset）只记日志不发响应（连接已不可用），`.part` 保留可续传；
+    服务端写盘失败返回 500 `E_IO`；`handleRequest` 的 catch 现在会 `Log.e`；
+  - **iOS 修掉静默失败**：`completeUpload` 的 `try?` 改为 `do/catch`（rename 失败返回 500 且不落地）；
+    `writer.write(Data)`（非 throwing，失败抛 ObjC 异常）改为 `try writer.write(contentsOf:)`；
+  - 实测（真机 autotest 全绿）：offset 错位 → 409 + size=204800；status.partSize 一致；
+    finalize 总长不符 → 409 且目标 404；sha256 正确 200 / 错误 409 `E_HASH_MISMATCH`；
+    `append=1` → 400；XHR 中断 → 目标不存在；手工 20MB 续传（8+8 → status 16MB → 续 4MB → finalize）
+    324ms 下载 20MB ✓；smoke PASS；
+  - 文档：README 新增「断点续传上传（offset + finalize）」+ 错误码链接；新增 **EXAMPLES.md**
+    （上传/续传/下载/媒体/WS/错误处理/性能调优/陷阱）；INTRO 同步。
 - **2026-11-07 data-channel 文档定稿**：README 新增「Capacitor 调用调度模型」「安全讨论与最终结论」
   （token→OTP 动机、OTP 与 token 的等价/差异、保留逐条 OTP 的取舍、不做传输加密的 5 条推理、
   承诺/不承诺清单、提高门槛的优先项）「性能建议」；新增 [INTRO.md](plugins/capacitor-data-channel/INTRO.md)

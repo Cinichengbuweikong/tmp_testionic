@@ -238,7 +238,9 @@ public class DataChannelServer {
             // ---- OTP 鉴权 ----
             String otp = extractOtp(headers, query);
             String requestPath = query.get("path");
-            String neededScope = "PUT".equals(method) || "POST".equals(method) ? OtpStore.SCOPE_WRITE : OtpStore.SCOPE_READ;
+            // /upload 的所有方法（含 GET status）都按"写"权限要求，方便续传流程统一用 write OTP
+            boolean writeish = "PUT".equals(method) || "POST".equals(method) || "/upload".equals(path);
+            String neededScope = writeish ? OtpStore.SCOPE_WRITE : OtpStore.SCOPE_READ;
             if (!otpStore.consume(otp, neededScope, requestPath == null ? "" : requestPath)) {
                 status = 404;
                 writeError(out, 404, "not found", origin);
@@ -257,6 +259,9 @@ public class DataChannelServer {
                 case "POST /upload":
                     status = handleUpload(in, out, headers, query, origin);
                     return true;
+                case "GET /upload":
+                    status = handleUploadStatus(out, query, origin);
+                    return true;
                 case "GET /download":
                     status = handleDownload(out, headers, query, origin);
                     return true;
@@ -266,9 +271,16 @@ public class DataChannelServer {
                     return true;
             }
         } catch (IOException e) {
+            // 对端断开时不再尝试写响应（连接已不可用）；其余 IO 失败记录日志便于排查
             status = 500;
+            if (isPeerDisconnect(e)) {
+                Log.w(TAG, "request aborted by peer: " + method + " " + path + " — " + e.getMessage());
+            } else {
+                Log.e(TAG, "request failed: " + method + " " + path, e);
+            }
         } catch (Exception e) {
             status = 500;
+            Log.e(TAG, "request failed: " + method + " " + path, e);
         } finally {
             try {
                 socket.close();
@@ -308,69 +320,317 @@ public class DataChannelServer {
         try {
             target = resolveSafePath(query.get("path"));
         } catch (IllegalArgumentException e) {
-            writeError(out, 400, e.getMessage(), origin);
-            return 400;
+            return fail(out, 400, "E_INVALID_PATH", e.getMessage(), null, origin);
+        }
+        final String relPath = query.get("path");
+
+        // 旧的 append=1 语义不安全：块传一半断开会污染目标文件。要求改用 offset/finalize。
+        if (isTruthy(query.get("append"))) {
+            return fail(
+                out,
+                400,
+                "E_APPEND_DEPRECATED",
+                "append=1 is deprecated: a chunk interrupted mid-flight corrupts the target file. " +
+                "Use PUT /upload?path=...&offset=<bytes>&total=<bytes> for each chunk, then " +
+                "POST /upload?path=...&finalize=1&total=<bytes>",
+                null,
+                origin
+            );
         }
 
-        long contentLength;
-        String rawLength = headers.get("content-length");
-        try {
-            contentLength = rawLength == null ? -1 : Long.parseLong(rawLength.trim());
-        } catch (NumberFormatException e) {
-            contentLength = -1;
+        if (isTruthy(query.get("finalize"))) {
+            return handleFinalize(out, target, relPath, query, origin);
         }
+
+        long contentLength = parseLong(headers.get("content-length"), -1);
         if (contentLength < 0) {
-            writeError(out, 411, "Content-Length required (chunked body not supported)", origin);
-            return 411;
+            return fail(
+                out,
+                411,
+                "E_LENGTH_REQUIRED",
+                "Content-Length required (chunked transfer-encoding not supported)",
+                null,
+                origin
+            );
         }
         if (contentLength > maxBodyBytes) {
-            writeError(out, 413, "payload too large: " + contentLength + " > " + maxBodyBytes, origin);
-            return 413;
+            return fail(
+                out,
+                413,
+                "E_PAYLOAD_TOO_LARGE",
+                "payload too large: " + contentLength + " > " + maxBodyBytes,
+                null,
+                origin
+            );
         }
 
         File parent = target.getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
-            writeError(out, 500, "cannot create parent directory", origin);
+            return fail(out, 500, "E_IO", "cannot create parent directory", null, origin);
+        }
+
+        File part = new File(target.getPath() + ".part");
+        long total = parseLong(query.get("total"), -1);
+        boolean chunked = query.containsKey("offset");
+        long written;
+
+        if (chunked) {
+            long offset = parseLong(query.get("offset"), -1);
+            if (offset < 0) {
+                return fail(out, 400, "E_BAD_REQUEST", "invalid offset", null, origin);
+            }
+            if (offset > 0) {
+                if (!part.isFile()) {
+                    return fail(
+                        out,
+                        409,
+                        "E_NO_PART",
+                        "no partial upload for this path; restart from offset=0",
+                        0L,
+                        origin
+                    );
+                }
+                long actual = part.length();
+                if (actual != offset) {
+                    return fail(
+                        out,
+                        409,
+                        "E_OFFSET_MISMATCH",
+                        "offset mismatch: expected " + offset + ", actual " + actual,
+                        actual,
+                        origin
+                    );
+                }
+            }
+            if (total >= 0 && offset + contentLength > total) {
+                return fail(out, 400, "E_BAD_REQUEST", "chunk exceeds total: offset + length > total", null, origin);
+            }
+            try (FileOutputStream fos = new FileOutputStream(part, offset > 0)) {
+                written = copyExactly(in, fos, contentLength);
+                fos.flush();
+            } catch (IOException e) {
+                if (isPeerDisconnect(e)) {
+                    // 对端断开：保留 .part（可用 status 查询并续传），不发响应
+                    Log.w(TAG, "upload interrupted by client (offset=" + offset + "): " + e.getMessage());
+                    throw e;
+                }
+                Log.e(TAG, "upload write failed (offset=" + offset + ")", e);
+                try {
+                    fail(out, 500, "E_IO", "write failed: " + e.getMessage(), null, origin);
+                } catch (IOException ignored) {
+                    // 对端已断开，忽略
+                }
+                return 500;
+            }
+            long partSize = part.isFile() ? part.length() : 0;
+            writeJson(
+                out,
+                200,
+                "{\"path\":" +
+                jsonString(relPath) +
+                ",\"bytes\":" +
+                written +
+                ",\"partSize\":" +
+                partSize +
+                ",\"finalized\":false,\"chunked\":true}",
+                origin
+            );
+            return 200;
+        }
+
+        // 单次上传：写 .part 后立即 finalize（原有语义，失败时删除半成品）
+        try (FileOutputStream fos = new FileOutputStream(part)) {
+            written = copyExactly(in, fos, contentLength);
+            fos.flush();
+        } catch (IOException e) {
+            part.delete();
+            if (isPeerDisconnect(e)) {
+                Log.w(TAG, "upload interrupted by client: " + e.getMessage());
+                throw e;
+            }
+            Log.e(TAG, "upload write failed", e);
+            try {
+                fail(out, 500, "E_IO", "write failed: " + e.getMessage(), null, origin);
+            } catch (IOException ignored) {
+                // 对端已断开，忽略
+            }
             return 500;
         }
-
-        boolean append = "1".equals(query.get("append")) || "true".equalsIgnoreCase(query.get("append"));
-        long written;
-        if (append) {
-            try (FileOutputStream fos = new FileOutputStream(target, true)) {
-                written = copyExactly(in, fos, contentLength);
-                fos.flush();
-            }
-        } else {
-            File part = new File(target.getPath() + ".part");
-            try (FileOutputStream fos = new FileOutputStream(part)) {
-                written = copyExactly(in, fos, contentLength);
-                fos.flush();
-            }
-            if (target.exists() && !target.delete()) {
-                part.delete();
-                writeError(out, 500, "cannot replace existing file", origin);
-                return 500;
-            }
-            if (!part.renameTo(target)) {
-                part.delete();
-                writeError(out, 500, "rename failed", origin);
-                return 500;
-            }
+        if (target.exists() && !target.delete()) {
+            part.delete();
+            return fail(out, 500, "E_FINALIZE", "cannot replace existing file", null, origin);
         }
-
-        String body =
+        if (!part.renameTo(target)) {
+            part.delete();
+            return fail(out, 500, "E_FINALIZE", "rename failed", null, origin);
+        }
+        writeJson(
+            out,
+            200,
             "{\"path\":" +
-            jsonString(query.get("path")) +
+            jsonString(relPath) +
             ",\"bytes\":" +
             written +
             ",\"size\":" +
             target.length() +
-            ",\"appended\":" +
-            append +
-            "}";
-        writeJson(out, 200, body, origin);
+            ",\"finalized\":true}",
+            origin
+        );
         return 200;
+    }
+
+    /** POST /upload?path=...&finalize=1&total=N[&sha256=..]：校验 .part 后原子落地。 */
+    private int handleFinalize(
+        OutputStream out,
+        File target,
+        String relPath,
+        Map<String, String> query,
+        String origin
+    ) throws IOException {
+        File part = new File(target.getPath() + ".part");
+        if (!part.isFile()) {
+            return fail(out, 404, "E_NO_PART", "no partial upload for this path", 0L, origin);
+        }
+        long size = part.length();
+        long total = parseLong(query.get("total"), -1);
+        if (total >= 0 && size != total) {
+            return fail(
+                out,
+                409,
+                "E_SIZE_MISMATCH",
+                "size mismatch: expected " + total + ", actual " + size,
+                size,
+                origin
+            );
+        }
+        String expectedSha = query.get("sha256");
+        if (expectedSha != null && !expectedSha.trim().isEmpty()) {
+            String actualSha;
+            try {
+                actualSha = sha256Hex(part);
+            } catch (Exception e) {
+                return fail(out, 500, "E_IO", "cannot hash partial file: " + e.getMessage(), size, origin);
+            }
+            if (!actualSha.equalsIgnoreCase(expectedSha.trim())) {
+                return fail(
+                    out,
+                    409,
+                    "E_HASH_MISMATCH",
+                    "sha256 mismatch: expected " + expectedSha + ", actual " + actualSha,
+                    size,
+                    origin
+                );
+            }
+        }
+        if (target.exists() && !target.delete()) {
+            return fail(out, 500, "E_FINALIZE", "cannot replace existing file", size, origin);
+        }
+        if (!part.renameTo(target)) {
+            return fail(out, 500, "E_FINALIZE", "rename failed", size, origin);
+        }
+        writeJson(
+            out,
+            200,
+            "{\"path\":" + jsonString(relPath) + ",\"size\":" + target.length() + ",\"finalized\":true}",
+            origin
+        );
+        return 200;
+    }
+
+    /** GET /upload?path=...&status=1：查询 .part 进度（断点续传用）。 */
+    private int handleUploadStatus(OutputStream out, Map<String, String> query, String origin) throws IOException {
+        File target;
+        try {
+            target = resolveSafePath(query.get("path"));
+        } catch (IllegalArgumentException e) {
+            return fail(out, 400, "E_INVALID_PATH", e.getMessage(), null, origin);
+        }
+        File part = new File(target.getPath() + ".part");
+        boolean partExists = part.isFile();
+        long partSize = partExists ? part.length() : 0;
+        boolean exists = target.isFile();
+        writeJson(
+            out,
+            200,
+            "{\"path\":" +
+            jsonString(query.get("path")) +
+            ",\"partExists\":" +
+            partExists +
+            ",\"partSize\":" +
+            partSize +
+            ",\"exists\":" +
+            exists +
+            ",\"size\":" +
+            (exists ? target.length() : 0) +
+            "}",
+            origin
+        );
+        return 200;
+    }
+
+    /** 统一错误体：{"error": "...", "code": "E_...", "size"?: N}。 */
+    private int fail(OutputStream out, int status, String code, String message, Long size, String origin) throws IOException {
+        StringBuilder body = new StringBuilder("{\"error\":");
+        body.append(jsonString(message == null || message.isEmpty() ? code : message));
+        body.append(",\"code\":").append(jsonString(code));
+        if (size != null) {
+            body.append(",\"size\":").append(size);
+        }
+        body.append('}');
+        writeJson(out, status, body.toString(), origin);
+        return status;
+    }
+
+    private boolean isTruthy(String value) {
+        if (value == null) {
+            return false;
+        }
+        String v = value.trim().toLowerCase(Locale.ROOT);
+        return v.equals("1") || v.equals("true") || v.equals("yes");
+    }
+
+    private long parseLong(String value, long fallback) {
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    /** 对端断开（读到 EOF / 连接被重置），此时不该再尝试写响应。 */
+    private boolean isPeerDisconnect(IOException e) {
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        return (
+            lower.contains("unexpected eof") ||
+            lower.contains("connection reset") ||
+            lower.contains("broken pipe") ||
+            lower.contains("socket closed")
+        );
+    }
+
+    private String sha256Hex(File file) throws Exception {
+        java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = fis.read(buffer)) > 0) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        byte[] hash = digest.digest();
+        StringBuilder sb = new StringBuilder(hash.length * 2);
+        for (byte b : hash) {
+            sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+            sb.append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString();
     }
 
     private int handleDownload(

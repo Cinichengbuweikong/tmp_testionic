@@ -39,13 +39,14 @@ HTTP + WebSocket 服务，让 WebView 用标准的 `fetch` / `<video>` / `new We
 
 ## 能力清单
 
-- **HTTP**：`PUT /upload`（流式写盘、`append` 追加、`.part` 原子写）、`GET /download`
-  （Range/206、流式）、`GET /health`
+- **HTTP**：`PUT /upload`（单次）、**分块 + 断点续传**（`offset`/`status`/`finalize`，可选 `sha256`，
+  中断不会污染目标文件）、`GET /download`（Range/206、流式）、`GET /health`
 - **WebSocket**：二进制/文本帧、分片重组、ping/pong、close、echo 或业务接管
 - **任意 rootDir**：app 私有目录（默认，免权限）、相对路径、绝对路径（公共目录）
 - **鉴权：OTP**（一次性凭证）——通过 Capacitor 桥下发，抓包看不到生成过程；一次性、可撤销、
   HTTP 可绑定路径、媒体用可复用只读 OTP
 - **批量 OTP**：一次桥调用拿 N 个，高频小包场景 -35% 延迟
+- **结构化错误**：`{ error, code, size }`，客户端可程序化处理（409 系列带服务端实际字节数）
 - **两级连接限流**：未认证 4（防扫描/DoS）/ 已认证 16（可配）
 
 ## 30 秒上手
@@ -125,4 +126,5 @@ ws.onmessage = async (event) => {
 
 ---
 
-**更多细节**：[README.md](README.md)（API、OTP 规则、WebSocket 消息协议、性能实测、安全讨论、平台差异）。
+**更多细节**：[README.md](README.md)（API、OTP 规则、上传协议、WebSocket 消息协议、性能实测、
+安全讨论、平台差异）；[EXAMPLES.md](EXAMPLES.md)（可直接复制的完整示例：上传/断点续传/下载/媒体/WS/错误处理）。
