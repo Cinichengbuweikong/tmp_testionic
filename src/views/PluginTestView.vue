@@ -500,7 +500,9 @@ export default {
           });
 
           // ---- 断点续传协议：offset / status / finalize / sha256 ----
-          const rsPath = 'selftest/resumable.bin';
+          // 路径带随机后缀：保证测试幂等（上一轮留下的最终文件不会影响本轮断言）
+          const rsTag = Math.random().toString(36).slice(2, 8);
+          const rsPath = `selftest/resumable-${rsTag}.bin`;
           const rsChunk = 100 * 1024;
           const rsTotal = rsChunk * 3;
           const rs1 = new Uint8Array(rsChunk).fill(7);
@@ -560,7 +562,7 @@ export default {
             rsVerify[rsChunk] === 8 &&
             rsVerify[rsChunk * 2] === 9;
           // sha256 错误 → 409
-          const rsHashPath = 'selftest/hash.bin';
+          const rsHashPath = `selftest/hash-${rsTag}.bin`;
           const rsHashOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsHashPath });
           await fetchT(`${http.baseUrl}/upload?path=${rsHashPath}&offset=0&total=4`, {
             method: 'PUT',
@@ -582,16 +584,24 @@ export default {
           });
           const rsAppendJson = await rsAppend.json();
           // 中断上传：目标文件不应出现（.part 可能残留部分数据，可用 status 续传）
-          const rsAbortPath = 'selftest/aborted.bin';
+          const rsAbortPath = `selftest/aborted-${rsTag}.bin`;
           const rsAbortBody = new Uint8Array(200 * 1024).fill(1);
           const rsAbortOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsAbortPath });
           const rsAbort = await new Promise((resolve) => {
+            let settled = false;
+            const done = (value) => {
+              if (settled) {
+                return;
+              }
+              settled = true;
+              resolve(value);
+            };
             const xhr = new XMLHttpRequest();
             xhr.open('PUT', `${http.baseUrl}/upload?path=${rsAbortPath}&offset=0&total=${rsAbortBody.length}`);
             xhr.setRequestHeader('Authorization', `OTP ${rsAbortOtp.otp}`);
-            xhr.onload = () => resolve({ status: xhr.status, aborted: false });
-            xhr.onerror = () => resolve({ status: 0, aborted: true });
-            xhr.onabort = () => resolve({ status: 0, aborted: true });
+            xhr.onload = () => done({ status: xhr.status, aborted: false });
+            xhr.onerror = () => done({ status: 0, aborted: true });
+            xhr.onabort = () => done({ status: 0, aborted: true });
             xhr.send(rsAbortBody);
             setTimeout(() => {
               try {
@@ -600,6 +610,8 @@ export default {
                 // 忽略
               }
             }, 20);
+            // 兜底：某些平台 abort 后可能不回调，避免整个 autotest 卡死
+            setTimeout(() => done({ status: 0, aborted: true, timeout: true }), 3000);
           });
           await new Promise((resolve) => setTimeout(resolve, 400));
           const rsAbortStatusOtp = await DataChannel.createHttpOtp({ scope: 'write', path: rsAbortPath });
