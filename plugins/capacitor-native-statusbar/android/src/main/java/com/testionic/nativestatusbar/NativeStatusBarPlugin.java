@@ -123,9 +123,20 @@ public class NativeStatusBarPlugin extends Plugin {
     /** 色块的全局布局监听：旋转/内边距变化后按**当前**几何重新量（见 updateOverlayGeometry）。 */
     private ViewTreeObserver.OnGlobalLayoutListener overlayLayoutListener = null;
 
-    /** 上一次应用的几何，用来避免 setLayoutParams → requestLayout → 回调的循环。 */
+    /** 上次应用几何的缓存（见 updateOverlayGeometry）。 */
     private int overlayLastHeightPx = -1;
     private int overlayLastTopMargin = 0;
+
+    /**
+     * 是否允许在「内容已经铺到状态栏下面」（edge-to-edge / 全屏）时仍绘制色块。
+     *
+     * 默认 **false**：`capacitor-webview-to-edge` 开启后会把 DecorView 的 padding 清零，
+     * 内容直接跑到状态栏下面；此时再盖一层不透明色块会把页面内容挡住（表现为"状态栏没有隐藏、
+     * 反而盖住了内容"）。所以默认自动让位，把状态栏那一条交还给页面内容。
+     *
+     * 需要"半透明状态栏盖在内容上"这类设计时，传 `overlayInEdgeToEdge: true` 强制绘制。
+     */
+    private boolean overlayInEdgeToEdge = false;
 
     /** JS 是否调用过 setStyle —— 没调用过就不要去动 App 原本的状态栏样式。 */
     private boolean styleApplied = false;
@@ -152,6 +163,8 @@ public class NativeStatusBarPlugin extends Plugin {
             return;
         }
 
+        final boolean forceOverlay = Boolean.TRUE.equals(call.getBoolean("overlayInEdgeToEdge", false));
+
         final Activity activity = getActivity();
         if (activity == null) {
             call.reject("No activity");
@@ -160,11 +173,14 @@ public class NativeStatusBarPlugin extends Plugin {
 
         activity.runOnUiThread(() -> {
             currentColor = color;
+            overlayInEdgeToEdge = forceOverlay;
             applyBackgroundColor();
 
             JSObject ret = new JSObject();
             ret.put("color", toHex(color));
             ret.put("height", getStatusBarHeightDp());
+            ret.put("edgeToEdge", isStatusBarCoveredByContent(activity.getWindow().getDecorView()));
+            ret.put("usingOverlay", overlayView != null);
             call.resolve(ret);
         });
     }
@@ -212,11 +228,16 @@ public class NativeStatusBarPlugin extends Plugin {
         }
 
         activity.runOnUiThread(() -> {
+            View decorView = activity.getWindow().getDecorView();
             JSObject ret = new JSObject();
             ret.put("color", currentColor == null ? JSONObject.NULL : toHex(currentColor));
             ret.put("style", currentStyle);
             ret.put("height", getStatusBarHeightDp());
             ret.put("usingOverlay", overlayView != null);
+            // edgeToEdge=true：状态栏那一条由内容自己画（webview-to-edge 开启 / 全屏），
+            // 此时默认不画色块，避免挡住页面内容
+            ret.put("edgeToEdge", isStatusBarCoveredByContent(decorView));
+            ret.put("overlayInEdgeToEdge", overlayInEdgeToEdge);
             call.resolve(ret);
         });
     }
@@ -287,17 +308,65 @@ public class NativeStatusBarPlugin extends Plugin {
 
         // 通道 2：自绘色块。窗口本身从屏幕 y=0 开始（内容区被内边距顶到状态栏下方），
         // 所以把色块画在窗口顶部、用负 margin 抵掉内边距，就能盖住状态栏那一条。
+        //
+        // 例外：当内容已经铺到状态栏下面（edge-to-edge / 全屏）时，色块会挡住页面内容，
+        // 默认让位（不画），除非调用方显式要求 overlayInEdgeToEdge。
+        boolean covered = isStatusBarCoveredByContent(decorView);
+        boolean suppressOverlay = covered && !overlayInEdgeToEdge;
         if (currentColor == null || Color.alpha(currentColor) == 0) {
             removeOverlay();
+            removeOverlayLayoutListener(decorView);
         } else {
-            showOverlay(decorView, currentColor);
+            // 即使当前因为 edge-to-edge 不画色块，也要**保持监听**：
+            // 用户随后关掉 webview-to-edge 时，padding 会恢复，布局回调才能把色块重建出来。
+            if (decorView instanceof ViewGroup) {
+                ensureOverlayLayoutListener((ViewGroup) decorView);
+            }
+            if (suppressOverlay) {
+                removeOverlay();
+            } else {
+                showOverlay(decorView, currentColor);
+            }
         }
 
         // 有自绘色块时不要再调 setStatusBarColor：实测 MIUI 会因此触发"按背景色重新自适应图标"，
-        // 把用户设置的图标样式覆盖掉。只有在没画出色块（极端情况）时才退回系统 API。
+        // 把用户设置的图标样式覆盖掉。只有在没画出色块时才退回系统 API。
         if (overlayView == null) {
-            window.setStatusBarColor(currentColor == null ? Color.TRANSPARENT : currentColor);
+            window.setStatusBarColor(suppressOverlay || currentColor == null ? Color.TRANSPARENT : currentColor);
         }
+    }
+
+    /** 状态栏在 Insets 里的高度（px）；Insets 不可用时返回 -1。 */
+    private int getStatusBarInsetTopPx() {
+        Activity activity = getActivity();
+        if (activity == null) {
+            return -1;
+        }
+        WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(activity.getWindow().getDecorView());
+        if (insets == null) {
+            return -1;
+        }
+        return insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
+    }
+
+    /**
+     * 状态栏那一条现在是不是"由内容自己画"。
+     *
+     * - `capacitor-webview-to-edge` 开启后会把 DecorView 的 padding 清零（内容铺到状态栏下面）
+     *   → `paddingTop == 0 && insetTop > 0`；
+     * - 全屏插件把状态栏隐藏 → `insetTop == 0`（没有状态栏可盖）。
+     *
+     * 这两种情况下都不应该再盖不透明色块：前者挡住页面内容，后者没有意义。
+     */
+    private boolean isStatusBarCoveredByContent(View decorView) {
+        int insetTop = getStatusBarInsetTopPx();
+        if (insetTop < 0) {
+            return false; // Insets 未知：保持旧行为（用资源值兜底）
+        }
+        if (insetTop == 0) {
+            return true; // 状态栏不可见（全屏）
+        }
+        return decorView.getPaddingTop() == 0;
     }
 
     /**
@@ -365,13 +434,33 @@ public class NativeStatusBarPlugin extends Plugin {
      * 另外做了"值没变就不 setLayoutParams"的去重，避免 requestLayout 再触发本回调的死循环。
      */
     private void updateOverlayGeometry() {
-        if (overlayView == null) {
+        if (currentColor == null || Color.alpha(currentColor) == 0) {
             return;
         }
-        if (!(overlayView.getParent() instanceof ViewGroup)) {
+        Activity activity = getActivity();
+        if (activity == null) {
             return;
         }
-        ViewGroup root = (ViewGroup) overlayView.getParent();
+        View decorView = activity.getWindow().getDecorView();
+        if (!(decorView instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup root = (ViewGroup) decorView;
+
+        boolean covered = isStatusBarCoveredByContent(root);
+        if (covered && !overlayInEdgeToEdge) {
+            // 内容铺到状态栏下面（webview-to-edge 开启 / 全屏）：色块让位
+            if (overlayView != null) {
+                removeOverlay();
+            }
+            return;
+        }
+        if (overlayView == null || overlayView.getParent() != root) {
+            // 从 edge-to-edge 切回来（或首次需要色块）：重建
+            showOverlay(root, currentColor);
+            return;
+        }
+
         int height = getStatusBarHeightPx();
         if (height <= 0) {
             return;
@@ -411,21 +500,25 @@ public class NativeStatusBarPlugin extends Plugin {
             return;
         }
         if (view.getParent() instanceof ViewGroup) {
-            ViewGroup parent = (ViewGroup) view.getParent();
-            if (overlayLayoutListener != null) {
-                ViewTreeObserver observer = parent.getViewTreeObserver();
-                if (observer.isAlive()) {
-                    observer.removeOnGlobalLayoutListener(overlayLayoutListener);
-                }
-                overlayLayoutListener = null;
-            }
-            parent.removeView(view);
-        } else {
-            overlayLayoutListener = null;
+            ((ViewGroup) view.getParent()).removeView(view);
         }
         overlayView = null;
         overlayLastHeightPx = -1;
         overlayLastTopMargin = 0;
+    }
+
+    /** 移除布局监听（只有在"不再需要色块"时才调用，比如颜色被设为 transparent）。 */
+    private void removeOverlayLayoutListener(View decorView) {
+        if (overlayLayoutListener == null) {
+            return;
+        }
+        if (decorView != null) {
+            ViewTreeObserver observer = decorView.getViewTreeObserver();
+            if (observer.isAlive()) {
+                observer.removeOnGlobalLayoutListener(overlayLayoutListener);
+            }
+        }
+        overlayLayoutListener = null;
     }
 
     // ---------------------------------------------------------------- 样式

@@ -47,18 +47,20 @@ await NativeStatusBar.setStyle({ style: 'default' }); // 跟随系统深浅色
 
 // 调试用
 const info = await NativeStatusBar.getInfo();
-// { color: '#FFFF5722', style: 'light', height: 24, usingOverlay: true }
+// { color: '#FFFF5722', style: 'light', height: 24, usingOverlay: true, edgeToEdge: false, overlayInEdgeToEdge: false }
 ```
 
 ## API
 
 | 方法 | 参数 | 返回 |
 | --- | --- | --- |
-| `setBackgroundColor` | `{ color: string }` | `{ color: string, height: number }` |
+| `setBackgroundColor` | `{ color: string, overlayInEdgeToEdge?: boolean }` | `{ color, height, edgeToEdge, usingOverlay }` |
 | `setStyle` | `{ style: 'light' \| 'dark' \| 'default' }` | `void` |
-| `getInfo` | — | `{ color, style, height, usingOverlay }` |
+| `getInfo` | — | `{ color, style, height, usingOverlay, edgeToEdge, overlayInEdgeToEdge }` |
 
 颜色规则：`#RGB`、`#RRGGBB`、`#AARRGGBB`（**ARGB** 顺序，与 Android 一致）、`transparent`。
+
+`overlayInEdgeToEdge`（默认 `false`）见下文「与 webview-to-edge 配合」。
 
 ## 注意事项
 
@@ -186,7 +188,45 @@ adb exec-out screencap -p > back.png
 
 实测（修复后）：模拟器 128 / 63 / **128** / 128（两轮旋转）；真机 Redmi K30S 90 / 90 / 90（该机型横竖屏同高）。
 
-### 5. 其它已知边界
+### 5. 与 capacitor-webview-to-edge 配合（edge-to-edge，Android 0.4.0 修复）
+
+`capacitor-webview-to-edge` 开启后会把 **DecorView 的 padding 清零**，WebView 内容直接铺到状态栏下面
+（这正是"铺满整屏"的含义）。此时如果状态栏插件仍盖一层**不透明色块**，就会把页面内容挡住——
+表现就是"状态栏没有隐藏，反而盖住了内容"。
+
+**现在的行为（默认）**：检测到"状态栏那一条由内容自己画"时，插件**自动不画色块**，把该区域交还内容。
+
+| 场景 | 判定 | 默认行为 |
+| --- | --- | --- |
+| 普通（Capacitor 默认，内容让出状态栏） | `insetTop > 0 && paddingTop > 0` | 画色块（色块=状态栏背景） |
+| **webview-to-edge 开启** | `insetTop > 0 && paddingTop == 0` | **不画色块**，内容透出 |
+| 全屏（状态栏被隐藏） | `insetTop == 0` | 不画色块（没有状态栏可盖） |
+
+`getInfo()` 新增 `edgeToEdge`（当前是否"内容自己画状态栏那一条"）与 `overlayInEdgeToEdge`。
+切换 `webview-to-edge` 的开关会**自动**生效，不需要重新调用 `setBackgroundColor`。
+
+**想要"半透明色块盖在内容上"**（例如沉浸式设计）时，显式传 `overlayInEdgeToEdge: true`：
+
+```js
+await NativeStatusBar.setBackgroundColor({ color: '#80000000', overlayInEdgeToEdge: true });
+```
+
+实测（模拟器 Pixel 6 / Android 16，量顶部纯红像素行数）：
+
+| 步骤 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 只设红色 | rows 0..127（128px）✅ | 128px ✅ |
+| **开启 webview-to-edge** | **rows 0..127 仍盖住内容 ❌** | **无红色（内容显示）✅** |
+| 关闭 webview-to-edge | — | 128px ✅（自动恢复，可重复） |
+| `overlayInEdgeToEdge: true` + 开启 | — | 128px ✅（按需保留） |
+
+真机 Redmi K30S（状态栏 90px）同样：90px → **无红色** → 90px ✅。
+
+> iOS 侧不需要这个逻辑：Capacitor 在 iOS 上**默认就是内容铺满全屏**
+> （`contentInsetAdjustmentBehavior = .never`），色块本来就在"给状态栏那一条上色"，
+> 属于预期行为；页面用 `env(safe-area-inset-top)` 让出顶部即可。
+
+### 6. 其它已知边界
 
 - 只在 Android 10（真机）和 Android 16（模拟器）上验证过；Android 15+ 走的是自绘色块路径，理论一致。
 - iOS 侧没有 MIUI 这类覆盖行为，`setStyle` 设置什么就是什么。

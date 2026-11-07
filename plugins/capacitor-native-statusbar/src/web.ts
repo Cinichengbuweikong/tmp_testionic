@@ -60,6 +60,9 @@ export class NativeStatusBarWeb extends WebPlugin implements NativeStatusBarPlug
       style: this.style,
       height: this.currentHeight(),
       usingOverlay: this.overlay !== null,
+      // 浏览器里没有系统状态栏，也就没有 edge-to-edge 的概念
+      edgeToEdge: false,
+      overlayInEdgeToEdge: false,
     };
   }
 

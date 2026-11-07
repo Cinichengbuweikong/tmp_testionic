@@ -198,3 +198,10 @@ padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
 
 本插件只管"WebView 铺到哪"，**不管状态栏图标颜色**。
 铺满后状态栏可能压在深色内容上导致看不清，需要配合 `capacitor-native-statusbar` 调整图标亮暗。
+
+⚠️ **和 `capacitor-native-statusbar` 的背景色配合（Android）**：本插件开启后会把 DecorView 的 padding
+清零，内容铺到状态栏下面。`capacitor-native-statusbar` 从 **0.4.0** 起会自动检测这种情况，
+**默认不再绘制状态栏色块**（否则会挡住内容），把状态栏那一条交还给页面内容；
+关闭 `webview-to-edge` 后色块会自动恢复。若确实想要"半透明色块盖在内容上"，调用
+`NativeStatusBar.setBackgroundColor({ color: '#80000000', overlayInEdgeToEdge: true })`。
+细节见 `capacitor-native-statusbar` README 的「与 capacitor-webview-to-edge 配合」一节。

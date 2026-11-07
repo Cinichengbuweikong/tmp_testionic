@@ -121,6 +121,20 @@ D:\projs\testionic
   官方插件同样无效，0/5320 像素差异对比）；模拟器（非 MIUI）上正常生效。
 - iOS：自绘 UIView（高度 = safeArea top），`CAPBridgeViewController.setStatusBarStyle()`。
 - 未调用 `setStyle` 前不主动改样式（`styleApplied` 门控）。
+- **2026-11-07 修复：与 webview-to-edge 一起用时色块挡住内容（Android 0.4.0）**
+  - 现象：先设状态栏颜色、再 `WebViewToEdge.setEnabled(true)`（DecorView padding 清零、内容铺到
+    状态栏下面）后，状态栏色块仍盖住那 128px，页面内容被挡（用户描述为"状态栏没隐藏、还盖住内容"）。
+  - 修复：新增 `isStatusBarCoveredByContent()`（`insetTop > 0 && paddingTop == 0` → 内容自己画；
+    `insetTop == 0` → 全屏/无状态栏）。命中时**默认不画色块**（`removeOverlay`），
+    但**保留 OnGlobalLayoutListener**，这样关掉 webview-to-edge 后能自动把色块重建回来。
+    新增 `setBackgroundColor({ overlayInEdgeToEdge: true })` 显式要求"盖在内容上"（用半透明色）。
+    `getInfo()` 增加 `edgeToEdge` / `overlayInEdgeToEdge`。
+  - 坑：第一版把监听器一起在 `removeOverlay()` 里摘掉 → 关掉 to-edge 后色块不会恢复（实测 C 场景失败），
+    修正为"监听器生命周期跟随颜色，而不是跟随色块"。
+  - 验证（像素量取）：模拟器 128px → **无红色（内容显示）** → 128px → 可重复；真机 K30S 90 → 无红色 → 90；
+    autotest（设备/模拟器）ok:true、smoke PASS、iOS CI 绿（iOS 侧逻辑不变）。
+  - iOS 说明：Capacitor 在 iOS 默认就是内容铺满（contentInsetAdjustmentBehavior=.never），
+    色块=给状态栏上色属预期，无需此逻辑（README 已注明）。
 - **2026-11-07 修复：旋转后色块只有一半高（Android 0.3.0）**
   - 现象（模拟器 Pixel 6 / Android 16，竖屏状态栏 128px、横屏 63px）：竖屏正常 → 横屏正常 →
     **转回竖屏时色块 rows 65..127（63px）**，只盖住下半截。
