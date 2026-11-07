@@ -16,7 +16,7 @@
     "@capacitor/core": "^8.6.0",
     "@capacitor/ios": "^8.6.0",
     "@capacitor/status-bar": "^8.0.4",
-    "capacitor-app-state": "file:plugins/capacitor-app-state",
+    "capacitor-foreground-state": "file:plugins/capacitor-foreground-state",
     "capacitor-data-channel": "file:plugins/capacitor-data-channel",
     "capacitor-fullscreen": "file:plugins/capacitor-fullscreen",
     "capacitor-keyboard-avoiding": "file:plugins/capacitor-keyboard-avoiding",

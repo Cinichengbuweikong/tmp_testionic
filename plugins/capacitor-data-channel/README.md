@@ -550,7 +550,7 @@ OTP 真正多出来的只有两点：
 - 默认目录 `Documents/dataChannel`，只允许沙盒内路径；
 - 后台：socket 会被挂起（约 30 秒窗口），**不要**指望后台大文件传输。
 
-### 与 native-files / app-state 配合
+### 与 native-files / foreground-state 配合
 
 ```ts
 // 选文件 → 权限 → 传输
@@ -566,7 +566,7 @@ await fetch(`${http.baseUrl}/upload?path=${copied.relativePath}`, {
 });
 
 // 切后台撤销所有 OTP
-const state = await AppState.addListener('stateChanged', (s) => {
+const state = await ForegroundState.addListener('stateChanged', (s) => {
   if (!s.isActive) DataChannel.revokeAllOtps();
 });
 ```

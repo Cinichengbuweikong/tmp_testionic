@@ -13,7 +13,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.6.0"),
         .package(name: "CapacitorStatusBar", path: "../../../node_modules/@capacitor/status-bar"),
-        .package(name: "CapacitorAppState", path: "../../../plugins/capacitor-app-state"),
+        .package(name: "CapacitorForegroundState", path: "../../../plugins/capacitor-foreground-state"),
         .package(name: "CapacitorDataChannel", path: "../../../plugins/capacitor-data-channel"),
         .package(name: "CapacitorFullscreen", path: "../../../plugins/capacitor-fullscreen"),
         .package(name: "CapacitorKeyboardAvoiding", path: "../../../plugins/capacitor-keyboard-avoiding"),
@@ -32,7 +32,7 @@ let package = Package(
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
                 .product(name: "CapacitorStatusBar", package: "CapacitorStatusBar"),
-                .product(name: "CapacitorAppState", package: "CapacitorAppState"),
+                .product(name: "CapacitorForegroundState", package: "CapacitorForegroundState"),
                 .product(name: "CapacitorDataChannel", package: "CapacitorDataChannel"),
                 .product(name: "CapacitorFullscreen", package: "CapacitorFullscreen"),
                 .product(name: "CapacitorKeyboardAvoiding", package: "CapacitorKeyboardAvoiding"),

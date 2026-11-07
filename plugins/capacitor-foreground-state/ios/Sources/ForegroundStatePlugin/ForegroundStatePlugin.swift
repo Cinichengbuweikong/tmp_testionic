@@ -3,7 +3,7 @@ import UIKit
 import Capacitor
 
 /**
- * AppState 插件（iOS 侧，jsName = "AppState"）。
+ * ForegroundState 插件（iOS 侧，jsName = "ForegroundState"）。
  *
  * 通过 UIApplication 通知判断前后台：
  *  - `didBecomeActiveNotification`        → active
@@ -11,15 +11,15 @@ import Capacitor
  *  - `didEnterBackgroundNotification`     → background
  *  - `willEnterForegroundNotification`    → inactive（即将回前台，稍后 didBecomeActive）
  *
- * 事件：`stateChanged`，载荷为 AppState（isActive / state / changedAt /
+ * 事件：`stateChanged`，载荷为 ForegroundStateInfo（isActive / state / changedAt /
  * lastBackgroundAt / backgroundDuration）。
  *
  * 注意：iOS 进后台后 socket/定时器会被系统挂起，只有约 30 秒的 beginBackgroundTask 窗口。
  */
-@objc(AppStatePlugin)
-public class AppStatePlugin: CAPPlugin, CAPBridgedPlugin {
-    public let identifier = "AppStatePlugin"
-    public let jsName = "AppState"
+@objc(ForegroundStatePlugin)
+public class ForegroundStatePlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "ForegroundStatePlugin"
+    public let jsName = "ForegroundState"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise)
     ]

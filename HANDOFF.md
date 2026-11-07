@@ -411,10 +411,12 @@ D:\projs\testionic
     立即被释放 → `[weak self]` 回调全落空，连接 ready 但永不处理请求。修复：server 用
     `httpHandlers` 数组强引用，`finish()` 调 `server.unregisterHandler(self)`。
 
-### 5.10 capacitor-app-state（前后台状态）
+### 5.10 capacitor-foreground-state（前后台状态，原名 capacitor-app-state）
 
 - `getState()` → `{ isActive, state, changedAt, lastBackgroundAt, backgroundDuration }`；
   `stateChanged` 事件；`handle.remove()` 取消单个、`removeAllListeners()` 取消全部。
+- **2026-11-07 改名**：`capacitor-app-state` → **`capacitor-foreground-state`**（目录/包名/iOS SPM 名
+  `CapacitorForegroundState`/Android 包 `com.testionic.foregroundstate`/jsName `ForegroundState` 全部同步）。
 - Android 用 `handleOnResume`/`handleOnPause`（只有 active/background）；
   iOS 用 4 条 UIApplication 通知（active/inactive/background，inactive 是过渡态）。
 - 真机实测：HOME 切后台 → 事件 `background`；回前台 → 事件 `active` 且 `backgroundDuration=3232ms` ✓。
@@ -603,8 +605,8 @@ npm run build
   64KB 帧 1.7ms/588fps、空闲 CPU 0%；rootDir 支持默认/相对/绝对路径（Android 10 公共目录受
   scoped storage 限制，已验证并给出明确错误）；Range/404/CORS 全通过；双端冒烟 PASS。
   **iOS CI 待定**：Swift 编译错误（fileprivate）已修（198c1b6），运行验证待测（详见 5.9 节）。
-- ✅ **capacitor-app-state**（前后台状态，新增）：真机实测 HOME 切后台/回前台事件与
-  `backgroundDuration=3232ms` 全通过；iOS CI 待验证（详见 5.10 节）。
+- ✅ **capacitor-foreground-state**（前后台状态，原 `capacitor-app-state`，2026-11-07 改名）：真机实测
+  HOME 切后台/回前台事件与 `backgroundDuration=3232ms` 全通过；iOS CI 待验证（详见 5.10 节）。
 - ✅ **capacitor-native-files**（本地文件系统，新增）：11 个 API；真机验证方法注册与
   `getInfo` 无效 URI 行为；选择器为系统 UI 需手动验证；iOS CI 待验证（详见 5.11 节）。
 - 📄 **C/C++ 插件调研文档**：`docs/capacitor-cpp-bridge-research.md`（Android NDK+CMake / iOS SPM
@@ -622,7 +624,11 @@ npm run build
 - 🔴 **用户反馈（2026-11-05 晚）**：简单查看后认为"还是有问题的，各种地方都要改一下"，
   但**未列出具体问题**，且当天已疲劳暂停。**下次恢复第一件事：请用户指出具体问题点，
   逐条确认后再改**（不要自行猜测大改）。可能涉及：data-channel 的 rootDir/WS 文档与行为、
-  app-state / native-files 的 API 细节与 README、测试页/冒烟脚本的断言等。
+  foreground-state（原 app-state）/ native-files 的 API 细节与 README、测试页/冒烟脚本的断言等。
+
+> **2026-11-07 进展**：data-channel 已按用户要求完成 6 轮加固（职责收敛 → OTP 鉴权 + 双 server
+> → 逐条 OTP + 协议 → 批量 OTP → 性能基准 + 安全讨论 → 可续传上传 + 结构化错误），
+> 真机/模拟器/iOS CI 全绿；`capacitor-app-state` 已改名 `capacitor-foreground-state`。
 
 ## 11. 新对话快速恢复 checklist
 

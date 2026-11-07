@@ -110,7 +110,7 @@ ws.onmessage = async (event) => {
 ## 依赖与配合
 
 - [`capacitor-native-files`](../capacitor-native-files/)：选文件、存储权限、文件管理（列表/删除/重命名）；
-- [`capacitor-app-state`](../capacitor-app-state/)：切后台时 `revokeAllOtps()` 兜底；
+- [`capacitor-foreground-state`](../capacitor-foreground-state/)：切后台时 `revokeAllOtps()` 兜底；
 - 宿主需放行 loopback 明文（Android `network_security_config`、iOS `NSAllowsLocalNetworking`），
   见 README「安装前必做」。
 

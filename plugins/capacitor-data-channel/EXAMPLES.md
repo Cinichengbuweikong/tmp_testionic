@@ -344,10 +344,10 @@ const res = await fetch(`${http.baseUrl}/upload?path=imported.bin`, {
 });
 ```
 
-### 5.2 切后台自动 revoke（app-state）
+### 5.2 切后台自动 revoke（foreground-state）
 
 ```ts
-const listener = await AppState.addListener('stateChanged', async (s) => {
+const listener = await ForegroundState.addListener('stateChanged', async (s) => {
   if (!s.isActive) {
     await DataChannel.revokeAllOtps();        // 媒体 OTP / 未用 OTP 一次清空
   }

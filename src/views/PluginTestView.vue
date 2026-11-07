@@ -123,11 +123,11 @@
     </section>
 
     <section class="card">
-      <h2>AppState</h2>
+      <h2>ForegroundState</h2>
       <div class="actions">
-        <button @click="loadAppState">读取应用状态</button>
-        <button @click="startAppStateListen">监听状态变化</button>
-        <button @click="stopAppStateListen">停止状态监听</button>
+        <button @click="loadForegroundState">读取应用状态</button>
+        <button @click="startForegroundStateListen">监听状态变化</button>
+        <button @click="stopForegroundStateListen">停止状态监听</button>
       </div>
       <p class="hint">
         切到后台再回到前台，output 会打印 stateChanged 事件（含 backgroundDuration 后台时长）。
@@ -192,7 +192,7 @@
 
 <script>
 import { Capacitor } from '@capacitor/core';
-import { AppState } from 'capacitor-app-state';
+import { ForegroundState } from 'capacitor-foreground-state';
 import {
   DataChannel,
   encodeWsMessage,
@@ -222,7 +222,7 @@ export default {
       fullscreenHandle: null,
       keyboardHandle: null,
       dataChannelInfo: null,
-      appStateHandle: null,
+      foregroundStateHandle: null,
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
         { label: '绿 #4CAF50', value: '#4CAF50' },
@@ -1019,26 +1019,26 @@ export default {
           }
         }
 
-        // AppState：状态结构 + 监听/解除
+        // ForegroundState：状态结构 + 监听/解除
         try {
-          const appStateInitial = await AppState.getState();
-          const appStateHandle = await AppState.addListener('stateChanged', () => {});
-          const appStateHasHandle = !!appStateHandle && typeof appStateHandle.remove === 'function';
-          await appStateHandle.remove();
-          results.appState = { initial: appStateInitial, hasHandle: appStateHasHandle };
-          const appStateOk = !!appStateInitial
-            && typeof appStateInitial.isActive === 'boolean'
-            && typeof appStateInitial.state === 'string'
-            && typeof appStateInitial.changedAt === 'number'
-            && typeof appStateInitial.backgroundDuration === 'number'
-            && appStateHasHandle;
-          if (!appStateOk) {
+          const foregroundInitial = await ForegroundState.getState();
+          const foregroundHandle = await ForegroundState.addListener('stateChanged', () => {});
+          const foregroundHasHandle = !!foregroundHandle && typeof foregroundHandle.remove === 'function';
+          await foregroundHandle.remove();
+          results.foregroundState = { initial: foregroundInitial, hasHandle: foregroundHasHandle };
+          const foregroundOk = !!foregroundInitial
+            && typeof foregroundInitial.isActive === 'boolean'
+            && typeof foregroundInitial.state === 'string'
+            && typeof foregroundInitial.changedAt === 'number'
+            && typeof foregroundInitial.backgroundDuration === 'number'
+            && foregroundHasHandle;
+          if (!foregroundOk) {
             results.ok = false;
-            results.reason = `app-state check failed: ${JSON.stringify(results.appState)}`;
+            results.reason = `foreground-state check failed: ${JSON.stringify(results.foregroundState)}`;
           }
         } catch (err) {
           results.ok = false;
-          results.appStateError = String((err && err.message) || err);
+          results.foregroundStateError = String((err && err.message) || err);
         }
 
         // NativeFiles：非交互 API（选择器需要用户操作，不放进自检）
@@ -1401,41 +1401,41 @@ export default {
       }
     },
 
-    async loadAppState() {
+    async loadForegroundState() {
       try {
-        const state = await AppState.getState();
-        this.print('AppState.getState 成功', state);
+        const state = await ForegroundState.getState();
+        this.print('ForegroundState.getState 成功', state);
       } catch (err) {
-        this.error('AppState.getState', err);
+        this.error('ForegroundState.getState', err);
       }
     },
 
-    async startAppStateListen() {
+    async startForegroundStateListen() {
       try {
-        if (this.appStateHandle) {
-          this.print('AppState 监听', { status: '已在监听中，忽略重复开始' });
+        if (this.foregroundStateHandle) {
+          this.print('ForegroundState 监听', { status: '已在监听中，忽略重复开始' });
           return;
         }
-        this.appStateHandle = await AppState.addListener('stateChanged', (state) => {
+        this.foregroundStateHandle = await ForegroundState.addListener('stateChanged', (state) => {
           this.print('stateChanged 事件', state);
         });
-        this.print('AppState 监听已开始', { listening: true });
+        this.print('ForegroundState 监听已开始', { listening: true });
       } catch (err) {
-        this.error('AppState.addListener', err);
+        this.error('ForegroundState.addListener', err);
       }
     },
 
-    async stopAppStateListen() {
+    async stopForegroundStateListen() {
       try {
-        if (!this.appStateHandle) {
-          this.print('AppState 监听', { status: '当前没有监听' });
+        if (!this.foregroundStateHandle) {
+          this.print('ForegroundState 监听', { status: '当前没有监听' });
           return;
         }
-        await this.appStateHandle.remove();
-        this.appStateHandle = null;
-        this.print('AppState 监听已停止', { listening: false });
+        await this.foregroundStateHandle.remove();
+        this.foregroundStateHandle = null;
+        this.print('ForegroundState 监听已停止', { listening: false });
       } catch (err) {
-        this.error('AppState.removeListener', err);
+        this.error('ForegroundState.removeListener', err);
       }
     },
 

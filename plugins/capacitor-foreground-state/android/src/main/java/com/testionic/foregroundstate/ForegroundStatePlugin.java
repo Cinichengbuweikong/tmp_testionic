@@ -1,4 +1,4 @@
-package com.testionic.appstate;
+package com.testionic.foregroundstate;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -7,7 +7,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 /**
- * AppState 插件（Android 侧，jsName = "AppState"）。
+ * ForegroundState 插件（Android 侧，jsName = "ForegroundState"）。
  *
  * 通过 Capacitor Plugin 的生命周期钩子判断前后台：
  *  - `handleOnResume` → active（App 回到前台）
@@ -16,11 +16,11 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  * 说明：Android 没有 iOS 那样独立的 `inactive` 状态通知，因此本插件只用 active/background
  * 两个状态（`inactive` 仅在 iOS 上出现）。
  *
- * 事件：`stateChanged`，载荷为 AppState（isActive / state / changedAt /
+ * 事件：`stateChanged`，载荷为 ForegroundStateInfo（isActive / state / changedAt /
  * lastBackgroundAt / backgroundDuration）。
  */
-@CapacitorPlugin(name = "AppState")
-public class AppStatePlugin extends Plugin {
+@CapacitorPlugin(name = "ForegroundState")
+public class ForegroundStatePlugin extends Plugin {
 
     private static final String EVENT_STATE_CHANGED = "stateChanged";
 

@@ -1,9 +1,9 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 
 /**
- * AppState 插件（capacitor-app-state）。
+ * ForegroundState 插件（capacitor-foreground-state）。
  *
- * 用于让 WebView 里的 JS 知道**应用当前是否在前台**，并在前后台切换时收到事件。
+ * 让 WebView 里的 JS 知道**应用当前是否在前台**，并在前后台切换时收到事件。
  *
  * 典型用途：
  * - 切后台时暂停视频/动画/音频、停止轮询，回前台时恢复（省电）；
@@ -12,23 +12,25 @@ import type { PluginListenerHandle } from '@capacitor/core';
  * - 长任务（如 data-channel 传输）在切后台时提示用户（iOS 后台会被挂起）。
  *
  * ```ts
- * const state = await AppState.getState();
- * const handle = await AppState.addListener('stateChanged', (s) => {
+ * import { ForegroundState } from 'capacitor-foreground-state';
+ *
+ * const state = await ForegroundState.getState();
+ * const handle = await ForegroundState.addListener('stateChanged', (s) => {
  *   console.log('state:', s.state, 'isActive:', s.isActive, 'backgroundDuration:', s.backgroundDuration);
  * });
  * // 取消单个监听
  * await handle.remove();
  * // 取消所有监听
- * await AppState.removeAllListeners();
+ * await ForegroundState.removeAllListeners();
  * ```
  */
-export interface AppStatePlugin {
+export interface ForegroundStatePlugin {
   /**
    * 读取当前前台/后台状态。
    *
    * @since 0.1.0
    */
-  getState(): Promise<AppState>;
+  getState(): Promise<ForegroundStateInfo>;
 
   /**
    * 监听应用前后台状态变化。
@@ -41,7 +43,7 @@ export interface AppStatePlugin {
    */
   addListener(
     eventName: 'stateChanged',
-    listenerFunc: (state: AppState) => void,
+    listenerFunc: (state: ForegroundStateInfo) => void,
   ): Promise<PluginListenerHandle>;
 
   /**
@@ -52,8 +54,8 @@ export interface AppStatePlugin {
   removeAllListeners(): Promise<void>;
 }
 
-/** 应用状态。 */
-export interface AppState {
+/** 应用前后台状态。 */
+export interface ForegroundStateInfo {
   /** 是否处于前台活跃状态（等价于 `state === 'active'`）。 */
   isActive: boolean;
 
