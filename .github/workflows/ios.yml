@@ -80,7 +80,15 @@ jobs:
           # --console-pty 会接管 App 的 stdout，Capacitor 把 JS console.log 转发到原生 print
           xcrun simctl launch --console-pty "$UDID" com.myapp.testionic > sim-console.log 2>&1 &
           LAUNCH_PID=$!
-          sleep 45
+          # 轮询等待 autotest 结果（最长 180s）：固定 sleep 在慢机器/用例变多时容易不够
+          for i in $(seq 1 36); do
+            if grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
+              echo "autotest finished after ~$((i * 5))s"
+              break
+            fi
+            sleep 5
+          done
+          sleep 2
 
           xcrun simctl io "$UDID" screenshot ios-launch.png || true
           kill "$LAUNCH_PID" 2>/dev/null || true
