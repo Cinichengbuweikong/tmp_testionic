@@ -1,5 +1,7 @@
 package com.testionic.datachannel;
 
+import android.util.Log;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -15,7 +17,6 @@ import java.net.Socket;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -23,38 +24,28 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import android.util.Log;
 
 /**
- * DataChannel 本地 HTTP Server（Android，纯 Java 实现，零第三方依赖）。
+ * DataChannel **HTTP** Server（Android，纯 Java，零第三方依赖）。
  *
- * 设计目标：让 WebView 用标准 fetch / &lt;video&gt; / &lt;img&gt; 直接收发**原始二进制**，
- * 绕开 Capacitor 的 JSON/base64 桥。
+ * 只提供三个路由：
+ *   GET  /health            免 OTP（连通性自检）
+ *   PUT/POST /upload?path=  需要 write OTP（流式写盘，append=1 追加）
+ *   GET  /download?path=    需要 read OTP（流式下载，支持 Range → 206）
+ *   OPTIONS *               免 OTP（CORS 预检）
  *
- * 安全设计（详见 README）：
- *  - 只绑定 127.0.0.1（外部网络/其他机器无法访问）；
- *  - 随机端口 + 每次启动随机 Bearer token（header 或 ?token=，常量时间比较）；
- *  - CORS 只放行 WebView origin（capacitor://localhost / https://localhost 等）；
- *  - 路径限制在数据根目录内（canonical path 校验，拒绝 ..、绝对路径、软链逃逸）；
- *  - 请求头/请求体大小限制 + 读超时；
- *  - 上传先写 .part 再 rename（原子性），支持 append 分片续传。
+ * **鉴权用 OTP**（不是长期 token）：
+ *   - Header: `Authorization: OTP <otp>`
+ *   - Query:  `?otp=<otp>`（媒体 `<video src>` 用）
+ *   - OTP 通过 Capacitor 桥下发（抓包拿不到生成过程），一次性/可复用只在 read 时允许；
+ *   - 校验失败统一 404（不泄露"需要 OTP"）。
  *
- * HTTP 协议子集：HTTP/1.1 单请求单连接（Connection: close）、Content-Length 请求体、
- * 支持下载 Range（视频拖动进度条必需）。不支持 chunked 请求体（fetch 上传 Blob/File 时
- * 会带 Content-Length，满足需求）。
+ * **两级连接限流**（见 {@link OtpStore.ConnectionLimiter}）：
+ *   - 未认证连接 4（防扫描/DoS）；
+ *   - 已认证连接 maxConnections（默认 16，保证视频多 Range / 多图并发）。
  *
- * ======================= 职责边界（重要） =======================
- *
- * 本插件**只负责高速传输**：只提供 `/health`、`/upload`、`/download` 三个 HTTP 路由 + `/ws` WebSocket。
- * 文件管理（列表/删除/重命名）与存储权限请用 `capacitor-native-files`。
- *
- * ======================= WebSocket（实时双向二进制） =======================
- *
- * 同一个端口提供 `/ws` 升级端点（RFC 6455 子集）：WebView 用原生 `new WebSocket(wsUrl)`
- * 即可与 native 实时互发二进制帧（ArrayBuffer），同样不经过 JSON/base64 桥。
- * 默认 **echo 模式**（收到什么回什么），便于自测与作为后续扩展的起点；
- * 后续开发者可以在 {@link #broadcast(byte[])} 或 wsLoop 的自定义分支里接入业务逻辑。
- * 支持：文本/二进制帧、分片重组、ping/pong、close；单帧上限 64MB。
+ * 安全：只绑 127.0.0.1、随机端口、Origin 白名单（非法即断开）、路径限制在 rootDir、
+ *      请求大小/头/超时限制、上传 .part 原子写、日志不记 OTP。
  */
 public class DataChannelServer {
 
@@ -62,46 +53,30 @@ public class DataChannelServer {
         void onRequestCompleted(String method, String path, int status, long bytes, long durationMs);
     }
 
+    private static final String TAG = "DataChannelHttp";
     private static final int MAX_HEADER_LINE = 8192;
     private static final int MAX_HEADER_LINES = 64;
     private static final int MAX_HEADER_TOTAL = 32 * 1024;
     private static final int SOCKET_TIMEOUT_MS = 20000;
     private static final int COPY_BUFFER = 64 * 1024;
-    private static final int WS_MAX_FRAME_BYTES = 64 * 1024 * 1024;
-    private static final String WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     private final File root;
-    private final String token;
+    private final OtpStore otpStore;
     private final long maxBodyBytes;
-    private final boolean wsEcho;
     private final Listener listener;
+    private final OtpStore.ConnectionLimiter limiter;
 
     private ServerSocket serverSocket;
     private Thread acceptThread;
     private ExecutorService workers;
-    private ExecutorService wsExecutor;
     private volatile boolean running = false;
-    private final AtomicInteger activeConnections = new AtomicInteger();
 
-    private final java.util.Set<WsSession> wsSessions = java.util.concurrent.ConcurrentHashMap.newKeySet();
-
-    /** 一个 WebSocket 连接（socket + 输出流 + 写锁）。 */
-    private static final class WsSession {
-        final Socket socket;
-        final OutputStream out;
-
-        WsSession(Socket socket, OutputStream out) {
-            this.socket = socket;
-            this.out = out;
-        }
-    }
-
-    public DataChannelServer(File root, String token, long maxBodyBytes, boolean wsEcho, Listener listener) {
+    public DataChannelServer(File root, OtpStore otpStore, long maxBodyBytes, int maxConnections, Listener listener) {
         this.root = root;
-        this.token = token;
+        this.otpStore = otpStore;
         this.maxBodyBytes = maxBodyBytes;
-        this.wsEcho = wsEcho;
         this.listener = listener;
+        this.limiter = new OtpStore.ConnectionLimiter(maxConnections);
     }
 
     public boolean isRunning() {
@@ -109,28 +84,32 @@ public class DataChannelServer {
     }
 
     public int activeConnections() {
-        return activeConnections.get();
+        return limiter.activeCount();
     }
 
-    public int wsClientCount() {
-        return wsSessions.size();
+    public int pendingConnections() {
+        return limiter.pendingCount();
     }
 
-    /** 启动并返回实际监听端口。 */
+    public int maxConnections() {
+        return limiter.maxActive();
+    }
+
+    public int port() {
+        return serverSocket != null ? serverSocket.getLocalPort() : 0;
+    }
+
     public int start(int requestedPort) throws IOException {
         if (running) {
-            return serverSocket != null ? serverSocket.getLocalPort() : 0;
+            return port();
         }
         if (!root.exists() && !root.mkdirs()) {
             throw new IOException("cannot create data root: " + root);
         }
-        // 只绑定回环地址：外部设备无法连接
         serverSocket = new ServerSocket(requestedPort, 16, InetAddress.getByName("127.0.0.1"));
-        workers = Executors.newFixedThreadPool(4);
-        // WebSocket 是长连接，单独用 cached 线程池（避免占满 HTTP 工作线程）
-        wsExecutor = Executors.newCachedThreadPool();
+        workers = Executors.newFixedThreadPool(Math.max(2, limiter.maxActive()));
         running = true;
-        acceptThread = new Thread(this::acceptLoop, "DataChannelAccept");
+        acceptThread = new Thread(this::acceptLoop, "DataChannelHttpAccept");
         acceptThread.setDaemon(true);
         acceptThread.start();
         return serverSocket.getLocalPort();
@@ -138,25 +117,12 @@ public class DataChannelServer {
 
     public void stop() {
         running = false;
-        // 关闭所有 WebSocket 连接
-        for (WsSession session : wsSessions) {
-            try {
-                session.socket.close();
-            } catch (IOException ignored) {
-                // 忽略
-            }
-        }
-        wsSessions.clear();
-        if (wsExecutor != null) {
-            wsExecutor.shutdownNow();
-            wsExecutor = null;
-        }
         try {
             if (serverSocket != null) {
                 serverSocket.close();
             }
         } catch (IOException ignored) {
-            // 关闭时忽略
+            // 忽略
         }
         serverSocket = null;
         if (acceptThread != null) {
@@ -180,12 +146,22 @@ public class DataChannelServer {
         while (running) {
             try {
                 Socket socket = serverSocket.accept();
-                activeConnections.incrementAndGet();
-                workers.execute(() -> {
+                if (!limiter.tryAcquirePending()) {
+                    // 未认证并发已满：直接关闭（防扫描/DoS）
+                    Log.d(TAG, "reject connection: pending limit reached");
                     try {
-                        handleRequest(socket);
+                        socket.close();
+                    } catch (IOException ignored) {
+                        // 忽略
+                    }
+                    continue;
+                }
+                workers.execute(() -> {
+                    boolean authenticated = false;
+                    try {
+                        authenticated = handleRequest(socket);
                     } finally {
-                        activeConnections.decrementAndGet();
+                        limiter.release(authenticated);
                     }
                 });
             } catch (IOException e) {
@@ -197,15 +173,15 @@ public class DataChannelServer {
         }
     }
 
-    // ---------------------------------------------------------------- 请求分发
+    // ---------------------------------------------------------------- 请求处理
 
-    private void handleRequest(Socket socket) {
+    /** 返回 true 表示该连接已通过 OTP 认证（用于正确的连接计数释放）。 */
+    private boolean handleRequest(Socket socket) {
         long startedAt = System.nanoTime();
         String method = "-";
         String path = "-";
         int status = 500;
-        // WebSocket 升级后 socket 交给长连接线程，不能在这里关闭
-        boolean handedOff = false;
+        boolean authenticated = false;
 
         try {
             socket.setSoTimeout(SOCKET_TIMEOUT_MS);
@@ -214,13 +190,13 @@ public class DataChannelServer {
 
             String requestLine = readLine(in, MAX_HEADER_LINE);
             if (requestLine == null || requestLine.isEmpty()) {
-                return;
+                return false;
             }
             String[] parts = requestLine.split(" ");
             if (parts.length < 2) {
                 status = 400;
                 writeError(out, 400, "bad request line", null);
-                return;
+                return false;
             }
             method = parts[0].toUpperCase(Locale.ROOT);
             String target = parts[1];
@@ -233,78 +209,71 @@ public class DataChannelServer {
             } catch (IllegalArgumentException e) {
                 status = 400;
                 writeError(out, 400, "invalid url", null);
-                return;
+                return false;
             }
             path = uri.getPath() == null ? "/" : uri.getPath();
             Map<String, String> query = parseQuery(uri.getRawQuery());
 
-            // CORS 预检（不需要 token：浏览器发预检时不会带 Authorization）
+            // CORS 预检（浏览器预检不带 Authorization，必须免鉴权）
             if ("OPTIONS".equals(method)) {
                 status = 204;
                 writePreflight(out, origin);
-                return;
+                return false;
             }
 
-            // Origin 白名单：非白名单 Origin **静默断开**（不返回任何响应，避免泄露服务存在）
+            // Origin 白名单：非白名单 Origin 静默断开（不返回任何响应）
             if (origin != null && !isAllowedOrigin(origin)) {
                 status = 0;
-                Log.d("DataChannel", "dropped connection with disallowed origin");
-                return;
+                Log.d(TAG, "dropped connection with disallowed origin");
+                return false;
             }
 
-            // 健康检查（免 token，便于页面启动自检；只返回极简信息）
+            // 健康检查（免 OTP，无敏感信息）
             if ("GET".equals(method) && "/health".equals(path)) {
                 status = 200;
                 writeJson(out, 200, "{\"ok\":true,\"name\":\"capacitor-data-channel\"}", origin);
-                return;
+                return false;
             }
 
-            if (!isAuthorized(headers, query)) {
-                // 鉴权失败统一返回 404（与未知路由不可区分），不泄露"这里有个需要认证的服务"
+            // ---- OTP 鉴权 ----
+            String otp = extractOtp(headers, query);
+            String requestPath = query.get("path");
+            String neededScope = "PUT".equals(method) || "POST".equals(method) ? OtpStore.SCOPE_WRITE : OtpStore.SCOPE_READ;
+            if (!otpStore.consume(otp, neededScope, requestPath == null ? "" : requestPath)) {
                 status = 404;
                 writeError(out, 404, "not found", origin);
-                return;
+                return false;
             }
-
-            // WebSocket 升级（同端口 /ws）：交给长连接线程，本方法不再关闭 socket
-            if ("/ws".equals(path) && "websocket".equalsIgnoreCase(headers.get("upgrade"))) {
-                String key = headers.get("sec-websocket-key");
-                if (key == null || key.isEmpty()) {
-                    status = 400;
-                    writeError(out, 400, "missing Sec-WebSocket-Key", origin);
-                    return;
-                }
-                handedOff = true;
-                status = 101;
-                wsExecutor.execute(() -> runWebSocket(socket, in, out, key, origin));
-                return;
+            if (!limiter.promoteToActive()) {
+                status = 404;
+                writeError(out, 404, "not found", origin);
+                return false;
             }
+            authenticated = true;
 
             String route = method + " " + path;
             switch (route) {
                 case "PUT /upload":
                 case "POST /upload":
                     status = handleUpload(in, out, headers, query, origin);
-                    return;
+                    return true;
                 case "GET /download":
                     status = handleDownload(out, headers, query, origin);
-                    return;
+                    return true;
                 default:
                     status = 404;
                     writeError(out, 404, "not found: " + route, origin);
-                    return;
+                    return true;
             }
         } catch (IOException e) {
             status = 500;
         } catch (Exception e) {
             status = 500;
         } finally {
-            if (!handedOff) {
-                try {
-                    socket.close();
-                } catch (IOException ignored) {
-                    // 忽略
-                }
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // 忽略
             }
             if (listener != null) {
                 long durationMs = (System.nanoTime() - startedAt) / 1_000_000;
@@ -315,197 +284,15 @@ public class DataChannelServer {
                 }
             }
         }
+        return authenticated;
     }
 
-    // ---------------------------------------------------------------- WebSocket
-
-    private void runWebSocket(Socket socket, InputStream in, OutputStream out, String key, String origin) {
-        WsSession session = new WsSession(socket, out);
-        wsSessions.add(session);
-        try {
-            socket.setSoTimeout(0); // 长连接：不设读超时
-            socket.setTcpNoDelay(true);
-            String accept = computeWsAccept(key);
-            String handshake =
-                "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n" +
-                "Sec-WebSocket-Accept: " + accept + "\r\n";
-            if (origin != null && isAllowedOrigin(origin)) {
-                handshake += "Access-Control-Allow-Origin: " + origin + "\r\n";
-            }
-            handshake += "\r\n";
-            synchronized (session) {
-                out.write(handshake.getBytes(StandardCharsets.ISO_8859_1));
-                out.flush();
-            }
-            Log.d("DataChannel", "websocket client connected (echo=" + wsEcho + ")");
-            wsLoop(in, session);
-        } catch (IOException ignored) {
-            // 客户端断开或网络异常
-        } finally {
-            wsSessions.remove(session);
-            try {
-                socket.close();
-            } catch (IOException ignored) {
-                // 忽略
-            }
-            Log.d("DataChannel", "websocket client disconnected");
+    private String extractOtp(Map<String, String> headers, Map<String, String> query) {
+        String auth = headers.get("authorization");
+        if (auth != null && auth.length() > 4 && auth.regionMatches(true, 0, "OTP ", 0, 4)) {
+            return auth.substring(4).trim();
         }
-    }
-
-    private void wsLoop(InputStream in, WsSession session) throws IOException {
-        ByteArrayOutputStream assembled = new ByteArrayOutputStream();
-        int assembledOpcode = -1;
-        while (running) {
-            int first = in.read();
-            if (first < 0) {
-                return;
-            }
-            int second = in.read();
-            if (second < 0) {
-                return;
-            }
-            boolean fin = (first & 0x80) != 0;
-            int opcode = first & 0x0F;
-            boolean masked = (second & 0x80) != 0;
-            long length = second & 0x7F;
-            if (length == 126) {
-                length = readU16(in);
-            } else if (length == 127) {
-                length = readU64(in);
-            }
-            if (length < 0 || length > WS_MAX_FRAME_BYTES) {
-                closeWs(session, 1009); // message too big
-                return;
-            }
-            byte[] mask = masked ? readN(in, 4) : null;
-            byte[] payload = readN(in, (int) length);
-            if (mask != null) {
-                for (int i = 0; i < payload.length; i++) {
-                    payload[i] ^= mask[i & 3];
-                }
-            }
-
-            switch (opcode) {
-                case 0x9: // ping → pong
-                    sendFrame(session, 0xA, payload);
-                    break;
-                case 0xA: // pong
-                    break;
-                case 0x8: // close
-                    sendFrame(session, 0x8, new byte[0]);
-                    return;
-                case 0x1: // text（首帧）
-                case 0x2: // binary（首帧）
-                    assembledOpcode = opcode;
-                    assembled.write(payload, 0, payload.length);
-                    break;
-                case 0x0: // continuation
-                    assembled.write(payload, 0, payload.length);
-                    break;
-                default:
-                    break;
-            }
-
-            if (fin && (opcode == 0x0 || opcode == 0x1 || opcode == 0x2)) {
-                byte[] message = assembled.toByteArray();
-                assembled.reset();
-                if (wsEcho) {
-                    sendFrame(session, assembledOpcode == 0x1 ? 0x1 : 0x2, message);
-                }
-                // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点
-            }
-        }
-    }
-
-    /** 向所有已连接的 WebSocket 客户端广播二进制帧（供 native 侧扩展使用）。 */
-    public int broadcast(byte[] data) {
-        int sent = 0;
-        for (WsSession session : wsSessions) {
-            try {
-                sendFrame(session, 0x2, data);
-                sent++;
-            } catch (IOException ignored) {
-                // 忽略单个连接失败
-            }
-        }
-        return sent;
-    }
-
-    private void sendFrame(WsSession session, int opcode, byte[] data) throws IOException {
-        ByteArrayOutputStream frame = new ByteArrayOutputStream(data.length + 10);
-        frame.write(0x80 | (opcode & 0x0F)); // FIN + opcode（服务端帧不加 mask）
-        int len = data.length;
-        if (len <= 125) {
-            frame.write(len);
-        } else if (len <= 65535) {
-            frame.write(126);
-            frame.write((len >> 8) & 0xFF);
-            frame.write(len & 0xFF);
-        } else {
-            frame.write(127);
-            for (int i = 7; i >= 0; i--) {
-                frame.write((int) (((long) len) >> (8 * i)) & 0xFF);
-            }
-        }
-        frame.write(data, 0, data.length);
-        synchronized (session) {
-            session.out.write(frame.toByteArray());
-            session.out.flush();
-        }
-    }
-
-    private void closeWs(WsSession session, int code) {
-        try {
-            sendFrame(session, 0x8, new byte[] { (byte) (code >> 8), (byte) (code & 0xFF) });
-        } catch (IOException ignored) {
-            // 忽略
-        }
-    }
-
-    private String computeWsAccept(String key) throws IOException {
-        try {
-            java.security.MessageDigest sha1 = java.security.MessageDigest.getInstance("SHA-1");
-            byte[] digest = sha1.digest((key + WS_MAGIC).getBytes(StandardCharsets.US_ASCII));
-            return android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP);
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IOException("SHA-1 unavailable", e);
-        }
-    }
-
-    private long readU16(InputStream in) throws IOException {
-        int b1 = in.read();
-        int b2 = in.read();
-        if (b1 < 0 || b2 < 0) {
-            throw new IOException("unexpected EOF");
-        }
-        return ((long) b1 << 8) | b2;
-    }
-
-    private long readU64(InputStream in) throws IOException {
-        long value = 0;
-        for (int i = 0; i < 8; i++) {
-            int b = in.read();
-            if (b < 0) {
-                throw new IOException("unexpected EOF");
-            }
-            value = (value << 8) | b;
-        }
-        return value;
-    }
-
-    private byte[] readN(InputStream in, int length) throws IOException {
-        byte[] buf = new byte[length];
-        int read = 0;
-        while (read < length) {
-            int n = in.read(buf, read, length - read);
-            if (n < 0) {
-                throw new IOException("unexpected EOF in frame");
-            }
-            read += n;
-        }
-        return buf;
+        return query.get("otp");
     }
 
     // ---------------------------------------------------------------- 路由实现
@@ -555,7 +342,6 @@ public class DataChannelServer {
                 fos.flush();
             }
         } else {
-            // 先写 .part 再 rename：避免半截文件被读到
             File part = new File(target.getPath() + ".part");
             try (FileOutputStream fos = new FileOutputStream(part)) {
                 written = copyExactly(in, fos, contentLength);
@@ -653,7 +439,7 @@ public class DataChannelServer {
     private File resolveSafePath(String relPath) throws IOException {
         String rel = relPath == null ? "" : relPath.trim();
         if (rel.isEmpty()) {
-            return root;
+            throw new IllegalArgumentException("missing path");
         }
         if (rel.indexOf('\0') >= 0) {
             throw new IllegalArgumentException("invalid path: contains NUL");
@@ -684,25 +470,7 @@ public class DataChannelServer {
         return new File(candidateCanonical);
     }
 
-    // ---------------------------------------------------------------- 鉴权
-
-    private boolean isAuthorized(Map<String, String> headers, Map<String, String> query) {
-        String provided = null;
-        String auth = headers.get("authorization");
-        if (auth != null && auth.length() > 7 && auth.regionMatches(true, 0, "Bearer ", 0, 7)) {
-            provided = auth.substring(7).trim();
-        }
-        if (provided == null || provided.isEmpty()) {
-            provided = query.get("token");
-        }
-        if (provided == null || provided.isEmpty()) {
-            return false;
-        }
-        return MessageDigest.isEqual(
-            provided.getBytes(StandardCharsets.UTF_8),
-            token.getBytes(StandardCharsets.UTF_8)
-        );
-    }
+    // ---------------------------------------------------------------- Origin
 
     private static final String[] ALLOWED_ORIGINS = {
         "capacitor://localhost",
@@ -838,7 +606,7 @@ public class DataChannelServer {
         sb.append("Referrer-Policy: no-referrer\r\n");
         if (origin != null && isAllowedOrigin(origin)) {
             sb.append("Access-Control-Allow-Origin: ").append(origin).append("\r\n");
-            sb.append("Access-Control-Allow-Methods: GET, PUT, POST, DELETE, OPTIONS\r\n");
+            sb.append("Access-Control-Allow-Methods: GET, PUT, POST, OPTIONS\r\n");
             sb.append("Access-Control-Allow-Headers: Authorization, Content-Type, Range\r\n");
             sb.append("Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges\r\n");
         }
@@ -855,28 +623,18 @@ public class DataChannelServer {
         switch (status) {
             case 200:
                 return "OK";
-            case 201:
-                return "Created";
             case 204:
                 return "No Content";
             case 206:
                 return "Partial Content";
             case 400:
                 return "Bad Request";
-            case 401:
-                return "Unauthorized";
-            case 403:
-                return "Forbidden";
             case 404:
                 return "Not Found";
-            case 405:
-                return "Method Not Allowed";
             case 411:
                 return "Length Required";
             case 413:
                 return "Payload Too Large";
-            case 416:
-                return "Range Not Satisfiable";
             default:
                 return "Internal Server Error";
         }

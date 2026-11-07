@@ -1,37 +1,59 @@
 import { WebPlugin } from '@capacitor/core';
 
-import type { ChannelInfo, DataChannelPlugin, StartChannelOptions } from './definitions';
+import type {
+  ChannelInfo,
+  DataChannelPlugin,
+  HttpInfo,
+  HttpOtpInfo,
+  CreateHttpOtpOptions,
+  StartHttpOptions,
+  StartWsOptions,
+  WsInfo,
+  WsOtpInfo,
+} from './definitions';
+
+const NATIVE_ONLY = 'DataChannel is only available on native platforms (Android/iOS)';
 
 /**
  * Web 降级实现。
  *
- * 浏览器里无法启动本地 HTTP/WebSocket server（这是原生能力），所以：
- * - start()/stop() 返回 rejected promise，提示仅原生平台可用；
- * - getInfo() 返回"未运行"；
- * - 页面在 Web 端开发时可以直接用 fetch/WebSocket 访问开发服务器，无需本插件。
+ * 浏览器里无法启动本地 HTTP/WebSocket server（这是原生能力），所有方法直接抛错；
+ * 页面在 Web 端开发时可以直接用 fetch/WebSocket 访问开发服务器，无需本插件。
  */
 export class DataChannelWeb extends WebPlugin implements DataChannelPlugin {
-  async start(_options?: StartChannelOptions): Promise<ChannelInfo> {
-    throw new Error('DataChannel.start() is only available on native platforms (Android/iOS)');
+  async startHttp(_options?: StartHttpOptions): Promise<HttpInfo> {
+    throw new Error(`DataChannel.startHttp(): ${NATIVE_ONLY}`);
   }
 
-  async stop(): Promise<ChannelInfo> {
-    throw new Error('DataChannel.stop() is only available on native platforms (Android/iOS)');
+  async stopHttp(): Promise<HttpInfo> {
+    throw new Error(`DataChannel.stopHttp(): ${NATIVE_ONLY}`);
+  }
+
+  async startWebSocket(_options?: StartWsOptions): Promise<WsInfo> {
+    throw new Error(`DataChannel.startWebSocket(): ${NATIVE_ONLY}`);
+  }
+
+  async stopWebSocket(): Promise<WsInfo> {
+    throw new Error(`DataChannel.stopWebSocket(): ${NATIVE_ONLY}`);
   }
 
   async getInfo(): Promise<ChannelInfo> {
-    return {
-      running: false,
-      port: 0,
-      baseUrl: '',
-      wsUrl: '',
-      token: '',
-      rootPath: '',
-      maxBodyBytes: 0,
-      startedAt: 0,
-      activeConnections: 0,
-      wsClients: 0,
-      webSocketEnabled: false,
-    };
+    return { http: null, webSocket: null };
+  }
+
+  async createHttpOtp(_options: CreateHttpOtpOptions): Promise<HttpOtpInfo> {
+    throw new Error(`DataChannel.createHttpOtp(): ${NATIVE_ONLY}`);
+  }
+
+  async createWsOtp(): Promise<WsOtpInfo> {
+    throw new Error(`DataChannel.createWsOtp(): ${NATIVE_ONLY}`);
+  }
+
+  async revokeOtp(): Promise<{ revoked: boolean }> {
+    return { revoked: false };
+  }
+
+  async revokeAllOtps(): Promise<{ revoked: number }> {
+    return { revoked: 0 };
   }
 }

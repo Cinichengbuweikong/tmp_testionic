@@ -1,22 +1,22 @@
 import Foundation
 import Network
-import Security
-import CryptoKit
 import Capacitor
 
-/// DataChannel 本地 HTTP + WebSocket Server（iOS，纯 Foundation/Network 实现，零第三方依赖）。
+/// DataChannel **HTTP** Server（iOS，NWListener 手写 HTTP 实现）。
 ///
-/// 与 Android 侧 `DataChannelServer.java` 协议完全一致：
-///   HTTP: GET /health、PUT|POST /upload、GET /download（支持 Range）、GET /info、GET /list、DELETE /file
-///   WS:   GET /ws（Upgrade，RFC 6455 子集，默认 echo）
+/// 只提供三个路由：
+///   GET  /health            免 OTP
+///   PUT/POST /upload?path=  需要 write OTP（流式写盘，append=1 追加）
+///   GET  /download?path=    需要 read OTP（流式下载，支持 Range → 206）
+///   OPTIONS *               免 OTP（CORS 预检）
 ///
-/// 安全设计：
-///  - `NWParameters.requiredInterfaceType = .loopback` + 连接来源校验：只服务本机回环；
-///  - 随机端口 + 每次启动随机 32 字节 Bearer token（常量时间比较）；
-///  - Origin 白名单（capacitor://localhost / https://localhost 等）；
-///  - 路径限制在数据根目录内（standardized + 解析软链后校验前缀）；
-///  - 请求头/请求体上限 + 读超时；上传先写 .part 再 rename。
-final class DataChannelServer {
+/// 鉴权用 OTP（通过桥下发，抓包看不到生成过程）：
+///   - Header: `Authorization: OTP <otp>`
+///   - Query:  `?otp=<otp>`（媒体 `<video src>` 用）
+///   - 校验失败统一 404
+///
+/// 两级连接限流：未认证 4 / 已认证 maxConnections（默认 16）。
+final class DataChannelHttpServer {
 
     enum ServerError: Error {
         case listenFailed(String)
@@ -24,37 +24,30 @@ final class DataChannelServer {
     }
 
     private enum Limits {
-        static let maxHeaderBytes = 32 * 1024
-        static let maxHeaderLines = 64
-        static let chunkSize = 64 * 1024
-        static let receiveTimeout: TimeInterval = 30
         static let startTimeout: TimeInterval = 5
-        static let wsMaxFrameBytes = 64 * 1024 * 1024
     }
 
     private let rootURL: URL
-    private let token: String
+    private let otpStore: OtpStore
     private let maxBodyBytes: Int64
-    private let wsEcho: Bool
-    /// NWListener / NWConnection 需要串行队列
-    private let queue = DispatchQueue(label: "capacitor.datachannel")
+    private let limiter: ConnectionLimiter
+    private let queue = DispatchQueue(label: "capacitor.datachannel.http")
     private let stateLock = NSLock()
-    private let sessionsLock = NSLock()
-    private var wsSessions: [HTTPConnection] = []
-    /// 必须持有所有 HTTPConnection，否则它们会被立即释放、连接挂起（曾踩过的坑）
     private let handlersLock = NSLock()
     private var httpHandlers: [HTTPConnection] = []
 
     private var listener: NWListener?
+    private var boundPort: UInt16 = 0
     private var running = false
-    private var activeConnectionCount = 0
 
-    init(root: URL, token: String, maxBodyBytes: Int64, wsEcho: Bool) {
+    init(root: URL, otpStore: OtpStore, maxBodyBytes: Int64, maxConnections: Int) {
         self.rootURL = root
-        self.token = token
+        self.otpStore = otpStore
         self.maxBodyBytes = maxBodyBytes
-        self.wsEcho = wsEcho
+        self.limiter = ConnectionLimiter(maxActive: maxConnections)
     }
+
+    // MARK: - 状态
 
     var isRunning: Bool {
         stateLock.lock()
@@ -62,61 +55,29 @@ final class DataChannelServer {
         return running
     }
 
-    var activeConnections: Int {
+    var port: UInt16 {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return activeConnectionCount
+        return boundPort
     }
 
-    var wsClients: Int {
-        sessionsLock.lock()
-        defer { sessionsLock.unlock() }
-        return wsSessions.count
+    var activeConnections: Int {
+        return limiter.activeCount
     }
 
-    /// 向所有已连接的 WebSocket 客户端广播二进制帧（供 native 侧扩展使用）。
-    @discardableResult
-    func broadcast(_ payload: Data) -> Int {
-        sessionsLock.lock()
-        let sessions = wsSessions
-        sessionsLock.unlock()
-        for session in sessions {
-            session.sendBinaryFrame(payload)
-        }
-        return sessions.count
+    var pendingConnections: Int {
+        return limiter.pendingCount
     }
 
-    fileprivate func registerWebSocketSession(_ session: HTTPConnection) {
-        sessionsLock.lock()
-        wsSessions.append(session)
-        sessionsLock.unlock()
+    var maxConnections: Int {
+        return limiter.maxActiveCount
     }
 
-    fileprivate func unregisterWebSocketSession(_ session: HTTPConnection) {
-        sessionsLock.lock()
-        wsSessions.removeAll { $0 === session }
-        sessionsLock.unlock()
-    }
+    // MARK: - 生命周期
 
-    fileprivate func registerHandler(_ handler: HTTPConnection) {
-        handlersLock.lock()
-        httpHandlers.append(handler)
-        handlersLock.unlock()
-    }
-
-    fileprivate func unregisterHandler(_ handler: HTTPConnection) {
-        handlersLock.lock()
-        httpHandlers.removeAll { $0 === handler }
-        handlersLock.unlock()
-        stateLock.lock()
-        activeConnectionCount = max(0, activeConnectionCount - 1)
-        stateLock.unlock()
-    }
-
-    /// 启动并返回实际端口（port=0 时由系统分配）。
     func start(port: UInt16) throws -> UInt16 {
-        if isRunning, let existing = listener, let bound = existing.port?.rawValue {
-            return bound
+        if isRunning, boundPort != 0 {
+            return boundPort
         }
         if !FileManager.default.fileExists(atPath: rootURL.path) {
             try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
@@ -124,9 +85,6 @@ final class DataChannelServer {
 
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        // 真机：强制只使用回环接口（避免监听 0.0.0.0 触发 iOS 本地网络权限）。
-        // 模拟器：requiredInterfaceType = .loopback 会导致 listener 接受不到连接
-        // （已知兼容性问题），而模拟器与宿主共享网络栈、外部无法连入，因此跳过。
         #if !targetEnvironment(simulator)
         parameters.requiredInterfaceType = .loopback
         #endif
@@ -146,13 +104,13 @@ final class DataChannelServer {
         }
 
         let semaphore = DispatchSemaphore(value: 0)
-        var boundPort: UInt16 = 0
+        var assignedPort: UInt16 = 0
         var failure: String?
 
         newListener.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                boundPort = newListener.port?.rawValue ?? 0
+                assignedPort = newListener.port?.rawValue ?? 0
                 semaphore.signal()
             case .failed(let error):
                 failure = "\(error)"
@@ -174,15 +132,16 @@ final class DataChannelServer {
             newListener.cancel()
             throw ServerError.listenFailed(failure)
         }
-        if boundPort == 0 {
-            boundPort = newListener.port?.rawValue ?? 0
+        if assignedPort == 0 {
+            assignedPort = newListener.port?.rawValue ?? 0
         }
 
         stateLock.lock()
         self.listener = newListener
+        self.boundPort = assignedPort
         self.running = true
         stateLock.unlock()
-        return boundPort
+        return assignedPort
     }
 
     func stop() {
@@ -190,10 +149,10 @@ final class DataChannelServer {
         let current = listener
         listener = nil
         running = false
+        boundPort = 0
         stateLock.unlock()
         current?.cancel()
 
-        // 兜底：主动结束所有进行中的连接（listener 取消后连接通常也会失败）
         handlersLock.lock()
         let pending = httpHandlers
         handlersLock.unlock()
@@ -205,41 +164,54 @@ final class DataChannelServer {
     // MARK: - 连接
 
     private func accept(_ connection: NWConnection) {
-        CAPLog.print("[DataChannel] accept connection from \(connection.endpoint)")
-        // 模拟器上 endpoint 可能不可用，跳过来源校验（模拟器网络是 NAT 的，外部连不进来）
+        guard limiter.tryAcquirePending() else {
+            CAPLog.print("[DataChannelHttp] reject: pending limit reached")
+            connection.cancel()
+            return
+        }
         #if !targetEnvironment(simulator)
         guard case let .hostPort(host, _) = connection.endpoint else {
-            CAPLog.print("[DataChannel] reject: endpoint is not hostPort")
+            CAPLog.print("[DataChannelHttp] reject: endpoint is not hostPort")
             connection.cancel()
+            limiter.release(authenticated: false)
             return
         }
         let hostString = "\(host)".lowercased()
         if hostString != "127.0.0.1" && hostString != "::1" && hostString != "localhost" {
-            CAPLog.print("[DataChannel] reject: non-loopback host \(hostString)")
+            CAPLog.print("[DataChannelHttp] reject: non-loopback host \(hostString)")
             connection.cancel()
+            limiter.release(authenticated: false)
             return
         }
         #endif
 
-        stateLock.lock()
-        activeConnectionCount += 1
-        stateLock.unlock()
-
         let handler = HTTPConnection(
             connection: connection,
             root: rootURL,
-            token: token,
+            otpStore: otpStore,
             maxBodyBytes: maxBodyBytes,
-            wsEcho: wsEcho,
+            limiter: limiter,
             server: self,
             queue: queue
         )
         registerHandler(handler)
         handler.start()
     }
+
+    fileprivate func registerHandler(_ handler: HTTPConnection) {
+        handlersLock.lock()
+        httpHandlers.append(handler)
+        handlersLock.unlock()
+    }
+
+    fileprivate func unregisterHandler(_ handler: HTTPConnection) {
+        handlersLock.lock()
+        httpHandlers.removeAll { $0 === handler }
+        handlersLock.unlock()
+    }
 }
 
-// MARK: - 单个连接（HTTP 解析 + 响应）
+// MARK: - 单个 HTTP 连接
 
 private final class HTTPConnection {
 
@@ -247,7 +219,6 @@ private final class HTTPConnection {
         case headers
         case uploading
         case sending
-        case webSocket
         case done
     }
 
@@ -255,16 +226,15 @@ private final class HTTPConnection {
         static let maxHeaderBytes = 32 * 1024
         static let maxHeaderLines = 64
         static let chunkSize = 64 * 1024
-        static let receiveTimeout: TimeInterval = 30
-        static let wsMaxFrameBytes = 64 * 1024 * 1024
+        static let receiveTimeout: TimeInterval = 20
     }
 
     private let connection: NWConnection
     private let root: URL
-    private let token: String
+    private let otpStore: OtpStore
     private let maxBodyBytes: Int64
-    private let wsEcho: Bool
-    private weak var server: DataChannelServer?
+    private let limiter: ConnectionLimiter
+    private weak var server: DataChannelHttpServer?
     private let queue: DispatchQueue
 
     private var phase: Phase = .headers
@@ -279,27 +249,22 @@ private final class HTTPConnection {
     private var uploadPartURL: URL?
     private var uploadTargetURL: URL?
     private var finished = false
-
-    // WebSocket 状态
-    private var wsBuffer: [UInt8] = []
-    private var wsAssembled = Data()
-    private var wsAssembledOpcode: UInt8 = 0
-    private var webSocketOpen = false
+    private var authenticated = false
 
     init(
         connection: NWConnection,
         root: URL,
-        token: String,
+        otpStore: OtpStore,
         maxBodyBytes: Int64,
-        wsEcho: Bool,
-        server: DataChannelServer,
+        limiter: ConnectionLimiter,
+        server: DataChannelHttpServer,
         queue: DispatchQueue
     ) {
         self.connection = connection
         self.root = root
-        self.token = token
+        self.otpStore = otpStore
         self.maxBodyBytes = maxBodyBytes
-        self.wsEcho = wsEcho
+        self.limiter = limiter
         self.server = server
         self.queue = queue
     }
@@ -308,10 +273,9 @@ private final class HTTPConnection {
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                CAPLog.print("[DataChannel] connection ready")
                 self?.receiveMore()
             case .failed(let error):
-                CAPLog.print("[DataChannel] connection failed: \(error)")
+                CAPLog.print("[DataChannelHttp] connection failed: \(error)")
                 self?.finish()
             case .cancelled:
                 self?.finish()
@@ -322,13 +286,12 @@ private final class HTTPConnection {
         connection.start(queue: queue)
         queue.asyncAfter(deadline: .now() + Limits.receiveTimeout) { [weak self] in
             guard let self = self, !self.finished else { return }
-            self.sendAndClose(
-                status: 408,
-                reason: "Request Timeout",
-                json: ["error": "timeout"],
-                origin: nil
-            )
+            self.sendAndClose(status: 408, reason: "Request Timeout", json: ["error": "timeout"], origin: nil)
         }
+    }
+
+    func shutdown() {
+        finish()
     }
 
     // MARK: 接收
@@ -372,15 +335,13 @@ private final class HTTPConnection {
             let bodyPrefix = Data(headerData[headerEnd.upperBound...])
             headerData = Data()
             guard parseHeaders(headerPart) else {
-                CAPLog.print("[DataChannel] bad request headers")
                 sendAndClose(status: 400, reason: "Bad Request", json: ["error": "bad request"], origin: nil)
                 return
             }
-            CAPLog.print("[DataChannel] request \(method) \(path) origin=\(headers["origin"] ?? "-")")
             beginRequest(bodyPrefix: bodyPrefix)
         case .uploading:
             writeBody(data)
-        case .sending, .webSocket, .done:
+        case .sending, .done:
             break
         }
     }
@@ -427,31 +388,26 @@ private final class HTTPConnection {
             return
         }
         if let origin = origin, !Self.isAllowedOrigin(origin) {
-            // 静默断开：不返回任何响应，避免泄露服务存在
             finish()
             return
         }
-        // 健康检查（免 token，与 Android 侧行为一致）
         if method == "GET", path == "/health" {
             sendAndClose(status: 200, reason: "OK", json: ["ok": true, "name": "capacitor-data-channel"], origin: origin)
             return
         }
 
-        if !isAuthorized() {
-            // 鉴权失败统一 404（与未知路由不可区分），不泄露"需要认证的服务"
+        // OTP 鉴权（一次性/可复用由 OTP 自身属性决定）
+        let neededScope = (method == "PUT" || method == "POST") ? OtpStore.scopeWrite : OtpStore.scopeRead
+        let otp = extractOtp()
+        guard otpStore.consume(otp, scope: neededScope, path: query["path"] ?? "") else {
             sendAndClose(status: 404, reason: "Not Found", json: ["error": "not found"], origin: origin)
             return
         }
-
-        // WebSocket 升级（同端口 /ws）
-        if path == "/ws", (headers["upgrade"] ?? "").lowercased() == "websocket" {
-            guard let key = headers["sec-websocket-key"], !key.isEmpty else {
-                sendAndClose(status: 400, reason: "Bad Request", json: ["error": "missing Sec-WebSocket-Key"], origin: origin)
-                return
-            }
-            beginWebSocket(key: key, origin: origin)
+        guard limiter.promoteToActive() else {
+            sendAndClose(status: 404, reason: "Not Found", json: ["error": "not found"], origin: origin)
             return
         }
+        authenticated = true
 
         if (method == "PUT" || method == "POST"), path == "/upload", bodyLength > 0 {
             guard prepareUpload() else { return }
@@ -467,164 +423,11 @@ private final class HTTPConnection {
         handleRequest()
     }
 
-    // MARK: WebSocket
-
-    private func beginWebSocket(key: String, origin: String?) {
-        guard let accept = Self.wsAccept(key) else {
-            finish()
-            return
+    private func extractOtp() -> String? {
+        if let auth = headers["authorization"], auth.lowercased().hasPrefix("otp ") {
+            return String(auth.dropFirst(4)).trimmingCharacters(in: .whitespaces)
         }
-        var response = "HTTP/1.1 101 Switching Protocols\r\n"
-        response += "Upgrade: websocket\r\n"
-        response += "Connection: Upgrade\r\n"
-        response += "Sec-WebSocket-Accept: \(accept)\r\n"
-        if let origin = origin, Self.isAllowedOrigin(origin) {
-            response += "Access-Control-Allow-Origin: \(origin)\r\n"
-        }
-        response += "\r\n"
-
-        phase = .webSocket
-        webSocketOpen = true
-        server?.registerWebSocketSession(self)
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] error in
-            guard let self = self else { return }
-            if error != nil {
-                self.finish()
-                return
-            }
-            self.receiveWebSocket()
-        })
-    }
-
-    private func receiveWebSocket() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
-            if error != nil {
-                self.finish()
-                return
-            }
-            if let data = data, !data.isEmpty {
-                self.wsBuffer.append(contentsOf: data)
-                self.processWebSocketFrames()
-            }
-            if isComplete {
-                self.finish()
-                return
-            }
-            if self.webSocketOpen {
-                self.receiveWebSocket()
-            }
-        }
-    }
-
-    private func processWebSocketFrames() {
-        while webSocketOpen {
-            guard wsBuffer.count >= 2 else { return }
-            let first = wsBuffer[0]
-            let second = wsBuffer[1]
-            let fin = (first & 0x80) != 0
-            let opcode = first & 0x0F
-            let masked = (second & 0x80) != 0
-            var length = Int(second & 0x7F)
-            var offset = 2
-            if length == 126 {
-                guard wsBuffer.count >= offset + 2 else { return }
-                length = (Int(wsBuffer[offset]) << 8) | Int(wsBuffer[offset + 1])
-                offset += 2
-            } else if length == 127 {
-                guard wsBuffer.count >= offset + 8 else { return }
-                var value: UInt64 = 0
-                for index in 0..<8 {
-                    value = (value << 8) | UInt64(wsBuffer[offset + index])
-                }
-                if value > UInt64(Limits.wsMaxFrameBytes) {
-                    closeWebSocket(code: 1009)
-                    return
-                }
-                length = Int(value)
-                offset += 8
-            }
-            let maskLength = masked ? 4 : 0
-            guard wsBuffer.count >= offset + maskLength + length else { return }
-            var payload = Array(wsBuffer[(offset + maskLength)..<(offset + maskLength + length)])
-            if masked {
-                let mask = Array(wsBuffer[offset..<(offset + 4)])
-                for index in 0..<payload.count {
-                    payload[index] ^= mask[index % 4]
-                }
-            }
-            wsBuffer.removeFirst(offset + maskLength + length)
-
-            switch opcode {
-            case 0x9: // ping → pong
-                sendFrame(opcode: 0xA, payload: Data(payload))
-            case 0xA: // pong
-                break
-            case 0x8: // close
-                sendFrame(opcode: 0x8, payload: Data())
-                finish()
-                return
-            case 0x1, 0x2:
-                wsAssembledOpcode = opcode
-                wsAssembled.append(contentsOf: payload)
-            case 0x0:
-                wsAssembled.append(contentsOf: payload)
-            default:
-                break
-            }
-
-            if fin, (opcode == 0x0 || opcode == 0x1 || opcode == 0x2) {
-                let message = wsAssembled
-                wsAssembled = Data()
-                if wsEcho {
-                    sendFrame(opcode: wsAssembledOpcode == 0x1 ? 0x1 : 0x2, payload: message)
-                }
-                // 非 echo 模式：这里就是后续开发者接入业务逻辑的扩展点
-            }
-        }
-    }
-
-    /// 供 server.broadcast 调用的二进制帧发送。
-    func sendBinaryFrame(_ payload: Data) {
-        guard webSocketOpen else { return }
-        sendFrame(opcode: 0x2, payload: payload)
-    }
-
-    private func sendFrame(opcode: UInt8, payload: Data) {
-        guard webSocketOpen else { return }
-        var frame = Data()
-        frame.append(0x80 | (opcode & 0x0F))
-        let length = payload.count
-        if length <= 125 {
-            frame.append(UInt8(length))
-        } else if length <= 65535 {
-            frame.append(126)
-            frame.append(UInt8((length >> 8) & 0xFF))
-            frame.append(UInt8(length & 0xFF))
-        } else {
-            frame.append(127)
-            let value = UInt64(length)
-            for shift in stride(from: 56, through: 0, by: -8) {
-                frame.append(UInt8((value >> UInt64(shift)) & 0xFF))
-            }
-        }
-        frame.append(payload)
-        connection.send(content: frame, completion: .contentProcessed { _ in })
-    }
-
-    private func closeWebSocket(code: UInt16) {
-        var payload = Data()
-        payload.append(UInt8((code >> 8) & 0xFF))
-        payload.append(UInt8(code & 0xFF))
-        sendFrame(opcode: 0x8, payload: payload)
-        finish()
-    }
-
-    private static func wsAccept(_ key: String) -> String? {
-        let magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-        guard let data = (key + magic).data(using: .utf8) else { return nil }
-        let digest = Insecure.SHA1.hash(data: data)
-        return Data(digest).base64EncodedString()
+        return query["otp"]
     }
 
     private func prepareUpload() -> Bool {
@@ -813,29 +616,10 @@ private final class HTTPConnection {
 
     // MARK: 安全
 
-    private func isAuthorized() -> Bool {
-        var provided: String?
-        if let auth = headers["authorization"], auth.lowercased().hasPrefix("bearer ") {
-            provided = String(auth.dropFirst(7)).trimmingCharacters(in: .whitespaces)
-        }
-        if provided == nil || provided?.isEmpty == true {
-            provided = query["token"]
-        }
-        guard let value = provided, !value.isEmpty else { return false }
-        let providedBytes = Array(value.utf8)
-        let expectedBytes = Array(token.utf8)
-        guard providedBytes.count == expectedBytes.count else { return false }
-        var diff: UInt8 = 0
-        for index in 0..<expectedBytes.count {
-            diff |= providedBytes[index] ^ expectedBytes[index]
-        }
-        return diff == 0
-    }
-
     private func resolveSafePath(_ relPath: String?) throws -> URL {
         let raw = (relPath ?? "").trimmingCharacters(in: .whitespaces)
         if raw.isEmpty {
-            return root
+            throw PathError.invalid
         }
         if raw.contains("\0") {
             throw PathError.invalid
@@ -889,7 +673,6 @@ private final class HTTPConnection {
 
     private func sendAndClose(status: Int, reason: String, json: Any?, origin: String?) {
         guard !finished else { return }
-        CAPLog.print("[DataChannel] respond \(status) \(reason)")
         if let json = json {
             sendJSON(status: status, reason: reason, body: json, origin: origin)
             return
@@ -909,7 +692,7 @@ private final class HTTPConnection {
         lines += "Referrer-Policy: no-referrer\r\n"
         if let origin = origin, isAllowedOrigin(origin) {
             lines += "Access-Control-Allow-Origin: \(origin)\r\n"
-            lines += "Access-Control-Allow-Methods: GET, PUT, POST, DELETE, OPTIONS\r\n"
+            lines += "Access-Control-Allow-Methods: GET, PUT, POST, OPTIONS\r\n"
             lines += "Access-Control-Allow-Headers: Authorization, Content-Type, Range\r\n"
             lines += "Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges\r\n"
         }
@@ -920,26 +703,17 @@ private final class HTTPConnection {
         return Data(lines.utf8)
     }
 
-    /// 供 server 在 stop() 时强制结束连接。
-    func shutdown() {
-        finish()
-    }
-
     private func finish() {
         if finished {
             return
         }
         finished = true
         phase = .done
-        if webSocketOpen {
-            webSocketOpen = false
-            server?.unregisterWebSocketSession(self)
-        }
         try? uploadHandle?.close()
         uploadHandle = nil
         connection.cancel()
-        // 通知 server 移除对自身的强引用（否则会泄漏）
         server?.unregisterHandler(self)
+        limiter.release(authenticated: authenticated)
     }
 
     // MARK: 工具

@@ -137,26 +137,27 @@
     <section class="card">
       <h2>DataChannel</h2>
       <div class="actions">
-        <button @click="dataChannelStart">启动通道</button>
-        <button @click="dataChannelStop">停止通道</button>
-        <button @click="loadDataChannelInfo">读取通道信息</button>
+        <button @click="startHttpServer">启动 HTTP</button>
+        <button @click="stopHttpServer">停止 HTTP</button>
+        <button @click="startWsServer">启动 WS</button>
+        <button @click="stopWsServer">停止 WS</button>
       </div>
       <div class="actions">
         <button @click="dataChannelUpload">上传 10MB</button>
         <button @click="dataChannelUploadChunked">分块上传 100MB</button>
         <button @click="dataChannelDownload">下载测试文件</button>
+        <button @click="dataChannelWebSocket">WS 回显 1MB</button>
       </div>
       <div class="actions">
         <input ref="dcFileInput" class="kb-input" type="file" style="flex: 1" />
         <button @click="dataChannelUploadFile">上传所选文件</button>
-      </div>
-      <div class="actions">
-        <button @click="dataChannelWebSocket">WS 回显 1MB</button>
+        <button @click="loadDataChannelInfo">读取信息</button>
         <button @click="startWithCustomRoot">自定义目录启动</button>
+        <button @click="revokeAllDataOtps">撤销所有 OTP</button>
       </div>
       <p class="hint">
-        只负责高速传输（仅 127.0.0.1 + token 鉴权）：用 fetch / WebSocket 直接收发原始二进制，
-        不经过 base64 / JSON 序列化。存储权限与文件管理请用 native-files 插件。
+        HTTP / WS 独立启停；OTP 通过桥下发（抓包看不到），一次性 OTP 用完即废；
+        媒体 reusable OTP 用完必须 revoke。
       </p>
     </section>
 
@@ -397,9 +398,8 @@ export default {
           results.keyboardAvoidingError = String((err && err.message) || err);
         }
 
-        // DataChannel：本地 HTTP + WebSocket server 全链路
+        // DataChannel：HTTP / WebSocket 独立 + OTP 全链路 + 安全断言
         try {
-          const ch = await DataChannel.start();
           // 所有请求带超时，避免某个请求挂起导致整个自检卡死（CI 会因此看不到结果）
           const fetchT = async (url, options = {}, timeoutMs = 8000) => {
             const controller = new AbortController();
@@ -410,22 +410,31 @@ export default {
               clearTimeout(timer);
             }
           };
-          const health = await (await fetchT(`${ch.baseUrl}/health`)).json();
+          const http = await DataChannel.startHttp();
+          const health = await (await fetchT(`${http.baseUrl}/health`)).json();
 
-          // 1MB 上传（原始二进制，不经过 base64）
+          // 1MB 上传（写：一次性 OTP）
           const payload = new Uint8Array(1024 * 1024);
           for (let i = 0; i < payload.length; i += 4096) {
             payload[i] = i & 0xff;
           }
-          const uploadRes = await fetchT(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
+          const writeOtp = await DataChannel.createHttpOtp({ scope: 'write', path: 'selftest/test.bin' });
+          const uploadRes = await fetchT(`${http.baseUrl}/upload?path=selftest/test.bin`, {
             method: 'PUT',
-            headers: { Authorization: `Bearer ${ch.token}` },
+            headers: { Authorization: `OTP ${writeOtp.otp}` },
             body: payload,
           });
           const upload = await uploadRes.json();
+          // 重放同一个写 OTP → 404（一次性）
+          const replayWriteRes = await fetchT(`${http.baseUrl}/upload?path=selftest/test.bin`, {
+            method: 'PUT',
+            headers: { Authorization: `OTP ${writeOtp.otp}` },
+            body: new Uint8Array([1, 2, 3]),
+          });
 
-          // 下载并校验（/info 已移除，大小直接由响应长度校验）
-          const downloadRes = await fetchT(`${ch.baseUrl}/download?path=selftest/test.bin&token=${ch.token}`);
+          // 下载并校验（读：一次性 OTP）
+          const readOtp = await DataChannel.createHttpOtp({ scope: 'read', path: 'selftest/test.bin' });
+          const downloadRes = await fetchT(`${http.baseUrl}/download?path=selftest/test.bin&otp=${readOtp.otp}`);
           const downloaded = await downloadRes.arrayBuffer();
           const downloadedBytes = new Uint8Array(downloaded);
           const same =
@@ -433,24 +442,58 @@ export default {
             downloadedBytes[0] === payload[0] &&
             downloadedBytes[4096] === payload[4096] &&
             downloadedBytes[downloadedBytes.length - 1] === payload[payload.length - 1];
+          // 重放同一个读 OTP → 404
+          const replayReadRes = await fetchT(`${http.baseUrl}/download?path=selftest/test.bin&otp=${readOtp.otp}`);
 
-          // 安全：无 token 应返回 404（伪装成未知路由，不泄露需要认证）
-          const noTokenRes = await fetchT(`${ch.baseUrl}/download?path=selftest/test.bin`);
-          // 安全：路径穿越应 400
-          const traversalRes = await fetchT(`${ch.baseUrl}/download?path=../escape.txt&token=${ch.token}`);
-          // 安全：未知路由应 404
-          const unknownRes = await fetchT(`${ch.baseUrl}/nope?token=${ch.token}`);
-          // 安全：已移除的路由（/info、/list、/file）应 404
-          const removedInfoRes = await fetchT(`${ch.baseUrl}/info?path=selftest/test.bin&token=${ch.token}`);
-          const removedListRes = await fetchT(`${ch.baseUrl}/list?path=selftest&token=${ch.token}`);
-          const removedFileRes = await fetchT(`${ch.baseUrl}/file?path=selftest&token=${ch.token}`, { method: 'DELETE' });
-          // CORS 预检应 204
-          const preflightRes = await fetchT(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
+          // OTP 绑定路径：绑 A 请求 B → 404
+          const pathOtp = await DataChannel.createHttpOtp({ scope: 'read', path: 'selftest/other.bin' });
+          const wrongPathRes = await fetchT(`${http.baseUrl}/download?path=selftest/test.bin&otp=${pathOtp.otp}`);
+
+          // scope：read OTP 不能写 → 404
+          const readForWriteOtp = await DataChannel.createHttpOtp({ scope: 'read', path: 'selftest/test.bin' });
+          const writeWithReadRes = await fetchT(`${http.baseUrl}/upload?path=selftest/test.bin`, {
+            method: 'PUT',
+            headers: { Authorization: `OTP ${readForWriteOtp.otp}` },
+            body: new Uint8Array([9]),
+          });
+
+          // 写 + reusable → 必须被拒绝
+          let reusableWriteRejected = false;
+          try {
+            await DataChannel.createHttpOtp({ scope: 'write', path: 'selftest/test.bin', reusable: true });
+          } catch (err) {
+            reusableWriteRejected = true;
+          }
+
+          // 创建"路径穿越"OTP → 必须被拒绝
+          let traversalRejected = false;
+          try {
+            await DataChannel.createHttpOtp({ scope: 'read', path: '../escape.txt' });
+          } catch (err) {
+            traversalRejected = true;
+          }
+
+          // 媒体 reusable OTP：两次读都成功，revoke 后失败
+          const mediaOtp = await DataChannel.createHttpOtp({ scope: 'read', path: 'selftest/test.bin', reusable: true });
+          const mediaFirst = await fetchT(`${http.baseUrl}/download?path=selftest/test.bin&otp=${mediaOtp.otp}`);
+          const mediaSecond = await fetchT(`${http.baseUrl}/download?path=selftest/test.bin&otp=${mediaOtp.otp}`);
+          await DataChannel.revokeOtp({ otp: mediaOtp.otp });
+          const mediaAfterRevoke = await fetchT(`${http.baseUrl}/download?path=selftest/test.bin&otp=${mediaOtp.otp}`);
+
+          // 安全：无 OTP / 未知路由 / 已移除路由 / 预检
+          const noOtpRes = await fetchT(`${http.baseUrl}/download?path=selftest/test.bin`);
+          const unknownRes = await fetchT(`${http.baseUrl}/nope?otp=nope`);
+          const removedInfoRes = await fetchT(`${http.baseUrl}/info?path=selftest/test.bin&otp=nope`);
+          const removedListRes = await fetchT(`${http.baseUrl}/list?path=selftest&otp=nope`);
+          const removedFileRes = await fetchT(`${http.baseUrl}/file?path=selftest&otp=nope`);
+          const preflightRes = await fetchT(`${http.baseUrl}/upload?path=selftest/test.bin`, {
             method: 'OPTIONS',
             headers: { 'Access-Control-Request-Method': 'PUT' },
           });
 
-          // WebSocket 回显（256KB 二进制往返）
+          // WebSocket：一次性 OTP 走子协议（不进 URL）
+          const wsInfo = await DataChannel.startWebSocket();
+          const wsOtp = await DataChannel.createWsOtp();
           const wsStartedAt = performance.now();
           const wsResult = await new Promise((resolve) => {
             let settled = false;
@@ -465,7 +508,7 @@ export default {
             wsPayload[wsPayload.length - 1] = 0x22;
             let ws;
             try {
-              ws = new WebSocket(ch.wsUrl);
+              ws = new WebSocket(wsInfo.wsUrl, [`otp.${wsOtp.otp}`]);
             } catch (err) {
               done({ error: 'construct: ' + ((err && err.message) || err) });
               return;
@@ -509,32 +552,84 @@ export default {
             };
           });
 
-          const stopInfo = await DataChannel.stop();
+          // 重放同一个 WS OTP → 连接必须被拒绝
+          const wsReplay = await new Promise((resolve) => {
+            try {
+              const socket = new WebSocket(wsInfo.wsUrl, [`otp.${wsOtp.otp}`]);
+              const timer = setTimeout(() => {
+                try {
+                  socket.close();
+                } catch (ignored) {
+                  // 忽略
+                }
+                resolve({ rejected: false, timeout: true });
+              }, 5000);
+              socket.onopen = () => {
+                clearTimeout(timer);
+                try {
+                  socket.close();
+                } catch (ignored) {
+                  // 忽略
+                }
+                resolve({ rejected: false });
+              };
+              socket.onerror = () => {
+                clearTimeout(timer);
+                resolve({ rejected: true });
+              };
+            } catch (err) {
+              resolve({ rejected: true });
+            }
+          });
+
+          const revoked = await DataChannel.revokeAllOtps();
+          const stopHttp = await DataChannel.stopHttp();
+          const stopWs = await DataChannel.stopWebSocket();
 
           results.dataChannel = {
-            running: ch.running,
-            port: ch.port,
+            httpRunning: http.running,
+            httpPort: http.port,
+            wsRunning: wsInfo.running,
+            wsPort: wsInfo.port,
             healthOk: health.ok === true,
             uploadBytes: upload.bytes,
             downloadedBytes: downloadedBytes.byteLength,
             same,
-            noTokenStatus: noTokenRes.status,
-            traversalStatus: traversalRes.status,
+            replayWriteStatus: replayWriteRes.status,
+            replayReadStatus: replayReadRes.status,
+            wrongPathStatus: wrongPathRes.status,
+            writeWithReadStatus: writeWithReadRes.status,
+            reusableWriteRejected,
+            traversalRejected,
+            mediaFirstStatus: mediaFirst.status,
+            mediaSecondStatus: mediaSecond.status,
+            mediaAfterRevokeStatus: mediaAfterRevoke.status,
+            noOtpStatus: noOtpRes.status,
             unknownStatus: unknownRes.status,
             removedInfoStatus: removedInfoRes.status,
             removedListStatus: removedListRes.status,
             removedFileStatus: removedFileRes.status,
             preflightStatus: preflightRes.status,
-            wsUrl: ch.wsUrl,
-            webSocket: wsResult,
-            stopped: stopInfo.running === false,
+            wsReplayRejected: wsReplay.rejected,
+            revokedCount: revoked.revoked,
+            httpStopped: stopHttp.running === false,
+            wsStopped: stopWs.running === false,
           };
-          const dcOk = !!ch && ch.running === true && ch.port > 0
+          const dcOk = http.running === true && http.port > 0
+            && wsInfo.running === true && wsInfo.port > 0
             && health.ok === true
             && upload.bytes === payload.byteLength
             && same
-            && noTokenRes.status === 404
-            && traversalRes.status === 400
+            && replayWriteRes.status === 404
+            && replayReadRes.status === 404
+            && wrongPathRes.status === 404
+            && writeWithReadRes.status === 404
+            && reusableWriteRejected === true
+            && traversalRejected === true
+            && mediaFirst.status === 200
+            && mediaSecond.status === 200
+            && mediaAfterRevoke.status === 404
+            && noOtpRes.status === 404
             && unknownRes.status === 404
             && removedInfoRes.status === 404
             && removedListRes.status === 404
@@ -543,7 +638,9 @@ export default {
             && wsResult.sameLength === true
             && wsResult.sameHead === true
             && wsResult.sameTail === true
-            && stopInfo.running === false;
+            && wsReplay.rejected === true
+            && stopHttp.running === false
+            && stopWs.running === false;
           if (!dcOk) {
             results.ok = false;
             results.reason = `data-channel check failed: ${JSON.stringify(results.dataChannel)}`;
@@ -552,7 +649,12 @@ export default {
           results.ok = false;
           results.dataChannelError = String((err && err.message) || err);
           try {
-            await DataChannel.stop();
+            await DataChannel.stopHttp();
+          } catch (ignored) {
+            // 尽力停止
+          }
+          try {
+            await DataChannel.stopWebSocket();
           } catch (ignored) {
             // 尽力停止
           }
@@ -978,22 +1080,59 @@ export default {
       }
     },
 
-    async dataChannelStart() {
+    async ensureHttp() {
+      const info = await DataChannel.getInfo();
+      if (info.http && info.http.running) {
+        return info.http;
+      }
+      return await DataChannel.startHttp();
+    },
+
+    async ensureWs() {
+      const info = await DataChannel.getInfo();
+      if (info.webSocket && info.webSocket.running) {
+        return info.webSocket;
+      }
+      return await DataChannel.startWebSocket();
+    },
+
+    async startHttpServer() {
       try {
-        this.dataChannelInfo = await DataChannel.start();
-        this.print('DataChannel.start 成功', this.dataChannelInfo);
+        const info = await DataChannel.startHttp();
+        this.dataChannelInfo = await DataChannel.getInfo();
+        this.print('DataChannel.startHttp 成功', info);
       } catch (err) {
-        this.error('DataChannel.start', err);
+        this.error('DataChannel.startHttp', err);
       }
     },
 
-    async dataChannelStop() {
+    async stopHttpServer() {
       try {
-        const info = await DataChannel.stop();
-        this.dataChannelInfo = null;
-        this.print('DataChannel.stop 成功', info);
+        const info = await DataChannel.stopHttp();
+        this.dataChannelInfo = await DataChannel.getInfo();
+        this.print('DataChannel.stopHttp 成功', info);
       } catch (err) {
-        this.error('DataChannel.stop', err);
+        this.error('DataChannel.stopHttp', err);
+      }
+    },
+
+    async startWsServer() {
+      try {
+        const info = await DataChannel.startWebSocket();
+        this.dataChannelInfo = await DataChannel.getInfo();
+        this.print('DataChannel.startWebSocket 成功', info);
+      } catch (err) {
+        this.error('DataChannel.startWebSocket', err);
+      }
+    },
+
+    async stopWsServer() {
+      try {
+        const info = await DataChannel.stopWebSocket();
+        this.dataChannelInfo = await DataChannel.getInfo();
+        this.print('DataChannel.stopWebSocket 成功', info);
+      } catch (err) {
+        this.error('DataChannel.stopWebSocket', err);
       }
     },
 
@@ -1006,21 +1145,20 @@ export default {
       }
     },
 
-    async ensureDataChannel() {
-      if (this.dataChannelInfo && this.dataChannelInfo.running) {
-        return this.dataChannelInfo;
+    async revokeAllDataOtps() {
+      try {
+        const result = await DataChannel.revokeAllOtps();
+        this.print('DataChannel.revokeAllOtps 成功', result);
+      } catch (err) {
+        this.error('DataChannel.revokeAllOtps', err);
       }
-      this.dataChannelInfo = await DataChannel.getInfo();
-      if (!this.dataChannelInfo.running) {
-        this.dataChannelInfo = await DataChannel.start();
-      }
-      return this.dataChannelInfo;
     },
 
     async dataChannelUpload() {
       try {
-        const ch = await this.ensureDataChannel();
+        const http = await this.ensureHttp();
         const sizeMB = 10;
+        const path = `test/upload-${sizeMB}mb.bin`;
         const bytes = new Uint8Array(sizeMB * 1024 * 1024);
         // 填充部分随机内容（避免全零被压缩/优化，同时保持生成速度）
         const filler = new Uint8Array(65536);
@@ -1028,11 +1166,13 @@ export default {
         for (let offset = 0; offset < bytes.length; offset += filler.length) {
           bytes.set(filler.subarray(0, Math.min(filler.length, bytes.length - offset)), offset);
         }
+        // 写操作：通过桥拿一次性 OTP（抓包拿不到生成过程）
+        const otp = await DataChannel.createHttpOtp({ scope: 'write', path });
         const startedAt = performance.now();
-        const res = await fetch(`${ch.baseUrl}/upload?path=test/upload-${sizeMB}mb.bin`, {
+        const res = await fetch(`${http.baseUrl}/upload?path=${path}`, {
           method: 'PUT',
           headers: {
-            Authorization: `Bearer ${ch.token}`,
+            Authorization: `OTP ${otp.otp}`,
             'Content-Type': 'application/octet-stream',
           },
           body: bytes,
@@ -1053,12 +1193,13 @@ export default {
 
     async dataChannelUploadChunked() {
       try {
-        const ch = await this.ensureDataChannel();
+        const http = await this.ensureHttp();
         const totalMB = 100;
         const chunkMB = 8;
         const chunkSize = chunkMB * 1024 * 1024;
         const totalBytes = totalMB * 1024 * 1024;
         const chunkCount = Math.ceil(totalBytes / chunkSize);
+        const path = 'test/100mb-chunked.bin';
         // 复用同一个缓冲区：JS 侧内存恒定（这是分块上传的核心优势）
         if (!this.dcChunkBuffer || this.dcChunkBuffer.byteLength !== chunkSize) {
           this.dcChunkBuffer = new Uint8Array(chunkSize);
@@ -1068,12 +1209,14 @@ export default {
         let uploaded = 0;
         for (let i = 0; i < chunkCount; i++) {
           const size = Math.min(chunkSize, totalBytes - uploaded);
+          // 写操作：每块都需要新的 OTP（一次性）
+          const otp = await DataChannel.createHttpOtp({ scope: 'write', path });
           const res = await fetch(
-            `${ch.baseUrl}/upload?path=test/100mb-chunked.bin${i === 0 ? '' : '&append=1'}`,
+            `${http.baseUrl}/upload?path=${path}${i === 0 ? '' : '&append=1'}`,
             {
               method: 'PUT',
               headers: {
-                Authorization: `Bearer ${ch.token}`,
+                Authorization: `OTP ${otp.otp}`,
                 'Content-Type': 'application/octet-stream',
               },
               body: this.dcChunkBuffer.subarray(0, size),
@@ -1104,11 +1247,13 @@ export default {
         if (!file) {
           throw new Error('请先选择一个文件');
         }
-        const ch = await this.ensureDataChannel();
+        const http = await this.ensureHttp();
+        const path = `test/${encodeURIComponent(file.name)}`;
+        const otp = await DataChannel.createHttpOtp({ scope: 'write', path });
         const startedAt = performance.now();
-        const res = await fetch(`${ch.baseUrl}/upload?path=test/${encodeURIComponent(file.name)}`, {
+        const res = await fetch(`${http.baseUrl}/upload?path=${path}`, {
           method: 'PUT',
-          headers: { Authorization: `Bearer ${ch.token}` },
+          headers: { Authorization: `OTP ${otp.otp}` },
           body: file,
         });
         const json = await res.json();
@@ -1127,7 +1272,7 @@ export default {
 
     async dataChannelWebSocket() {
       try {
-        const ch = await this.ensureDataChannel();
+        const wsInfo = await this.ensureWs();
         const size = 1024 * 1024;
         const payload = new Uint8Array(size);
         // 注意：crypto.getRandomValues 单次上限 65536 字节，不能一次填充 1MB
@@ -1136,9 +1281,11 @@ export default {
         for (let offset = 0; offset < size; offset += filler.length) {
           payload.set(filler.subarray(0, Math.min(filler.length, size - offset)), offset);
         }
+        // 一次性 WS OTP，通过子协议传递（不进 URL）
+        const otp = await DataChannel.createWsOtp();
         const startedAt = performance.now();
         const result = await new Promise((resolve, reject) => {
-          const ws = new WebSocket(ch.wsUrl);
+          const ws = new WebSocket(wsInfo.wsUrl, [`otp.${otp.otp}`]);
           ws.binaryType = 'arraybuffer';
           const timer = setTimeout(() => {
             try {
@@ -1181,13 +1328,13 @@ export default {
 
     async startWithCustomRoot() {
       try {
-        await DataChannel.stop();
+        await DataChannel.stopHttp();
         const target =
           Capacitor.getPlatform() === 'ios'
             ? 'customData'
             : '/sdcard/Android/data/com.myapp.testionic/files/customData';
-        const info = await DataChannel.start({ rootDir: target });
-        this.dataChannelInfo = info;
+        const info = await DataChannel.startHttp({ rootDir: target });
+        this.dataChannelInfo = await DataChannel.getInfo();
         this.print('DataChannel 自定义目录启动成功', info);
       } catch (err) {
         this.error('DataChannel 自定义目录启动', err);
@@ -1196,9 +1343,12 @@ export default {
 
     async dataChannelDownload() {
       try {
-        const ch = await this.ensureDataChannel();
+        const http = await this.ensureHttp();
+        const path = 'test/upload-10mb.bin';
+        // 读操作：一次性 OTP（媒体场景可用 reusable + 播放完 revoke）
+        const otp = await DataChannel.createHttpOtp({ scope: 'read', path });
         const startedAt = performance.now();
-        const res = await fetch(`${ch.baseUrl}/download?path=test/upload-10mb.bin&token=${ch.token}`);
+        const res = await fetch(`${http.baseUrl}/download?path=${path}&otp=${otp.otp}`);
         if (!res.ok) {
           throw new Error(`download failed: HTTP ${res.status} ${await res.text()}`);
         }

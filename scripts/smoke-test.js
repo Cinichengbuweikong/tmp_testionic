@@ -88,13 +88,16 @@
   out.appStateListenStart = await click('监听状态变化');
   out.appStateListenStop = await click('停止状态监听');
 
-  // DataChannel：启动 → 上传 10MB → 下载 → WS 回显 → 停止
-  out.dataChannelStart = await click('启动通道');
-  out.dataChannelInfo = await click('读取通道信息');
+  // DataChannel：HTTP/WS 独立启停 + OTP
+  out.dataChannelStart = await click('启动 HTTP');
+  out.dataChannelWsStart = await click('启动 WS');
+  out.dataChannelInfo = await click('读取信息');
   out.dataChannelUpload = await clickAndWait('上传 10MB', '上传完成', 20000);
   out.dataChannelDownload = await clickAndWait('下载测试文件', '下载完成', 20000);
   out.dataChannelWs = await clickAndWait('WS 回显 1MB', '回显完成', 20000);
-  out.dataChannelStop = await click('停止通道');
+  out.dataChannelRevoke = await click('撤销所有 OTP');
+  out.dataChannelStop = await click('停止 HTTP');
+  out.dataChannelWsStop = await click('停止 WS');
 
   // 暗色模式：强制暗色 → 检查 data-theme → 读取状态 → 恢复跟随系统
   await click('强制暗色');
@@ -122,7 +125,7 @@
   out.fullscreenListenStop = await click('取消全屏监听');
 
   const failures = [];
-  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'nativeFiles', 'appState', 'appStateListenStart', 'appStateListenStop', 'dataChannelStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelWs', 'dataChannelStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
+  for (const key of ['deviceInfo', 'echo', 'toast', 'statusBarSet', 'statusBarInfo', 'systemInfo', 'rotationInfo', 'rotationListenStart', 'rotationListenStop', 'rotationLockLandscape', 'rotationLockState', 'rotationUnlock', 'rotationLockStateAfterUnlock', 'keyboardState', 'keyboardAvoidOn', 'keyboardStateOn', 'keyboardAvoidOff', 'keyboardListenStart', 'keyboardListenStop', 'nativeFiles', 'appState', 'appStateListenStart', 'appStateListenStop', 'dataChannelStart', 'dataChannelWsStart', 'dataChannelInfo', 'dataChannelUpload', 'dataChannelDownload', 'dataChannelWs', 'dataChannelRevoke', 'dataChannelStop', 'dataChannelWsStop', 'fullscreenOn', 'fullscreenStateOn', 'fullscreenOff', 'fullscreenStateOff', 'fullscreenListenStart', 'fullscreenListenStop']) {
     if (typeof out[key] === 'string' && (out[key].includes('失败') || out[key].includes('Error'))) {
       failures.push(key);
     }
@@ -162,8 +165,14 @@
   if (!out.rotationLockStateAfterUnlock.includes('"orientation": "auto"')) {
     failures.push('rotationUnlock');
   }
-  if (!out.dataChannelStart.includes('"running": true') || !out.dataChannelStart.includes('"port":')) {
+  if (!out.dataChannelStart.includes('"running": true') || !out.dataChannelStart.includes('"baseUrl"')) {
     failures.push('dataChannelStart');
+  }
+  if (!out.dataChannelWsStart.includes('"wsUrl"')) {
+    failures.push('dataChannelWsStart');
+  }
+  if (!out.dataChannelInfo.includes('"http"') || !out.dataChannelInfo.includes('"webSocket"')) {
+    failures.push('dataChannelInfo');
   }
   if (!out.nativeFiles.includes('"exists": false')) {
     failures.push('nativeFiles');
@@ -186,8 +195,14 @@
   if (!out.dataChannelWs.includes('"sameLength": true') || !out.dataChannelWs.includes('"sameTail": true')) {
     failures.push('dataChannelWebSocket');
   }
+  if (!out.dataChannelRevoke.includes('"revoked"')) {
+    failures.push('dataChannelRevoke');
+  }
   if (!out.dataChannelStop.includes('"running": false')) {
     failures.push('dataChannelStop');
+  }
+  if (!out.dataChannelWsStop.includes('"running": false')) {
+    failures.push('dataChannelWsStop');
   }
   if (!out.keyboardState.includes('"visible": false') || !out.keyboardState.includes('"autoAvoid": false')) {
     failures.push('keyboardState');

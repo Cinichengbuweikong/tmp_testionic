@@ -283,9 +283,28 @@ D:\projs\testionic
 - **2026-11-07 职责收敛**（用户要求："各自只负责各自的部分"）：
   - **删除了 `checkAllFilesAccess` / `requestAllFilesAccess`**（权限 API 归 `capacitor-native-files`）；
   - **删除了 `/info`、`/list`、`DELETE /file` 路由**（文件管理归 native-files）；
-  - `DataChannelServer` 只剩 upload/download/health/ws；`DataChannelPlugin` 只剩 start/stop/getInfo；
-  - 测试页删掉「检查/申请存储权限」「列出文件」按钮；autotest 改为断言这三个路由**已 404**；
-  - `start()` 失败时的错误信息改为提示"用 capacitor-native-files 授权"。
+  - 测试页删掉「检查/申请存储权限」「列出文件」按钮；autotest 断言这三个路由**已 404**；
+  - `startHttp()` 失败时的错误信息改为提示"用 capacitor-native-files 授权"。
+- **2026-11-07 OTP 鉴权改造 + 双 server 分离**（用户主导设计，核心安全升级）：
+  - **两个独立 server**：`startHttp/stopHttp`（HTTP）与 `startWebSocket/stopWebSocket`（WS），
+    各自随机端口、各自 OTP 表、各自连接限流；`getInfo()` → `{ http, webSocket }`（都是 null 或对象）；
+  - **OTP 替代长期 token**：OTP 通过 **Capacitor 桥**下发（`createHttpOtp` / `createWsOtp`），
+    桥是进程内 `postMessage`，**抓包看不到生成过程**；抓包只能看到已作废的 OTP；
+  - **OTP 规则**：一次性（默认）/ reusable（**仅 scope=read**，媒体用）；**写不允许 reusable**；
+    **无 TTL**（= server 生命周期）；HTTP OTP 的 `path` **必填且精确匹配**；WS OTP 只一次性；
+    校验失败统一 404；OTP 上限 256；
+  - **必须 revoke**（README 有加粗警告）：reusable OTP 用完不 revoke → server 运行期间永久有效；
+    提供 `revokeOtp` / `revokeAllOtps({server})`；测试页/autotest 覆盖 revoke 前后行为；
+  - **传递方式**：HTTP `Authorization: OTP <otp>`（普通）或 `?otp=`（媒体 URL）；
+    WS `Sec-WebSocket-Protocol: otp.<otp>`（不进 URL）；
+  - **两级连接限流**：未认证 4（防扫描/DoS）/ 已认证 16（`maxConnections` 可调），HTTP/WS 分开计数；
+  - **威胁模型**（README 有表）：防普通网页/非 root App/重放；**不防 root 设备与 WebView 被注入**；
+  - **实测（真机）**：重放写/读 OTP → 404；OTP 绑 A 请求 B → 404；read OTP 写 → 404；
+    写+reusable → reject；穿越 path → reject；媒体 reusable 两次 200 → revoke 后 404；
+    WS 重放 → 连接被拒；6 个沉默连接 → pending 停在 4；getInfo 停止后 `{http:null,webSocket:null}`；
+  - 坑：Java `handleRequest` 的 catch 分支漏 `return`（编译报"缺少返回语句"）；
+    `JSObject.put(key, null)` 会跳过 → 用 `org.json.JSONObject.NULL`；Swift 字典赋 nil 会**移除键** →
+    用 `NSNull()`；DELETE 请求的 CORS 预检 `Allow-Methods` 不含 DELETE（路由已删，测试改用 GET）。
 - **2026-11-07 平台限制实测修正（重要，之前文档是错的）**：
   - 真机 Android 10（API 29）+ targetSdk 36 + `requestLegacyExternalStorage="true"`：
     `privateFlags` 含 `PRIVATE_FLAG_REQUEST_LEGACY_EXTERNAL_STORAGE` → **legacy 生效**；
@@ -301,8 +320,8 @@ D:\projs\testionic
     manifest `android:networkSecurityConfig`（另需 `requestLegacyExternalStorage="true"` 才能用公共目录）；
   - iOS：Info.plist `NSAppTransportSecurity → NSAllowsLocalNetworking = true`。
 - 安全设计：只绑回环（iOS 用 `requiredInterfaceType = .loopback` + 连接来源校验）、随机端口、
-  常量时间 token 比较、Origin 白名单（非法 Origin **静默断连**）、鉴权失败统一 **404**（不泄露
-  "需要认证的服务"）、路径 canonical/软链校验、请求大小/头/超时限制、上传 `.part` 原子写、日志不记 token。
+  Origin 白名单（非法 Origin **静默断连**）、OTP 校验失败统一 **404**、两级连接限流、
+  路径 canonical/软链校验、请求大小/头/超时限制、上传 `.part` 原子写、日志不记 OTP。
 - **内存实测（真机，App 进程 RSS 峰值增量）**——README 已收录为示例：
   | 方式 | 105~110MB 文件 | 速度 | RSS 增量 |
   |---|---|---|---|

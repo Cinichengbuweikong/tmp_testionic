@@ -3,149 +3,237 @@ import type { PluginListenerHandle } from '@capacitor/core';
 /**
  * DataChannel 插件（capacitor-data-channel）。
  *
- * ======================= 这个插件解决什么 =======================
+ * ======================= 能力 =======================
  *
- * Capacitor 的 JS↔Native 桥是 **JSON 序列化**（复杂类型必须 base64），传 10MB 视频要经历
- * "base64 膨胀 33% + JSON 编解码"，代价极高。本插件改用 **本地 HTTP + WebSocket Server**
- * （只绑 127.0.0.1、随机端口、Bearer token 鉴权），让 WebView 用标准 `fetch` /
- * `<video src>` / `new WebSocket` 直接收发**原始二进制**，绕开桥，从而高效传输大体积数据。
+ * 两个**完全独立**的本地 server，可分别启停（节省资源、减少攻击面）：
+ * - **HTTP**（`startHttp/stopHttp`）：大文件上传/下载（流式、Range）；
+ * - **WebSocket**（`startWebSocket/stopWebSocket`）：实时双向二进制帧。
  *
- * - HTTP：大文件上传/下载（流式、Range、断点续传）
- * - WebSocket：实时双向二进制帧（音视频流、连续 buffer、消息通道）
+ * ======================= 鉴权：OTP（不是长期 token）=======================
+ *
+ * 长期 token 一旦被抓包拿到就等于全权限。本插件改用 **OTP**：
+ * - OTP 通过 **Capacitor 桥**下发（`createHttpOtp` / `createWsOtp`）——
+ *   桥是进程内通信（postMessage），**抓包软件看不到生成过程**；
+ * - 抓包者只能看到"已经用掉"的 OTP → 无法重放；
+ * - **一次性**（默认）：用一次作废，无时间限制；
+ * - **可复用（reusable）**：仅允许 `scope: 'read'`（媒体持续读取用）。
+ *   ⚠️ **必须在使用完后调用 `revokeOtp`**，否则在 server 运行期间永久有效（严重安全问题）；
+ * - 写操作**不允许 reusable**（每次写必须新 OTP）；
+ * - 无 TTL：等价于"server 生命周期内有效"，server 停止即全部失效。
+ *
+ * ======================= 连接限流 =======================
+ *
+ * 两级：未认证连接 4（防扫描/DoS）/ 已认证连接 `maxConnections`（默认 16，保证视频多 Range 并发）。
+ * 身份识别靠 OTP（连接来源无法识别），限流只用于防滥用。
  *
  * ======================= 典型用法 =======================
  *
  * ```ts
- * const ch = await DataChannel.start({ rootDir: '/sdcard/Download/myData' });
+ * const http = await DataChannel.startHttp();
  *
- * // 上传（原始二进制，不经过 base64）
- * await fetch(`${ch.baseUrl}/upload?path=clip.mp4`, {
+ * // 上传：先通过桥拿一次性 OTP（写）
+ * const w = await DataChannel.createHttpOtp({ scope: 'write', path: 'videos/clip.mp4' });
+ * await fetch(`${http.baseUrl}/upload?path=videos/clip.mp4`, {
  *   method: 'PUT',
- *   headers: { Authorization: `Bearer ${ch.token}` },
- *   body: fileBlob,
+ *   headers: { Authorization: `OTP ${w.otp}` },
+ *   body: file,
  * });
  *
- * // 下载（流式；<video>/<img> 可带 query token 直接引用）
- * const res = await fetch(`${ch.baseUrl}/download?path=clip.mp4&token=${ch.token}`);
+ * // 播放：媒体用 reusable + read OTP（放 URL）
+ * const r = await DataChannel.createHttpOtp({ scope: 'read', path: 'videos/clip.mp4', reusable: true });
+ * video.src = `${http.baseUrl}/download?path=videos/clip.mp4&otp=${r.otp}`;
+ * // ⚠️ 播放结束后必须 revoke
+ * video.onended = () => DataChannel.revokeOtp({ otp: r.otp });
  *
- * // WebSocket 实时双向二进制（默认 echo：收到什么回什么）
- * const ws = new WebSocket(ch.wsUrl);
- * ws.binaryType = 'arraybuffer';
- * ws.onmessage = (e) => console.log('got', e.data.byteLength, 'bytes');
- * ws.send(new Uint8Array([1, 2, 3]));
+ * // WebSocket：一次性 OTP 走子协议（不进 URL）
+ * const wsInfo = await DataChannel.startWebSocket();
+ * const wsOtp = await DataChannel.createWsOtp();
+ * const ws = new WebSocket(`${wsInfo.wsUrl}`, [`otp.${wsOtp.otp}`]);
  * ```
  */
 export interface DataChannelPlugin {
   /**
-   * 启动本地 HTTP + WebSocket Server（若已启动则返回现有信息）。
+   * 启动本地 HTTP Server（若已启动则直接返回现有信息）。
    *
-   * @since 0.1.0
+   * @since 0.3.0
    */
-  start(options?: StartChannelOptions): Promise<ChannelInfo>;
+  startHttp(options?: StartHttpOptions): Promise<HttpInfo>;
 
   /**
-   * 停止 server（会中断进行中的 HTTP 连接与 WebSocket 连接）。
+   * 停止 HTTP Server（会中断进行中的连接；并撤销该 server 的所有 OTP）。
    *
-   * @since 0.1.0
+   * @since 0.3.0
    */
-  stop(): Promise<ChannelInfo>;
+  stopHttp(): Promise<HttpInfo>;
 
   /**
-   * 读取当前通道信息（不改变状态）。
+   * 启动本地 WebSocket Server（若已启动则直接返回现有信息）。
    *
-   * @since 0.1.0
+   * @since 0.3.0
+   */
+  startWebSocket(options?: StartWsOptions): Promise<WsInfo>;
+
+  /**
+   * 停止 WebSocket Server（会断开所有客户端；并撤销该 server 的所有 OTP）。
+   *
+   * @since 0.3.0
+   */
+  stopWebSocket(): Promise<WsInfo>;
+
+  /**
+   * 读取两个 server 的当前状态。
+   *
+   * @since 0.3.0
    */
   getInfo(): Promise<ChannelInfo>;
 
   /**
-   * 监听通道状态变化（start/stop）。
+   * 创建 HTTP OTP（通过桥下发，抓包看不到）。
    *
-   * @since 0.1.0
+   * - `scope` 默认 `'read'`；
+   * - `path` **必填**（OTP 绑定到具体文件/文件夹，只能访问该路径）；
+   * - `reusable: true` **仅允许** `scope: 'read'`；写操作必须每次新 OTP；
+   * - 无 TTL（server 停止即失效）。
+   *
+   * ⚠️ `reusable: true` 的 OTP **必须在使用完后 `revokeOtp`**，否则在 server 运行期间永久有效。
+   *
+   * @since 0.3.0
+   */
+  createHttpOtp(options: CreateHttpOtpOptions): Promise<HttpOtpInfo>;
+
+  /**
+   * 创建 WebSocket OTP（一次性；WS 双向含写入，所以不允许 reusable）。
+   *
+   * 用法：`new WebSocket(wsUrl, ['otp.' + otp])`。
+   *
+   * @since 0.3.0
+   */
+  createWsOtp(): Promise<WsOtpInfo>;
+
+  /**
+   * 撤销单个 OTP（媒体播放结束/页面卸载时调用）。
+   *
+   * @since 0.3.0
+   */
+  revokeOtp(options: { otp: string }): Promise<{ revoked: boolean }>;
+
+  /**
+   * 批量撤销 OTP（不传 server 则两者都撤销）。
+   *
+   * 建议在切后台、页面卸载、退出播放时调用，避免 reusable OTP 长期有效。
+   *
+   * @since 0.3.0
+   */
+  revokeAllOtps(options?: { server?: 'http' | 'ws' }): Promise<{ revoked: number }>;
+
+  /**
+   * 监听通道状态变化（start/stop 时派发，载荷同 `getInfo`）。
+   *
+   * @since 0.3.0
    */
   addListener(
-    eventName: 'channelStateChanged',
+    eventName: 'stateChanged',
     listenerFunc: (info: ChannelInfo) => void,
   ): Promise<PluginListenerHandle>;
 
   /**
    * 移除本插件的所有监听。
    *
-   * @since 0.1.0
+   * @since 0.3.0
    */
   removeAllListeners(): Promise<void>;
 }
 
-/** 启动参数。 */
-export interface StartChannelOptions {
-  /**
-   * 端口号；0 或省略 = 由系统分配随机端口（推荐，避免冲突与被猜）。
-   */
+/** 启动 HTTP Server 的参数。 */
+export interface StartHttpOptions {
+  /** 端口号；0 或省略 = 系统随机分配（推荐）。 */
   port?: number;
 
   /**
    * 数据根目录。三种写法：
-   *
-   * 1. **不传**（默认）：
-   *    - Android：`/sdcard/Android/data/<包名>/files/dataChannel`（App 专属外部目录，**无需权限**）
-   *    - iOS：`Documents/dataChannel`（App 私有沙盒目录，可在"文件"App 中访问）
-   * 2. **相对路径**（如 `myData`）：相对 App 私有目录
-   * 3. **绝对路径**（如 `/sdcard/Download/myData`）：任意位置
-   *    - Android 11+ 需要"所有文件访问权限"（MANAGE_EXTERNAL_STORAGE，API 30+）
-   *    - Android 10 及以下需要 WRITE_EXTERNAL_STORAGE + legacy storage
-   *    - iOS 只允许 App 沙盒内的路径（Documents / Application Support / Caches / tmp）
-   *    - **权限的查询/申请由 `capacitor-native-files` 提供**（本插件只负责传输）；
-   *      无权限时 `start()` 会返回明确错误
-   *
-   * 所有 HTTP 路由的 `path` 参数都相对这个目录解析。
+   * 1. **不传**：Android `/sdcard/Android/data/<包名>/files/dataChannel`（无需权限）；
+   *    iOS `Documents/dataChannel`；
+   * 2. **相对路径**：相对 App 私有目录；
+   * 3. **绝对路径**：任意位置（权限由 `capacitor-native-files` 或系统设置提供）。
    */
   rootDir?: string;
 
-  /**
-   * 单个 HTTP 请求允许的最大字节数（默认 512MB）。超过返回 413。
-   */
+  /** 单个 HTTP 请求最大字节数（默认 512MB）。 */
   maxBodyBytes?: number;
 
-  /**
-   * WebSocket 是否开启 echo 模式（默认 `true`）：收到什么就原样回发什么。
-   * 关闭后收到的消息会被丢弃——这是留给后续开发者接入自有业务逻辑的模式。
-   *
-   * @since 0.2.0
-   */
-  wsEcho?: boolean;
+  /** 已认证连接并发上限（默认 16；未认证连接上限固定为 4）。 */
+  maxConnections?: number;
 }
 
-/** 通道信息。 */
-export interface ChannelInfo {
-  /** server 是否在运行。 */
+/** 启动 WebSocket Server 的参数。 */
+export interface StartWsOptions {
+  /** 端口号；0 或省略 = 系统随机分配。 */
+  port?: number;
+
+  /** 是否 echo（默认 true）：收到什么回发什么；false 时丢弃消息，留给业务接入。 */
+  wsEcho?: boolean;
+
+  /** 已认证连接并发上限（默认 16；未认证连接上限固定为 4）。 */
+  maxConnections?: number;
+}
+
+/** 创建 HTTP OTP 的参数。 */
+export interface CreateHttpOtpOptions {
+  /** 权限：`read`（默认）/ `write` / `readwrite`。 */
+  scope?: 'read' | 'write' | 'readwrite';
+
+  /** **必填**：OTP 绑定的路径（相对 rootDir，如 `videos/clip.mp4`）。 */
+  path: string;
+
+  /** 是否可复用（默认 false）。**仅允许 `scope: 'read'`**；用完后必须 revoke。 */
+  reusable?: boolean;
+}
+
+/** HTTP server 信息。 */
+export interface HttpInfo {
   running: boolean;
-
-  /** 实际监听的端口（随机端口时由系统分配）。 */
   port: number;
-
-  /** HTTP 基础 URL，如 `http://127.0.0.1:43123`（只监听 127.0.0.1）。 */
   baseUrl: string;
-
-  /** WebSocket URL，如 `ws://127.0.0.1:43123/ws?token=xxx`（未运行时为空）。 */
-  wsUrl: string;
-
-  /** 访问令牌：请求需带 `Authorization: Bearer <token>` 或 `?token=<token>`。 */
-  token: string;
-
-  /** 数据根目录的绝对路径（便于与文件系统插件配合）。 */
   rootPath: string;
-
-  /** 单请求最大字节数。 */
   maxBodyBytes: number;
-
-  /** 启动时间戳（毫秒），未运行为 0。 */
-  startedAt: number;
-
-  /** 当前活动 HTTP 连接数。 */
+  maxConnections: number;
   activeConnections: number;
+  pendingConnections: number;
+  otpCount: number;
+  startedAt: number;
+}
 
-  /** 当前已连接的 WebSocket 客户端数。 */
-  wsClients: number;
+/** WebSocket server 信息。 */
+export interface WsInfo {
+  running: boolean;
+  port: number;
+  wsUrl: string;
+  wsEcho: boolean;
+  maxConnections: number;
+  activeConnections: number;
+  pendingConnections: number;
+  clients: number;
+  otpCount: number;
+  startedAt: number;
+}
 
-  /** WebSocket 端点是否可用。 */
-  webSocketEnabled: boolean;
+/** 两个 server 的状态。 */
+export interface ChannelInfo {
+  http: HttpInfo | null;
+  webSocket: WsInfo | null;
+}
+
+/** HTTP OTP 信息。 */
+export interface HttpOtpInfo {
+  /** OTP 本身（通过桥下发，抓包看不到）。 */
+  otp: string;
+  scope: string;
+  path: string;
+  reusable: boolean;
+}
+
+/** WebSocket OTP 信息。 */
+export interface WsOtpInfo {
+  otp: string;
+  reusable: false;
 }
