@@ -176,7 +176,8 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDel
                 let handle = try FileHandle(forReadingFrom: url)
                 defer { try? handle.close() }
                 try handle.seek(toOffset: UInt64(offset))
-                let data = try handle.read(upToCount: length) ?? Data()
+                let maybeData = try handle.read(upToCount: length)
+                let data = maybeData ?? Data()
                 let attrs = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
                 let size = (attrs[.size] as? NSNumber)?.int64Value ?? Int64(data.count)
                 return [
@@ -201,7 +202,7 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDel
             call.reject("missing base64 or invalid base64")
             return
         }
-        let mode = call.getString("mode", "overwrite") ?? "overwrite"
+        let mode = call.getString("mode", "overwrite")
 
         do {
             let payload = try withScopedAccess(path) { url -> [String: Any] in
@@ -219,7 +220,7 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDel
                 let handle = try FileHandle(forWritingTo: url)
                 defer { try? handle.close() }
                 if mode == "append" {
-                    try handle.seekToEnd()
+                    _ = try handle.seekToEnd()
                 } else {
                     try handle.truncate(atOffset: 0)
                 }
@@ -275,7 +276,7 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDel
                     throw FsError("NOT_A_DIRECTORY: \(url.path)")
                 }
                 var entries: [[String: Any]] = []
-                try Self.collectEntries(url, recursive: recursive, maxEntries: maxEntries, into: &entries)
+                try collectEntries(url, recursive: recursive, maxEntries: maxEntries, into: &entries)
                 return [
                     "path": url.path,
                     "entries": entries,
@@ -288,7 +289,7 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDel
         }
     }
 
-    private static func collectEntries(
+    private func collectEntries(
         _ dir: URL,
         recursive: Bool,
         maxEntries: Int,
@@ -313,7 +314,11 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDel
                 return
             }
             let isDir = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            out.append(isDir ? try dirEntry(child) : try fileEntry(child))
+            if isDir {
+                out.append(try dirEntry(child))
+            } else {
+                out.append(try fileEntry(child))
+            }
             if recursive && isDir {
                 try collectEntries(child, recursive: true, maxEntries: maxEntries, into: &out)
             }
@@ -466,7 +471,11 @@ public class NativeFilesPlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDel
         let fm = FileManager.default
         var dirs: [String: Any] = [:]
         func put(_ key: String, _ url: URL?) {
-            dirs[key] = url?.path ?? NSNull()
+            if let url = url {
+                dirs[key] = url.path
+            } else {
+                dirs[key] = NSNull()
+            }
         }
         put("home", URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
         put("documents", fm.urls(for: .documentDirectory, in: .userDomainMask).first)
