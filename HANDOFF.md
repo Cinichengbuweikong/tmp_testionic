@@ -334,6 +334,10 @@ D:\projs\testionic
     "8 个不重复 / 批量拼包全部 ok / 批量 nonce 再验证全 false / HTTP 批量 3 个可用"；
   - 坑：`webview-eval.mjs` 在 CDP `ws.close()` 后 node 偶发不退出（会让采样/CI 卡死）→ 结尾加
     `process.exit(0)`；`.perf/` 基准脚本里"流水线 + 批量校验"版本有死锁（未修复，改用顺序池版本取证）。
+- **2026-11-07 data-channel 文档定稿**：README 新增「Capacitor 调用调度模型」「安全讨论与最终结论」
+  （token→OTP 动机、OTP 与 token 的等价/差异、保留逐条 OTP 的取舍、不做传输加密的 5 条推理、
+  承诺/不承诺清单、提高门槛的优先项）「性能建议」；新增 [INTRO.md](plugins/capacitor-data-channel/INTRO.md)
+  作为插件介绍（定位/对比表/30 秒上手/适合不适合/平台验证矩阵）。
 - **2026-11-07 平台限制实测修正（重要，之前文档是错的）**：
   - 真机 Android 10（API 29）+ targetSdk 36 + `requestLegacyExternalStorage="true"`：
     `privateFlags` 含 `PRIVATE_FLAG_REQUEST_LEGACY_EXTERNAL_STORAGE` → **legacy 生效**；
