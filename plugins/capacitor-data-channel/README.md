@@ -58,22 +58,24 @@ await DataChannel.stop();
 
 | 写法 | 示例 | 说明 |
 | --- | --- | --- |
-| **不传**（默认） | — | Android：`/sdcard/Android/data/<包名>/files/dataChannel`（App 专属外部目录，**无需权限**）<br>iOS：`Documents/dataChannel`（"文件"App 可见） |
+| **不传**（默认） | — | Android：`/sdcard/Android/data/<包名>/files/dataChannel`（App 专属外部目录，**无需权限**）<br>iOS：`Documents/dataChannel`（App 私有沙盒目录） |
 | **相对路径** | `myData` | 相对 App 私有目录 |
-| **绝对路径** | `/sdcard/Android/data/<包名>/files/videos` | 任意位置，**受平台限制**（见下） |
+| **绝对路径** | `/sdcard/Download/myVideos` | 任意位置（**权限取决于平台，见下**） |
 
-**平台限制（很重要）**：
+**平台限制（经真机实测修正）**：
 
-- **Android 11+（API 30+）**：访问公共目录（如 `/sdcard/Download`）需要 **所有文件访问权限**——
-  先调 `requestAllFilesAccess()` 跳系统设置页授权；App 自有目录（内部/外部专属）无需权限。
-- **Android 10 及以下**：`targetSdk >= 30` 时 **scoped storage 强制生效**，公共目录不可写
-  （即使有 `WRITE_EXTERNAL_STORAGE`）；错误信息会提示 `SCOPED_STORAGE_BLOCKED`。
-  此时请用 App 自有目录（默认）。
-- **iOS**：只能访问 **App 沙盒内**路径（Documents / Application Support / Caches / tmp），
-  沙盒外会被拒绝——这是 iOS 平台限制。想访问"用户文件"请配合 `capacitor-native-files`（系统选择器）。
+| 平台/版本 | 公共目录（如 `/sdcard/Download`） | 需要什么 |
+| --- | --- | --- |
+| Android ≤ 9 | ✅ 可读写 | `WRITE_EXTERNAL_STORAGE` |
+| **Android 10（API 29）** | ✅ **可读写（实测通过）** | `WRITE_EXTERNAL_STORAGE` + **`requestLegacyExternalStorage="true"`**（宿主 manifest） |
+| **Android 11+（API 30+）** | ⚠️ 受限 | **`MANAGE_EXTERNAL_STORAGE`**（所有文件访问权限） |
+| iOS | 🚫 不存在"公共目录" | 只能访问 App 沙盒内（Documents / Application Support / Caches / tmp） |
 
-> 提示：想让"用户选择的文件"进入 data-channel，用 `capacitor-native-files` 的
-> `copyToAppStorage()` 复制到默认根目录，再用相对路径上传/下载。
+- **App 专属目录（默认）在任何版本都无需权限**，是最稳的选择；
+- 公共目录的权限**由 `capacitor-native-files` 负责查询/申请**（本插件不再提供权限 API）；
+  授权必须走**系统权限弹窗**（用户手动点"允许"），系统在授权时才会把 App 的存储挂载切到可写视图
+  （`adb shell pm grant` 这类命令行授权**不会触发 remount**，会导致仍然 `EACCES`）；
+- 无权限时 `start()` 会返回明确错误（`cannot create rootDir: ... Hint: ...grant it via capacitor-native-files`）。
 
 ## ⚠️ 安装前必做：宿主应用配置（一次性）
 
@@ -118,15 +120,17 @@ android:networkSecurityConfig="@xml/network_security_config"
 
 ## HTTP 路由
 
+**只有三个路由**（本插件只负责传输，不做文件管理）：
+
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/health` | 否 | 连通性自检，返回 `{"ok":true,"name":"capacitor-data-channel"}` |
 | PUT / POST | `/upload?path=<相对路径>&append=0\|1` | 是 | 原始二进制上传（流式写盘）；`append=1` 追加（分块/续传）→ `{path,bytes,size,appended}` |
 | GET | `/download?path=<相对路径>[&token=<t>]` | 是 | 流式下载；支持 `Range: bytes=start-end` → **206 + Content-Range**（视频拖动必需） |
-| GET | `/info?path=<相对路径>` | 是 | `{path,exists,isDir,size,mimeType}` |
-| GET | `/list?path=<相对路径>` | 是 | 目录列表 `[{name,isDir,size,lastModified}]` |
-| DELETE | `/file?path=<相对路径>` | 是 | 删除文件/目录 → `{deleted:true}` |
 | OPTIONS | 任意 | 否 | CORS 预检 → 204 |
+
+> `/info`、`/list`、`/file`（删除）等**文件管理路由已移除**——这些属于
+> `capacitor-native-files`（目录列表、删除、重命名等）。本插件只做"把字节高速送进/送出"。
 
 鉴权两种等价写法：请求头 `Authorization: Bearer <token>`，或 query `?token=<token>`
 （后者给 `<video src>` / `<img src>` 这类不能自定义头的场景）。
@@ -199,16 +203,6 @@ ws.close();
 
 停止 / 读取状态（字段见下）。
 
-### checkAllFilesAccess() / requestAllFilesAccess()
-
-查询 / 申请"访问任意存储路径"的权限（仅 Android 有意义）：
-
-- Android 11+：`MANAGE_EXTERNAL_STORAGE`（跳系统设置页，用户手动开启）
-- Android 10 及以下：`WRITE_EXTERNAL_STORAGE`（运行时权限弹窗）
-- iOS：沙盒模型，始终返回 `{ granted: true, mode: 'sandbox' }`
-
-返回 `StorageAccessInfo`：`{ granted, platform, mode, sdkInt?, opened? }`。
-
 ### addListener('channelStateChanged', cb)
 
 start/stop 时派发，载荷同 `ChannelInfo`。
@@ -250,7 +244,7 @@ start/stop 时派发，载荷同 `ChannelInfo`。
 | 一次性 `Uint8Array(100MB)` | 100MB | 912ms | 110 MB/s | +275.3 MB |
 | 整体生成后包装 `new File([buf])` | 100MB | 698ms | **143 MB/s** | 上传阶段 +0.6 MB（生成峰值仍在，Chromium 会把大 Blob spool 到磁盘临时文件，上传时流式读取，所以不占内存） |
 
-### 场景一（读）：用户选择文件 → 分块加载进 WebView
+### 场景一（读）：用户通过 input 选择文件(没经过此插件) → 分块加载进 WebView
 
 **不要** `file.arrayBuffer()` 一次性读（100MB 文件 = 100MB 内存）。
 用 `Blob.slice` 分块读（slice 是引用，不复制数据）：
@@ -500,13 +494,17 @@ const head = new Uint8Array(await res.arrayBuffer());
 - 数据根目录：默认 `Documents/dataChannel`（可在"文件"App 中访问），只允许沙盒内路径；
 - 本地回环明文需要上面的 `NSAppTransportSecurity` 配置。
 
-### 数据目录的平台限制
+### 数据目录的平台限制（实测）
 
 | 平台 | 默认目录 | 任意绝对路径 |
 | --- | --- | --- |
-| Android 11+ | `/sdcard/Android/data/<pkg>/files/dataChannel`（无需权限） | 需要 `MANAGE_EXTERNAL_STORAGE`（`requestAllFilesAccess()`） |
-| Android 10- | 同上 | targetSdk ≥ 30 时 scoped storage 阻止公共目录（用 App 自有目录）；否则需 `WRITE_EXTERNAL_STORAGE` |
+| Android 11+ | `/sdcard/Android/data/<pkg>/files/dataChannel`（无需权限） | 需要 `MANAGE_EXTERNAL_STORAGE`（用 `capacitor-native-files` 的权限 API 申请） |
+| **Android 10 及以下** | 同上 | 有 `WRITE_EXTERNAL_STORAGE` + 宿主 `requestLegacyExternalStorage="true"` 时**可读写公共目录**（真机实测通过） |
 | iOS | `Documents/dataChannel` | 仅沙盒内（Documents / Application Support / Caches / tmp） |
+
+> **重要实测结论**：Android 10 上 `requestLegacyExternalStorage` **是生效的**（`privateFlags` 可见
+> `PRIVATE_FLAG_REQUEST_LEGACY_EXTERNAL_STORAGE`），公共目录可读写——前提是走**系统权限弹窗**授权。
+> 用 `adb shell pm grant` 强制授权**不会**触发 mount namespace 的 remount，App 仍会 `EACCES`。
 
 ### 后台运行
 
@@ -515,32 +513,36 @@ const head = new Uint8Array(await res.arrayBuffer());
   **不要**指望后台大文件传输——请在前台完成。
 - 建议配合 `capacitor-app-state` 插件监听前后台变化：切后台时暂停传输/提示用户。
 
-### 与「本地文件系统」插件的关系
+### 与 native-files 的分工（职责边界）
 
-本插件与 `capacitor-native-files` 配合使用：
+| 能力 | 由谁负责 |
+| --- | --- |
+| 高速传输（上传/下载/WebSocket 二进制帧） | ✅ **本插件** |
+| 存储权限查询/申请（`WRITE_EXTERNAL_STORAGE` / `MANAGE_EXTERNAL_STORAGE`） | `capacitor-native-files` |
+| 系统文件/文件夹选择器 | `capacitor-native-files` |
+| 列目录、删除、重命名、复制 | `capacitor-native-files` |
+| 根目录路径（rootDir） | 两者都能拿：native-files 提供 App 目录路径，交给 data-channel 的 `rootDir` |
+
+**配合方式**（不再要求先复制文件）：
 
 ```ts
-// 1) 系统选择器选文件
-const { files } = await NativeFiles.pickFiles({ multiple: false });
-// 2) 复制到 App 自有目录（data-channel 默认根目录），流式复制
-const copied = await NativeFiles.copyToAppStorage({ uri: files[0].uri });
-// 3) 用 data-channel 高速上传/处理
-await fetch(`${ch.baseUrl}/upload?path=${copied.relativePath}`, {
-  method: 'PUT',
-  headers: { Authorization: `Bearer ${ch.token}` },
-  body: await (await fetch(copied.absolutePath)).blob(),
-});
+// 1) native-files：申请权限（如需要用公共目录）
+await NativeFiles.requestStorageAccess();   // 走系统弹窗，用户点"允许"
+
+// 2) data-channel：直接以任意目录为根（权限已由 native-files 拿到）
+const ch = await DataChannel.start({ rootDir: '/sdcard/Download/myVideos' });
+
+// 3) 直接上传/下载（不需要 copyToAppStorage 中转）
+await fetch(`${ch.baseUrl}/upload?path=clip.mp4`, { method: 'PUT', ... });
 ```
 
-- `rootPath` 直接返回绝对路径；
-- `/list` 路由已能列出目录（`name/isDir/size/lastModified`）；
-- 后续「文件系统」插件可以复用同一套 path 解析逻辑。
+> 若用默认目录（App 专属外部目录），**连权限都不需要**，开箱即用。
 
 ## 实测记录
 
 | 项目 | 结果 |
 | --- | --- |
-| 上传 10MB | **179ms（≈56 MB/s）**，`bytes/size` 正确 |
+| 上传 10MB | **179ms（≈56 MB/s）**，`bytes` 正确 |
 | 上传 105.8MB（File 直接上传） | **806ms（≈131 MB/s）**，RSS 峰值 **+4.2MB** |
 | 上传 100MB（`new File([buf])` 包装后上传） | **698ms（143 MB/s）**，上传阶段 RSS **+0.6MB**（生成阶段峰值仍在） |
 | 上传 100MB（分块 8MB×13） | 920ms（109 MB/s），RSS 峰值 **+42.8MB** |
@@ -554,13 +556,14 @@ await fetch(`${ch.baseUrl}/upload?path=${copied.relativePath}`, {
 | 无 token / 错误 token | 404（与未知路由不可区分） |
 | 路径穿越 `../escape.txt` | 400 |
 | 未知路由 | 404 |
+| **已移除的路由**（`/info`、`/list`、`DELETE /file`） | 404（只保留传输相关路由） |
 | CORS 预检 | 204 |
 | 默认 rootDir | `/storage/emulated/0/Android/data/com.myapp.testionic/files/dataChannel`（无需权限） |
 | 自有目录绝对路径 | `/sdcard/Android/data/<pkg>/files/myData` 可写 ✓ |
-| 公共目录（Android 10 + targetSdk 36） | 明确拒绝并提示 `SCOPED_STORAGE_BLOCKED` |
+| **公共目录（Android 10）** | 授予 `WRITE_EXTERNAL_STORAGE`（**系统弹窗**）后**可读写** ✓；未授权时 `EACCES`（`pm grant` 不触发 remount，仍失败） |
 | server 空闲开销 | RSS **+0.5MB**、CPU **0.13% 单核**、1 个监听 fd |
 | 传输期间 CPU（App 进程） | 100MB 上传+下载约 **1.47s CPU**（单核约 100%，仅在传输时） |
-| 冒烟测试（真机 + 模拟器） | 启动/上传/下载/列表/WS/停止 全 PASS |
+| 冒烟测试（真机 + 模拟器） | 启动/上传/下载/WS/停止 全 PASS |
 
 ## 开发
 
@@ -573,3 +576,12 @@ npm run build   # tsc → dist/esm
 - Android：`android/src/main/java/com/testionic/datachannel/`（`DataChannelServer.java` 手写 HTTP + WebSocket 实现 + `DataChannelPlugin.java`）
 - iOS：`ios/Sources/DataChannelPlugin/`（`DataChannelServer.swift` 用 NWListener 手写 HTTP + WebSocket 实现 + `DataChannelPlugin.swift`）
 - 两端**协议完全一致**（路由/状态码/安全策略/WS 帧），改一端时请同步另一端。
+
+## 设计边界（为什么只保留传输路由）
+
+本插件定位是「**原生 ↔ WebView 的高速字节通道**」，所以刻意不包含：
+- 权限查询/申请 → 属于 `capacitor-native-files`（它更懂系统的权限模型）；
+- 文件管理（列表/删除/重命名）→ 属于 `capacitor-native-files`；
+- 目录/文件存在性检查 → 可以用 `/download` 的 404 或 native-files 的 `getInfo`。
+
+好处：职责单一、安全面小（只有 upload/download 两个会写文件的入口），也更容易被其它插件复用。

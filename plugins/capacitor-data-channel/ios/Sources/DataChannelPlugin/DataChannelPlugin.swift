@@ -37,9 +37,7 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "checkAllFilesAccess", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "requestAllFilesAccess", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise)
     ]
 
     private var server: DataChannelServer?
@@ -137,15 +135,6 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async {
             call.resolve(self.infoDict())
         }
-    }
-
-    /// iOS 沙盒模型下不存在"任意路径"权限，沙盒内始终可写。
-    @objc func checkAllFilesAccess(_ call: CAPPluginCall) {
-        call.resolve(["granted": true, "platform": "ios", "mode": "sandbox"])
-    }
-
-    @objc func requestAllFilesAccess(_ call: CAPPluginCall) {
-        call.resolve(["granted": true, "opened": false, "mode": "sandbox"])
     }
 
     // ---------------------------------------------------------------- 内部

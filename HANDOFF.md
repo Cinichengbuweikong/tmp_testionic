@@ -279,10 +279,26 @@ D:\projs\testionic
 - 两端各自手写 HTTP 实现（零第三方依赖）：Android `DataChannelServer.java`（ServerSocket+线程池）、
   iOS `DataChannelServer.swift`（NWListener + 状态机）；**协议完全一致**：
   `/health`、`PUT|POST /upload`（流式、`append=1` 续传）、`GET /download`（支持 Range→206）、
-  `/info`、`/list`、`DELETE /file`、`OPTIONS` 预检。
+  `OPTIONS` 预检（**2026-11-07 起只保留这三个路由**，见下）。
+- **2026-11-07 职责收敛**（用户要求："各自只负责各自的部分"）：
+  - **删除了 `checkAllFilesAccess` / `requestAllFilesAccess`**（权限 API 归 `capacitor-native-files`）；
+  - **删除了 `/info`、`/list`、`DELETE /file` 路由**（文件管理归 native-files）；
+  - `DataChannelServer` 只剩 upload/download/health/ws；`DataChannelPlugin` 只剩 start/stop/getInfo；
+  - 测试页删掉「检查/申请存储权限」「列出文件」按钮；autotest 改为断言这三个路由**已 404**；
+  - `start()` 失败时的错误信息改为提示"用 capacitor-native-files 授权"。
+- **2026-11-07 平台限制实测修正（重要，之前文档是错的）**：
+  - 真机 Android 10（API 29）+ targetSdk 36 + `requestLegacyExternalStorage="true"`：
+    `privateFlags` 含 `PRIVATE_FLAG_REQUEST_LEGACY_EXTERNAL_STORAGE` → **legacy 生效**；
+  - 关键：`adb shell pm grant WRITE_EXTERNAL_STORAGE` **不会触发 mount namespace remount**
+    （App 仍挂 `/mnt/runtime/default/emulated`，gid=1015, mask=6 → 读写都 `EACCES`）；
+  - **走系统权限弹窗授权后**：`/storage/emulated` 挂载变 `gid=9997, mask=7`（write 视图）→
+    **读 `/sdcard/Download`、写 `/sdcard/Download/...` 全部成功**（已实测）；
+  - 所以：**Android 10 及以下可以读写公共目录**（需真实授权），之前"targetSdk>=30 时 scoped storage
+    强制"的结论是**错误**的；Android 11+ 才需要 MANAGE_EXTERNAL_STORAGE；
+  - App 专属外部目录（默认）**任何版本都免权限**。
 - 宿主配置（必需，否则 WebView 拒绝访问明文回环）：
   - Android：`res/xml/network_security_config.xml` 只对 127.0.0.1/localhost 放行 cleartext +
-    manifest `android:networkSecurityConfig`；
+    manifest `android:networkSecurityConfig`（另需 `requestLegacyExternalStorage="true"` 才能用公共目录）；
   - iOS：Info.plist `NSAppTransportSecurity → NSAllowsLocalNetworking = true`。
 - 安全设计：只绑回环（iOS 用 `requiredInterfaceType = .loopback` + 连接来源校验）、随机端口、
   常量时间 token 比较、Origin 白名单（非法 Origin **静默断连**）、鉴权失败统一 **404**（不泄露
@@ -302,20 +318,17 @@ D:\projs\testionic
   调试），改为"默认拒绝 + 最小暴露面"（404 隐藏 + 静默断连），已实现并实测。
 - 坑：JavaDoc 注释里手滑写 `*/` 导致注释提前结束、`android.util.Log` 没有 `debug()`
   （只有 `Log.d`）、NWConnection/NWListener 的队列必须是 **serial**（不能用 concurrent）。
-- 为后续「文件系统插件」预留：`rootPath` 绝对路径、`/list` 路由、统一 path 规则。
 - **2026-11-05 增强**（rootDir + WebSocket）：
   - `rootDir` 三种写法：不传 = App 专属外部目录 `/sdcard/Android/data/<pkg>/files/dataChannel`
     （无需权限）/ 相对路径 = App 私有目录 / 绝对路径 = 任意位置（受平台限制）；
-    新增 `checkAllFilesAccess` / `requestAllFilesAccess`（API 30+ MANAGE_EXTERNAL_STORAGE 设置页，
-    API 29- WRITE_EXTERNAL_STORAGE 运行时权限，iOS 沙盒恒 true）；
-  - **平台限制（实测）**：Android 10 + targetSdk 36 时 scoped storage 强制，公共目录（/sdcard/Download）
-    不可写，即使有 WRITE_EXTERNAL_STORAGE 也不行（`requestLegacyExternalStorage` 对 targetSdk>=30 失效）；
-    错误信息带 `SCOPED_STORAGE_BLOCKED` 提示。iOS 只能沙盒内路径。
   - **WebSocket server**：同端口 `/ws`（RFC6455 子集：帧解析/mask/分片重组/ping-pong/close，默认 echo），
     `ChannelInfo` 增加 `wsUrl`/`wsClients`/`webSocketEnabled`；`start({ wsEcho:false })` 关闭 echo。
   - **WS 实测**：1MB 往返 45ms、10MB 往返 181ms（55 MB/s）、64KB 帧每帧 1.7ms（588fps）、空闲 CPU 0%。
   - 坑：Swift 里 internal 方法参数用 private 类型（`HTTPConnection`）→ 必须 `fileprivate`；
     Swift 单 target 不能混合 Swift 与 C/C++（见 C/C++ 调研文档）。
+  - **iOS 连接挂起根因（已修）**：`accept()` 里创建的 `HTTPConnection` 是局部变量，`start()` 后
+    立即被释放 → `[weak self]` 回调全落空，连接 ready 但永不处理请求。修复：server 用
+    `httpHandlers` 数组强引用，`finish()` 调 `server.unregisterHandler(self)`。
 
 ### 5.10 capacitor-app-state（前后台状态）
 

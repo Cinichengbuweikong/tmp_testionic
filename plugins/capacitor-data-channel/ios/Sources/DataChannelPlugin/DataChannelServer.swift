@@ -712,12 +712,6 @@ private final class HTTPConnection {
             sendAndClose(status: 200, reason: "OK", json: ["ok": true, "name": "capacitor-data-channel"], origin: origin)
         case ("GET", "/download"):
             handleDownload(origin: origin)
-        case ("GET", "/info"):
-            handleInfo(origin: origin)
-        case ("GET", "/list"):
-            handleList(origin: origin)
-        case ("DELETE", "/file"), ("POST", "/delete"):
-            handleDelete(origin: origin)
         case ("PUT", "/upload"), ("POST", "/upload"):
             handleEmptyUpload(origin: origin)
         default:
@@ -815,76 +809,6 @@ private final class HTTPConnection {
             }
             self.streamFile(file: file, offset: offset + Int64(chunk.count), remaining: remaining - Int64(chunk.count))
         })
-    }
-
-    private func handleInfo(origin: String?) {
-        guard let file = try? resolveSafePath(query["path"]) else {
-            sendAndClose(status: 400, reason: "Bad Request", json: ["error": "invalid path"], origin: origin)
-            return
-        }
-        let exists = FileManager.default.fileExists(atPath: file.path)
-        var isDirectory: ObjCBool = false
-        if exists {
-            FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory)
-        }
-        let attributes = exists ? (try? FileManager.default.attributesOfItem(atPath: file.path)) : nil
-        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
-        let body: [String: Any] = [
-            "path": query["path"] ?? "",
-            "exists": exists,
-            "isDir": isDirectory.boolValue,
-            "size": size,
-            "mimeType": isDirectory.boolValue ? "" : Self.mimeType(for: file.lastPathComponent)
-        ]
-        sendAndClose(status: 200, reason: "OK", json: body, origin: origin)
-    }
-
-    private func handleList(origin: String?) {
-        let rel = query["path"] ?? ""
-        guard let dir = try? resolveSafePath(rel) else {
-            sendAndClose(status: 400, reason: "Bad Request", json: ["error": "invalid path"], origin: origin)
-            return
-        }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            sendAndClose(status: 404, reason: "Not Found", json: ["error": "not a directory"], origin: origin)
-            return
-        }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
-        let contents = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys)) ?? []
-        let sorted = contents.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        var entries: [[String: Any]] = []
-        for url in sorted {
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            entries.append([
-                "name": url.lastPathComponent,
-                "isDir": values?.isDirectory ?? false,
-                "size": values?.fileSize ?? 0,
-                "lastModified": Int64((values?.contentModificationDate?.timeIntervalSince1970 ?? 0) * 1000)
-            ])
-        }
-        sendAndClose(status: 200, reason: "OK", json: entries, origin: origin)
-    }
-
-    private func handleDelete(origin: String?) {
-        guard let file = try? resolveSafePath(query["path"]) else {
-            sendAndClose(status: 400, reason: "Bad Request", json: ["error": "invalid path"], origin: origin)
-            return
-        }
-        if file.standardizedFileURL.path == root.standardizedFileURL.path {
-            sendAndClose(status: 400, reason: "Bad Request", json: ["error": "cannot delete root"], origin: origin)
-            return
-        }
-        guard FileManager.default.fileExists(atPath: file.path) else {
-            sendAndClose(status: 404, reason: "Not Found", json: ["error": "not found"], origin: origin)
-            return
-        }
-        do {
-            try FileManager.default.removeItem(at: file)
-            sendAndClose(status: 200, reason: "OK", json: ["deleted": true], origin: origin)
-        } catch {
-            sendAndClose(status: 500, reason: "Internal Server Error", json: ["error": "delete failed"], origin: origin)
-        }
     }
 
     // MARK: 安全

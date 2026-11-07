@@ -58,30 +58,6 @@ export interface DataChannelPlugin {
   getInfo(): Promise<ChannelInfo>;
 
   /**
-   * 是否已获得"访问任意存储路径"的权限。
-   *
-   * - Android 11+：`MANAGE_EXTERNAL_STORAGE`（所有文件访问权限）
-   * - Android 10 及以下：`WRITE_EXTERNAL_STORAGE`（运行时权限）
-   * - iOS：沙盒模型，始终返回 `granted: true`（只能访问沙盒内路径）
-   *
-   * @since 0.2.0
-   */
-  checkAllFilesAccess(): Promise<StorageAccessInfo>;
-
-  /**
-   * 申请"访问任意存储路径"的权限。
-   *
-   * - Android 11+：跳转系统设置页，用户需手动开启"所有文件访问权限"
-   * - Android 10 及以下：弹出运行时权限对话框
-   * - iOS：无操作，直接返回 `granted: true`
-   *
-   * 调用后请重新 `checkAllFilesAccess()` 或直接重试 `start({ rootDir: '/绝对路径' })`。
-   *
-   * @since 0.2.0
-   */
-  requestAllFilesAccess(): Promise<StorageAccessInfo>;
-
-  /**
    * 监听通道状态变化（start/stop）。
    *
    * @since 0.1.0
@@ -111,12 +87,14 @@ export interface StartChannelOptions {
    *
    * 1. **不传**（默认）：
    *    - Android：`/sdcard/Android/data/<包名>/files/dataChannel`（App 专属外部目录，**无需权限**）
-   *    - iOS：`Documents/dataChannel`（可在"文件"App 中访问，需 Info.plist 开启 UIFileSharingEnabled）
+   *    - iOS：`Documents/dataChannel`（App 私有沙盒目录，可在"文件"App 中访问）
    * 2. **相对路径**（如 `myData`）：相对 App 私有目录
    * 3. **绝对路径**（如 `/sdcard/Download/myData`）：任意位置
-   *    - Android 11+ 需要"所有文件访问权限"（先调 `requestAllFilesAccess()`）
-   *    - Android 10 及以下需要存储权限（同样调 `requestAllFilesAccess()`）
+   *    - Android 11+ 需要"所有文件访问权限"（MANAGE_EXTERNAL_STORAGE，API 30+）
+   *    - Android 10 及以下需要 WRITE_EXTERNAL_STORAGE + legacy storage
    *    - iOS 只允许 App 沙盒内的路径（Documents / Application Support / Caches / tmp）
+   *    - **权限的查询/申请由 `capacitor-native-files` 提供**（本插件只负责传输）；
+   *      无权限时 `start()` 会返回明确错误
    *
    * 所有 HTTP 路由的 `path` 参数都相对这个目录解析。
    */
@@ -170,22 +148,4 @@ export interface ChannelInfo {
 
   /** WebSocket 端点是否可用。 */
   webSocketEnabled: boolean;
-}
-
-/** 存储访问权限信息。 */
-export interface StorageAccessInfo {
-  /** 是否已获得访问任意路径的权限。 */
-  granted: boolean;
-
-  /** 平台：`android` / `ios`。 */
-  platform?: string;
-
-  /** Android 权限模式：`MANAGE_EXTERNAL_STORAGE` / `WRITE_EXTERNAL_STORAGE`；iOS 为 `sandbox`。 */
-  mode?: string;
-
-  /** Android SDK 版本。 */
-  sdkInt?: number;
-
-  /** 是否已打开系统设置/权限对话框（需要用户操作）。 */
-  opened?: boolean;
 }

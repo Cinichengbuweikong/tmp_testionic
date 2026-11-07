@@ -16,11 +16,7 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -46,6 +42,11 @@ import android.util.Log;
  * HTTP 协议子集：HTTP/1.1 单请求单连接（Connection: close）、Content-Length 请求体、
  * 支持下载 Range（视频拖动进度条必需）。不支持 chunked 请求体（fetch 上传 Blob/File 时
  * 会带 Content-Length，满足需求）。
+ *
+ * ======================= 职责边界（重要） =======================
+ *
+ * 本插件**只负责高速传输**：只提供 `/health`、`/upload`、`/download` 三个 HTTP 路由 + `/ws` WebSocket。
+ * 文件管理（列表/删除/重命名）与存储权限请用 `capacitor-native-files`。
  *
  * ======================= WebSocket（实时双向二进制） =======================
  *
@@ -287,16 +288,6 @@ public class DataChannelServer {
                     return;
                 case "GET /download":
                     status = handleDownload(out, headers, query, origin);
-                    return;
-                case "GET /info":
-                    status = handleInfo(out, query, origin);
-                    return;
-                case "GET /list":
-                    status = handleList(out, query, origin);
-                    return;
-                case "DELETE /file":
-                case "POST /delete":
-                    status = handleDelete(out, query, origin);
                     return;
                 default:
                     status = 404;
@@ -649,111 +640,6 @@ public class DataChannelServer {
         }
         out.flush();
         return partial ? 206 : 200;
-    }
-
-    private int handleInfo(OutputStream out, Map<String, String> query, String origin) throws IOException {
-        final File file;
-        try {
-            file = resolveSafePath(query.get("path"));
-        } catch (IllegalArgumentException e) {
-            writeError(out, 400, e.getMessage(), origin);
-            return 400;
-        }
-        String body =
-            "{\"path\":" +
-            jsonString(query.get("path")) +
-            ",\"exists\":" +
-            file.exists() +
-            ",\"isDir\":" +
-            file.isDirectory() +
-            ",\"size\":" +
-            (file.exists() ? file.length() : 0) +
-            ",\"mimeType\":" +
-            jsonString(file.isFile() ? mimeType(file.getName()) : "") +
-            "}";
-        writeJson(out, 200, body, origin);
-        return 200;
-    }
-
-    private int handleList(OutputStream out, Map<String, String> query, String origin) throws IOException {
-        final File dir;
-        try {
-            String rel = query.get("path");
-            dir = resolveSafePath(rel == null ? "" : rel);
-        } catch (IllegalArgumentException e) {
-            writeError(out, 400, e.getMessage(), origin);
-            return 400;
-        }
-        if (!dir.isDirectory()) {
-            writeError(out, 404, "not a directory", origin);
-            return 404;
-        }
-        File[] children = dir.listFiles();
-        List<File> sorted = new ArrayList<>();
-        if (children != null) {
-            sorted.addAll(Arrays.asList(children));
-        }
-        sorted.sort(Comparator.comparing(File::getName));
-
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < sorted.size(); i++) {
-            File f = sorted.get(i);
-            if (i > 0) {
-                sb.append(',');
-            }
-            sb
-                .append("{\"name\":")
-                .append(jsonString(f.getName()))
-                .append(",\"isDir\":")
-                .append(f.isDirectory())
-                .append(",\"size\":")
-                .append(f.length())
-                .append(",\"lastModified\":")
-                .append(f.lastModified())
-                .append('}');
-        }
-        sb.append(']');
-        writeJson(out, 200, sb.toString(), origin);
-        return 200;
-    }
-
-    private int handleDelete(OutputStream out, Map<String, String> query, String origin) throws IOException {
-        final File file;
-        try {
-            file = resolveSafePath(query.get("path"));
-        } catch (IllegalArgumentException e) {
-            writeError(out, 400, e.getMessage(), origin);
-            return 400;
-        }
-        if (file.equals(root)) {
-            writeError(out, 400, "cannot delete root directory", origin);
-            return 400;
-        }
-        if (!file.exists()) {
-            writeError(out, 404, "not found", origin);
-            return 404;
-        }
-        boolean deleted = deleteRecursively(file);
-        if (!deleted) {
-            writeError(out, 500, "delete failed", origin);
-            return 500;
-        }
-        writeJson(out, 200, "{\"deleted\":true}", origin);
-        return 200;
-    }
-
-    private boolean deleteRecursively(File file) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    if (!deleteRecursively(child)) {
-                        return false;
-                    }
-                }
-            }
-        }
-        return file.delete();
     }
 
     // ---------------------------------------------------------------- 安全：路径解析

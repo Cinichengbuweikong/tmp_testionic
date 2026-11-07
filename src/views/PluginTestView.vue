@@ -145,7 +145,6 @@
         <button @click="dataChannelUpload">上传 10MB</button>
         <button @click="dataChannelUploadChunked">分块上传 100MB</button>
         <button @click="dataChannelDownload">下载测试文件</button>
-        <button @click="dataChannelList">列出文件</button>
       </div>
       <div class="actions">
         <input ref="dcFileInput" class="kb-input" type="file" style="flex: 1" />
@@ -153,14 +152,11 @@
       </div>
       <div class="actions">
         <button @click="dataChannelWebSocket">WS 回显 1MB</button>
-        <button @click="checkStorageAccess">检查存储权限</button>
-        <button @click="requestStorageAccess">申请存储权限</button>
         <button @click="startWithCustomRoot">自定义目录启动</button>
       </div>
       <p class="hint">
-        本地 HTTP + WebSocket server（仅 127.0.0.1 + token 鉴权）：用 fetch / WebSocket
-        直接收发原始二进制，不经过 base64 / JSON 序列化。分块上传会复用同一个 8MB 缓冲区，
-        内存占用恒定。
+        只负责高速传输（仅 127.0.0.1 + token 鉴权）：用 fetch / WebSocket 直接收发原始二进制，
+        不经过 base64 / JSON 序列化。存储权限与文件管理请用 native-files 插件。
       </p>
     </section>
 
@@ -428,9 +424,7 @@ export default {
           });
           const upload = await uploadRes.json();
 
-          const infoRes = await fetchT(`${ch.baseUrl}/info?path=selftest/test.bin&token=${ch.token}`);
-          const fileInfo = await infoRes.json();
-
+          // 下载并校验（/info 已移除，大小直接由响应长度校验）
           const downloadRes = await fetchT(`${ch.baseUrl}/download?path=selftest/test.bin&token=${ch.token}`);
           const downloaded = await downloadRes.arrayBuffer();
           const downloadedBytes = new Uint8Array(downloaded);
@@ -446,14 +440,15 @@ export default {
           const traversalRes = await fetchT(`${ch.baseUrl}/download?path=../escape.txt&token=${ch.token}`);
           // 安全：未知路由应 404
           const unknownRes = await fetchT(`${ch.baseUrl}/nope?token=${ch.token}`);
+          // 安全：已移除的路由（/info、/list、/file）应 404
+          const removedInfoRes = await fetchT(`${ch.baseUrl}/info?path=selftest/test.bin&token=${ch.token}`);
+          const removedListRes = await fetchT(`${ch.baseUrl}/list?path=selftest&token=${ch.token}`);
+          const removedFileRes = await fetchT(`${ch.baseUrl}/file?path=selftest&token=${ch.token}`, { method: 'DELETE' });
           // CORS 预检应 204
           const preflightRes = await fetchT(`${ch.baseUrl}/upload?path=selftest/test.bin`, {
             method: 'OPTIONS',
             headers: { 'Access-Control-Request-Method': 'PUT' },
           });
-
-          const listRes = await fetchT(`${ch.baseUrl}/list?path=selftest&token=${ch.token}`);
-          const list = await listRes.json();
 
           // WebSocket 回显（256KB 二进制往返）
           const wsStartedAt = performance.now();
@@ -514,10 +509,6 @@ export default {
             };
           });
 
-          // 存储权限检查（iOS 返回 sandbox，Android 返回 MANAGE/WRITE 状态）
-          const storageAccess = await DataChannel.checkAllFilesAccess();
-
-          await fetchT(`${ch.baseUrl}/file?path=selftest&token=${ch.token}`, { method: 'DELETE' });
           const stopInfo = await DataChannel.stop();
 
           results.dataChannel = {
@@ -525,33 +516,33 @@ export default {
             port: ch.port,
             healthOk: health.ok === true,
             uploadBytes: upload.bytes,
-            storedSize: fileInfo.size,
             downloadedBytes: downloadedBytes.byteLength,
             same,
             noTokenStatus: noTokenRes.status,
             traversalStatus: traversalRes.status,
             unknownStatus: unknownRes.status,
+            removedInfoStatus: removedInfoRes.status,
+            removedListStatus: removedListRes.status,
+            removedFileStatus: removedFileRes.status,
             preflightStatus: preflightRes.status,
-            listCount: list.length,
             wsUrl: ch.wsUrl,
             webSocket: wsResult,
-            storageAccess,
             stopped: stopInfo.running === false,
           };
           const dcOk = !!ch && ch.running === true && ch.port > 0
             && health.ok === true
             && upload.bytes === payload.byteLength
-            && fileInfo.size === payload.byteLength
             && same
             && noTokenRes.status === 404
             && traversalRes.status === 400
             && unknownRes.status === 404
+            && removedInfoRes.status === 404
+            && removedListRes.status === 404
+            && removedFileRes.status === 404
             && preflightRes.status === 204
-            && Array.isArray(list) && list.length === 1
             && wsResult.sameLength === true
             && wsResult.sameHead === true
             && wsResult.sameTail === true
-            && !!storageAccess && typeof storageAccess.granted === 'boolean'
             && stopInfo.running === false;
           if (!dcOk) {
             results.ok = false;
@@ -1188,24 +1179,6 @@ export default {
       }
     },
 
-    async checkStorageAccess() {
-      try {
-        const info = await DataChannel.checkAllFilesAccess();
-        this.print('DataChannel.checkAllFilesAccess 成功', info);
-      } catch (err) {
-        this.error('DataChannel.checkAllFilesAccess', err);
-      }
-    },
-
-    async requestStorageAccess() {
-      try {
-        const info = await DataChannel.requestAllFilesAccess();
-        this.print('DataChannel.requestAllFilesAccess 成功', info);
-      } catch (err) {
-        this.error('DataChannel.requestAllFilesAccess', err);
-      }
-    },
-
     async startWithCustomRoot() {
       try {
         await DataChannel.stop();
@@ -1240,17 +1213,6 @@ export default {
         });
       } catch (err) {
         this.error('DataChannel 下载', err);
-      }
-    },
-
-    async dataChannelList() {
-      try {
-        const ch = await this.ensureDataChannel();
-        const res = await fetch(`${ch.baseUrl}/list?path=test&token=${ch.token}`);
-        const entries = await res.json();
-        this.print('DataChannel 文件列表', { status: res.status, entries });
-      } catch (err) {
-        this.error('DataChannel 列表', err);
       }
     },
 
