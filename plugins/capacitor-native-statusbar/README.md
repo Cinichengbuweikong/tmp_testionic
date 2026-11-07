@@ -145,7 +145,48 @@ MIUI 12 会向 WebView 注入 forceDark（同一台机器上 `getComputedStyle(d
 （第 2 节对色块 View 关闭 force dark 是精准处理，不会影响 WebView 内容；
 如果页面颜色也有问题，请用 `capacitor-set-force-dark` 插件或页面层的 CSS 方案。）
 
-### 4. 其它已知边界
+### 4. 旋转 / 横竖屏切换（Android 0.3.0 已修复）
+
+**bug 现象**（Pixel 6 模拟器 / Android 16，竖屏状态栏 128px、横屏 63px）：
+
+| 步骤 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 竖屏 | 色块 rows 0..127（128px）✅ | 128px ✅ |
+| 转横屏 | 63px ✅ | 63px ✅ |
+| **转回竖屏** | **rows 65..127（63px）❌ 只有一半高、还整体下移 65px** | **rows 0..127（128px）✅** |
+
+**根因**：色块高度靠 `ViewCompat.getRootWindowInsets()` 读状态栏 Insets，但
+`handleOnConfigurationChanged` 触发时 **DecorView 还没按新方向重新布局**，拿到的是**旧方向**的 Insets
+（转回竖屏时读到横屏的 63px），而 `topMargin = -paddingTop` 用的是**新**方向的 128px
+→ 色块落在 `128-63=65` 到 `128`。
+
+**修复**：把几何计算从"配置回调时刻"移到 **`OnGlobalLayoutListener`**（布局完成后 padding/Insets 都已更新），
+并做"值没变就不 `setLayoutParams`"的去重，避免 `requestLayout` 回调死循环。
+配置回调仍然保留（用于重新套用颜色/样式），但几何以布局回调为准。
+
+**iOS 不受影响**：色块用的是 Auto Layout（`topAnchor == host.top`、
+`bottomAnchor == safeAreaLayoutGuide.top`），旋转/横屏由系统的安全区自动驱动，不存在"缓存高度"的问题
+（所以本次没有改 iOS 代码）。
+
+**复现/验证方法（adb，模拟器）**：
+
+```bash
+# 关自动旋转，固定竖屏，设置一个纯色便于量像素
+adb shell settings put system accelerometer_rotation 0
+adb shell settings put system user_rotation 0
+# 在页面里调用 setBackgroundColor({ color: '#FF0000' })
+adb exec-out screencap -p > portrait.png
+
+adb shell settings put system user_rotation 1      # 转横屏
+adb exec-out screencap -p > landscape.png
+adb shell settings put system user_rotation 0      # 转回竖屏
+adb exec-out screencap -p > back.png
+# 量三张图顶部"纯红"连续行数：应为 128 / 63 / 128（模拟器），真机为 90 / 90 / 90
+```
+
+实测（修复后）：模拟器 128 / 63 / **128** / 128（两轮旋转）；真机 Redmi K30S 90 / 90 / 90（该机型横竖屏同高）。
+
+### 5. 其它已知边界
 
 - 只在 Android 10（真机）和 Android 16（模拟器）上验证过；Android 15+ 走的是自绘色块路径，理论一致。
 - iOS 侧没有 MIUI 这类覆盖行为，`setStyle` 设置什么就是什么。

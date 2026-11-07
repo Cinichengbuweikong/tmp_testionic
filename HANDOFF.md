@@ -121,6 +121,19 @@ D:\projs\testionic
   官方插件同样无效，0/5320 像素差异对比）；模拟器（非 MIUI）上正常生效。
 - iOS：自绘 UIView（高度 = safeArea top），`CAPBridgeViewController.setStatusBarStyle()`。
 - 未调用 `setStyle` 前不主动改样式（`styleApplied` 门控）。
+- **2026-11-07 修复：旋转后色块只有一半高（Android 0.3.0）**
+  - 现象（模拟器 Pixel 6 / Android 16，竖屏状态栏 128px、横屏 63px）：竖屏正常 → 横屏正常 →
+    **转回竖屏时色块 rows 65..127（63px）**，只盖住下半截。
+  - 根因：`handleOnConfigurationChanged` 触发时 DecorView 还没重新布局，
+    `ViewCompat.getRootWindowInsets()` 返回**旧方向** Insets（63px），而 `topMargin=-paddingTop`
+    用的是**新**方向（128px）→ 色块落在 128-63=65..128。
+  - 修复：几何计算挪到 `ViewTreeObserver.OnGlobalLayoutListener`（布局后 padding/Insets 已更新），
+    加"值未变不 setLayoutParams"去重防死循环；配置回调仍保留用于重新套用颜色/样式。
+  - 验证（修复后）：模拟器 128/63/**128**/128（两轮）+ 横屏改色再转回（绿 63→128）✓；
+    真机 K30S 90/90/90（该机型横竖屏同高，无回归）✓。
+  - **iOS 无需修**：色块是 Auto Layout（`bottomAnchor == safeAreaLayoutGuide.topAnchor`），
+    旋转由安全区自动驱动，没有缓存高度的问题。
+  - 复现/验证的 adb 命令与量像素脚本见插件 README「旋转 / 横竖屏切换」一节。
 
 ### 5.3 capacitor-set-force-dark（WebView forceDark 修复）
 

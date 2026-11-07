@@ -7,6 +7,7 @@ import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
@@ -118,6 +119,13 @@ public class NativeStatusBarPlugin extends Plugin {
 
     /** 自绘的状态栏色块；null 表示当前没有色块（未设置颜色或颜色是 transparent）。 */
     private View overlayView = null;
+
+    /** 色块的全局布局监听：旋转/内边距变化后按**当前**几何重新量（见 updateOverlayGeometry）。 */
+    private ViewTreeObserver.OnGlobalLayoutListener overlayLayoutListener = null;
+
+    /** 上一次应用的几何，用来避免 setLayoutParams → requestLayout → 回调的循环。 */
+    private int overlayLastHeightPx = -1;
+    private int overlayLastTopMargin = 0;
 
     /** JS 是否调用过 setStyle —— 没调用过就不要去动 App 原本的状态栏样式。 */
     private boolean styleApplied = false;
@@ -324,8 +332,63 @@ public class NativeStatusBarPlugin extends Plugin {
         }
 
         overlayView.setBackgroundColor(color);
-        overlayView.setLayoutParams(buildOverlayParams(root));
+        ensureOverlayLayoutListener(root);
+        // 先用当前已知的 Insets 给一版初始几何；随后布局回调会用**新方向**的值纠正
+        // （旋转时配置回调拿到的 Insets 还是旧方向的，见 updateOverlayGeometry 注释）。
+        updateOverlayGeometry();
         overlayView.bringToFront();
+        root.post(this::updateOverlayGeometry);
+    }
+
+    private void ensureOverlayLayoutListener(ViewGroup root) {
+        if (overlayLayoutListener != null) {
+            return;
+        }
+        final ViewTreeObserver observer = root.getViewTreeObserver();
+        overlayLayoutListener = this::updateOverlayGeometry;
+        observer.addOnGlobalLayoutListener(overlayLayoutListener);
+    }
+
+    /**
+     * 按**当前**的 Insets / DecorView 内边距重新量色块几何。
+     *
+     * 为什么必须在"布局回调"里做（而不是只在 handleOnConfigurationChanged 里）：
+     * `handleOnConfigurationChanged` 触发时 DecorView **还没有按新方向重新布局**，
+     * `ViewCompat.getRootWindowInsets()` 返回的仍是**旧方向**的 Insets。实测 Pixel 6 模拟器
+     * （Android 16，竖屏状态栏 128px / 横屏 63px）：
+     *
+     *   竖屏 → 横屏：色块正确（63px）；
+     *   横屏 → 竖屏：配置回调里读到的还是 63px → 色块高度 63、topMargin 用新的 128 内边距
+     *              → 色块落在 y=65..128，表现为"只有状态栏一半高、还整体下移"。
+     *
+     * 放到 OnGlobalLayoutListener 里时 padding / Insets 都已更新，量出来才是正确的。
+     * 另外做了"值没变就不 setLayoutParams"的去重，避免 requestLayout 再触发本回调的死循环。
+     */
+    private void updateOverlayGeometry() {
+        if (overlayView == null) {
+            return;
+        }
+        if (!(overlayView.getParent() instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup root = (ViewGroup) overlayView.getParent();
+        int height = getStatusBarHeightPx();
+        if (height <= 0) {
+            return;
+        }
+        int topMargin = -root.getPaddingTop();
+        if (height == overlayLastHeightPx && topMargin == overlayLastTopMargin) {
+            return;
+        }
+        overlayLastHeightPx = height;
+        overlayLastTopMargin = topMargin;
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            height,
+            Gravity.TOP
+        );
+        params.topMargin = topMargin;
+        overlayView.setLayoutParams(params);
     }
 
     /**
@@ -343,10 +406,26 @@ public class NativeStatusBarPlugin extends Plugin {
     }
 
     private void removeOverlay() {
-        if (overlayView != null && overlayView.getParent() instanceof ViewGroup) {
-            ((ViewGroup) overlayView.getParent()).removeView(overlayView);
+        View view = overlayView;
+        if (view == null) {
+            return;
+        }
+        if (view.getParent() instanceof ViewGroup) {
+            ViewGroup parent = (ViewGroup) view.getParent();
+            if (overlayLayoutListener != null) {
+                ViewTreeObserver observer = parent.getViewTreeObserver();
+                if (observer.isAlive()) {
+                    observer.removeOnGlobalLayoutListener(overlayLayoutListener);
+                }
+                overlayLayoutListener = null;
+            }
+            parent.removeView(view);
+        } else {
+            overlayLayoutListener = null;
         }
         overlayView = null;
+        overlayLastHeightPx = -1;
+        overlayLastTopMargin = 0;
     }
 
     // ---------------------------------------------------------------- 样式
