@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 本地回环 HTTP/WebSocket server 需要 INTERNET 权限（Capacitor 应用通常已由宿主声明） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- 访问任意存储路径（rootDir 传绝对路径时）：
+         - API 30+ 使用 MANAGE_EXTERNAL_STORAGE（特殊权限，需用户在系统设置中开启）
+         - API <= 29 使用 WRITE_EXTERNAL_STORAGE（运行时权限） -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+</manifest>

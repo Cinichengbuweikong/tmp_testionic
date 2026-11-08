@@ -1,0 +1,41 @@
+{
+  "name": "capacitor-set-force-dark",
+  "version": "0.1.0",
+  "description": "设置 WebView 的 forceDark / 算法暗色（关闭 ROM 的强制反色），并把应用主题注入页面、提供主题查询与变化监听",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "webview",
+    "force-dark",
+    "algorithmic-darkening"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

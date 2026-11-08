@@ -1,0 +1,32 @@
+{
+  "name": "capacitor-cpp-bridge",
+  "version": "0.1.0",
+  "description": "C/C++ 桥模板：让 Capacitor 插件在 Android/iOS 上调用共享的 C/C++ 核心（含 JNI/Swift 薄桥、零拷贝缓冲句柄示例）",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "shared/core/",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": ["capacitor", "plugin", "native", "cpp", "c", "jni", "template"],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": { "src": "android" },
+    "ios": { "src": "ios" }
+  }
+}

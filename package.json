@@ -1,0 +1,42 @@
+{
+  "name": "testionic",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "audit:plugins": "node scripts/audit-plugins.mjs",
+    "preview": "vite preview --port 4173",
+    "android:sync": "cap sync android",
+    "android:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-android.ps1",
+    "verify:android": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-android.ps1",
+    "verify:ios": "node scripts/verify-ios.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/ios": "^8.6.0",
+    "@capacitor/status-bar": "^8.0.4",
+    "capacitor-foreground-state": "file:plugins/capacitor-foreground-state",
+    "capacitor-cpp-bridge": "file:plugins/capacitor-cpp-bridge",
+    "capacitor-data-channel": "file:plugins/capacitor-data-channel",
+    "capacitor-fullscreen": "file:plugins/capacitor-fullscreen",
+    "capacitor-keyboard-avoiding": "file:plugins/capacitor-keyboard-avoiding",
+    "capacitor-native-basics": "file:plugins/capacitor-native-basics",
+    "capacitor-native-statusbar": "file:plugins/capacitor-native-statusbar",
+    "capacitor-native-rotation": "file:plugins/capacitor-native-rotation",
+    "capacitor-native-files": "file:plugins/capacitor-native-files",
+    "capacitor-set-force-dark": "file:plugins/capacitor-set-force-dark",
+    "capacitor-system-info": "file:plugins/capacitor-system-info",
+    "capacitor-webview-to-edge": "file:plugins/capacitor-webview-to-edge",
+    "vue": "^2.7.7",
+    "vue-router": "^3.5.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
+    "@vitejs/plugin-legacy": "^2.0.0",
+    "@vitejs/plugin-vue2": "^1.1.2",
+    "terser": "^5.14.2",
+    "vite": "^3.0.2"
+  }
+}

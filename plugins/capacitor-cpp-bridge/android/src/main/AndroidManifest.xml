@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- C/C++ 桥模板不需要任何权限；需要权限的是你在 shared/core 里写的具体功能 -->
+</manifest>

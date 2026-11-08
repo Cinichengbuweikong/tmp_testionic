@@ -1,0 +1,188 @@
+name: iOS
+
+# 没有 Mac 时，用 GitHub 的 macOS runner 编译 + 在 iOS 模拟器里真实运行。
+# 触发：手动、push 到 main/master、以及 PR。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode & simulator runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 插件的 dist/ 不入库，必须先构建插件，否则 Vite 解析不到入口
+      - name: Build local plugins
+        run: npm run build:plugins
+
+      # VITE_AUTOTEST=1：App 启动后自动跳到插件测试页并把用例跑完
+      - name: Build web assets (autotest build)
+        env:
+          VITE_AUTOTEST: '1'
+        run: npm run build
+
+      - name: Sync iOS project
+        run: npx cap sync ios
+
+      - name: Static checks (plugin wiring)
+        run: npm run verify:ios
+
+      - name: Resolve Swift packages (retry on CDN flake)
+        run: |
+          set -o pipefail
+          # capacitor-swift-pm 的 Cordova.xcframework.zip 从 GitHub Release 下载，
+          # 偶尔会返回 504；实测重试几次基本就过了。
+          for attempt in 1 2 3 4; do
+            echo "----- resolve attempt ${attempt} -----"
+            if xcodebuild \
+              -project ios/App/App.xcodeproj \
+              -scheme App \
+              -derivedDataPath build/ios \
+              -resolvePackageDependencies > resolve-ios.log 2>&1; then
+              echo "SPM resolved"
+              exit 0
+            fi
+            echo "attempt ${attempt} failed:"
+            tail -n 15 resolve-ios.log || true
+            sleep 25
+          done
+          echo "::error::SPM 解析连续失败（上游 504 / 网络问题）"
+          grep -m1 -A4 -E "error:" resolve-ios.log | sed 's/^ *//' | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::${line}"
+          done
+          exit 1
+
+      - name: Build app for simulator (unsigned)
+        run: |
+          set -o pipefail
+          # 不静默：把完整日志落到文件，失败时把前几条 error: 抛成 annotation（公开页面可直接看到）
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build > build-ios.log 2>&1 || true
+          status=$?
+          echo "----- last 40 lines -----"
+          tail -n 40 build-ios.log || true
+          if ! grep -q "BUILD SUCCEEDED" build-ios.log; then
+            echo "----- compile errors -----"
+            grep -E "error:" build-ios.log | head -n 20 || true
+            first_error=$(grep -m1 -E "error:" build-ios.log | sed 's/^ *//' || true)
+            echo "::error::${first_error:-iOS build failed (see log)}"
+            # 很多错误（尤其是 SPM 解析失败）真正的原因在 "error:" 之后的几行，逐行抛 annotation
+            echo "----- first error block（含后续上下文）-----"
+            grep -A6 -m1 -E "error:" build-ios.log | head -n 12 || true
+            grep -A6 -m1 -E "error:" build-ios.log | head -n 6 | sed 's/^ *//' | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::${line}"
+            done
+            exit 1
+          fi
+
+      - name: Run app in simulator and verify plugin (fail on error)
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices[][] | select(.name | test("iPhone"))][0].udid')
+          echo "Simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+          APP=$(find build/ios/Build/Products -name "App.app" -maxdepth 3 | head -n 1)
+          echo "App bundle: $APP"
+          xcrun simctl install "$UDID" "$APP"
+
+          # --console-pty 会接管 App 的 stdout，Capacitor 把 JS console.log 转发到原生 print
+          xcrun simctl launch --console-pty "$UDID" com.myapp.testionic > sim-console.log 2>&1 &
+          LAUNCH_PID=$!
+          # 轮询等待 autotest 结果（最长 180s）：固定 sleep 在慢机器/用例变多时容易不够
+          for i in $(seq 1 36); do
+            if grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
+              echo "autotest finished after ~$((i * 5))s"
+              break
+            fi
+            sleep 5
+          done
+          sleep 2
+
+          xcrun simctl io "$UDID" screenshot ios-launch.png || true
+          kill "$LAUNCH_PID" 2>/dev/null || true
+
+          echo "----- simulator console (tail) -----"
+          tail -n 100 sim-console.log || true
+          echo "------------------------------------"
+
+          if ! grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
+            echo "::error::autotest marker not found in simulator console"
+            echo "----- sim-console.log (last 60 lines for diagnosis) -----"
+            tail -n 60 sim-console.log || true
+            exit 1
+          fi
+          if ! grep -q '"ok":true' sim-console.log; then
+            echo "::error::autotest reported a failure"
+            echo "----- sim-console.log (last 60 lines for diagnosis) -----"
+            tail -n 60 sim-console.log || true
+            exit 1
+          fi
+          echo "autotest passed:"
+          grep -o 'PLUGIN_AUTOTEST_RESULT .*' sim-console.log | head -n 1
+
+      - name: Upload simulator artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator
+          path: |
+            ios-launch.png
+            sim-console.log
+          if-no-files-found: warn
+
+      - name: Publish autotest result to job summary
+        if: always()
+        run: |
+          {
+            echo "## iOS 模拟器自动验证"
+            echo ''
+            if [ -f sim-console.log ] && grep -q 'PLUGIN_AUTOTEST_RESULT' sim-console.log; then
+              echo '```json'
+              grep -o 'PLUGIN_AUTOTEST_RESULT .*' sim-console.log | head -n 1 | sed 's/^PLUGIN_AUTOTEST_RESULT //'
+              echo '```'
+            else
+              echo '没有找到 autotest 结果，请查看 sim-console.log 工件。'
+              if [ -f sim-console.log ]; then
+                echo ''
+                echo '<details><summary>sim-console.log 尾部（诊断）</summary>'
+                echo ''
+                echo '```'
+                tail -n 60 sim-console.log
+                echo '```'
+                echo '</details>'
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

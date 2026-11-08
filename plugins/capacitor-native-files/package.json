@@ -1,0 +1,31 @@
+{
+  "name": "capacitor-native-files",
+  "version": "0.5.1",
+  "description": "Capacitor 文件系统插件：系统选择器 + 真实绝对路径读写/遍历（可拼路径）+ 所有文件访问权限 + 常用目录；与 data-channel 配合做高速传输",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": ["capacitor", "plugin", "native", "files", "path", "document-picker", "storage"],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": { "src": "android" },
+    "ios": { "src": "ios" }
+  }
+}
