@@ -4,7 +4,47 @@
 > 已完成的 12 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
-> ## ⏸ 2026-11-07 23:30 收尾状态（明天从这里继续）
+> ## ⏸ 2026-11-08 23:15 收尾状态（明天从这里继续）
+>
+> **仓库已重建（重要）**：旧的 `cinic <cinic@users.noreply.github.com>` 作者身份会让 GitHub 把
+> 真实用户 `cinic` 算成协作者，因此已删除旧库/旧历史重来：
+> - 新仓库：`Cinichengbuweikong/tmp_testionic`，**单提交** `756610f`「初始提交：12 个插件 + 验证 App」；
+> - 作者：`Cinichengbuweikong <Cinichengbuweikong@users.noreply.github.com>`（仓库级 git config 已设好）；
+> - 贡献者列表现在只有本人；新库第一次 iOS CI **success**；
+> - 旧 `.git`（98 个提交）备份在 `D:\projs\testionic-old-git-backup.zip`（确认不要可删）；
+> - 本地设备/模拟器均已部署过、`main` 跟踪 `origin/main`。
+>
+> **插件已清理为纯源码**：`plugins/` 从 288MB 降到 **0.9MB / 197 文件**（删了 node_modules、dist、
+> android/build、.cxx、.gradle）。以后在这个仓库构建前先跑 `npm run build:plugins`（或直接
+> `npm run android:deploy`，它第一步就是它）。12/12 已用"干净副本"验证过能 `npm install && npm run build`。
+>
+> **新增** `npm run audit:plugins`（`scripts/audit-plugins.mjs`）：检查 jsName 三端一致性、方法数、
+> 包字段、陈旧引用。当前输出「未发现结构性问题」（`addListener`/`removeAllListeners` 已排除，
+> 它们不需要原生 `@PluginMethod`）。
+>
+> **环境坑（已确认）**：本机默认 `JAVA_HOME` 是 **JDK 17**，而项目 `compileOptions = VERSION_21`
+> （app 与所有插件模块）→ 终端里 `gradlew installDebug` 会因 `invalid source release: 21` 失败；
+> Android Studio 用自带 **JBR 21**（`C:\Program Files\Android\Android Studio\jbr`）所以能跑。
+> `scripts/deploy-android.ps1` 已显式设置该 JAVA_HOME。查看 Gradle 实际用哪个 JDK：
+> `cd android; .\gradlew.bat --version` 的 `Launcher JVM / Daemon JVM` 两行。
+>
+> **明天第一件事：Live Reload（热更新）实验**（用户想做，方案已调研完，未实施）：
+> - 方式 A：`npx cap run android -l --host localhost --port 5173`（CLI 只改平台 assets 里的 config、退出还原）；
+>   配合 `adb reverse tcp:5173 tcp:5173` 最稳（不用同 Wi-Fi、不用改 network_security_config）；
+>   方式 B：根 `capacitor.config.json` 加 `server.url` + `cleartext: true`（**上线前必须删**）。
+> - **4 个坑**：① Vite 默认只监听 127.0.0.1，要 `--host` 或 `adb reverse`；
+>   ② **data-channel 的 Origin 白名单**（`capacitor://localhost`/`https://localhost`/`http://localhost`/
+>   `ionic://localhost`）不认识 `http://localhost:5173`（带端口）→ 会**静默断开**，dev 时要加；
+>   ③ `Capacitor.convertFileSrc()` 在 live reload 下失效（`_capacitor_file_` 由原生本地服务提供，
+>   请求会打到 Vite → 404）；④ iOS 需要 Mac（无 Mac 只能 CI，CI 连不到你的 dev server）。
+> - 可选交付：`scripts/dev-live.ps1`（自动 adb reverse + 起 vite + cap run + 退出还原配置）。
+>
+> **可选清理**：`.perf/`（7.1MB 基准脚本/截图，已 gitignore）；`D:\projs\testionic-old-git-backup.zip`。
+>
+> **待办/暂缓**（更早列的）：native-files 权限 API 已并入（已完成）；`capacitor-cpp-bridge` 已完成；
+> 更早的「要不要给 Android 加 CI job」用户决定**不加**（本地真机+模拟器足够）。
+
+> ## ⏸ 2026-11-07 23:30 收尾状态（历史记录）
 >
 > **已推送且本地与 origin 同步**（`HEAD == origin/main == b05d3dc`）：
 > - data-channel 6 轮加固（职责收敛 → OTP + 双 server → 逐条 OTP + 协议 → 批量 OTP →
