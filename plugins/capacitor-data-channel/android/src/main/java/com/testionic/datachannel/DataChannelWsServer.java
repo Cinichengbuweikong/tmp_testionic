@@ -69,6 +69,9 @@ public class DataChannelWsServer {
         "ionic://localhost",
     };
 
+    /** 开发环境（Live Reload）额外放行的 Origin。 */
+    private final java.util.Set<String> extraAllowedOrigins;
+
     private final OtpStore otpStore;
     private final boolean wsEcho;
     private final Listener listener;
@@ -90,7 +93,8 @@ public class DataChannelWsServer {
         }
     }
 
-    public DataChannelWsServer(OtpStore otpStore, boolean wsEcho, int maxConnections, Listener listener) {
+    public DataChannelWsServer(OtpStore otpStore, boolean wsEcho, int maxConnections, java.util.Set<String> extraAllowedOrigins, Listener listener) {
+        this.extraAllowedOrigins = extraAllowedOrigins == null ? java.util.Collections.emptySet() : extraAllowedOrigins;
         this.otpStore = otpStore;
         this.wsEcho = wsEcho;
         this.listener = listener;
@@ -611,6 +615,6 @@ public class DataChannelWsServer {
                 return true;
             }
         }
-        return false;
+        return extraAllowedOrigins.contains(normalized);
     }
 }

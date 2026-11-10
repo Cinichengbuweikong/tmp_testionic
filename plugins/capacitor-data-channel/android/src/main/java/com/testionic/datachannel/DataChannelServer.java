@@ -71,12 +71,13 @@ public class DataChannelServer {
     private ExecutorService workers;
     private volatile boolean running = false;
 
-    public DataChannelServer(File root, OtpStore otpStore, long maxBodyBytes, int maxConnections, Listener listener) {
+    public DataChannelServer(File root, OtpStore otpStore, long maxBodyBytes, int maxConnections, java.util.Set<String> extraAllowedOrigins, Listener listener) {
         this.root = root;
         this.otpStore = otpStore;
         this.maxBodyBytes = maxBodyBytes;
         this.listener = listener;
         this.limiter = new OtpStore.ConnectionLimiter(maxConnections);
+        this.extraAllowedOrigins = extraAllowedOrigins == null ? java.util.Collections.emptySet() : extraAllowedOrigins;
     }
 
     public boolean isRunning() {
@@ -739,6 +740,9 @@ public class DataChannelServer {
         "ionic://localhost",
     };
 
+    /** 开发环境（Live Reload）额外放行的 Origin，例如 http://localhost:5173。 */
+    private final java.util.Set<String> extraAllowedOrigins;
+
     private boolean isAllowedOrigin(String origin) {
         String normalized = origin.trim().toLowerCase(Locale.ROOT);
         for (String allowed : ALLOWED_ORIGINS) {
@@ -746,7 +750,8 @@ public class DataChannelServer {
                 return true;
             }
         }
-        return false;
+        // dev 模式（debug: true）下额外放行当前页面 origin（Live Reload 时是 http://host:port）
+        return extraAllowedOrigins.contains(normalized);
     }
 
     // ---------------------------------------------------------------- HTTP 底层

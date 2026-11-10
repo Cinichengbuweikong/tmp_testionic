@@ -4,7 +4,42 @@
 > 已完成的 12 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
-> ## ⏸ 2026-11-08 23:15 收尾状态（明天从这里继续）
+> ## ⏸ 2026-11-10 17:40 收尾状态（明天从这里继续）
+>
+> **今天做的事：Live Reload（真机热更新）方案落地 + data-channel 0.1.2 的 `debug` 支持。**
+>
+> **Live Reload 用法（不写配置，纯命令行）**：
+> - Android（推荐 adb reverse，不用同 Wi-Fi、不用改 network_security_config）：
+>   ```bash
+>   npm run dev -- --host 127.0.0.1 --port 5173          # Vite 3 在 Windows 默认只绑 ::1，必须显式 IPv4
+>   adb reverse tcp:5173 tcp:5173                         # 切 USB 模式/拔插后会丢
+>   npx cap run android -l --host localhost --port 5173 --forwardPorts 5173:5173
+>   ```
+> - iOS：`npx cap run ios -l --external --host <LAN IP> --port 5173`（需 Mac；Info.plist 已有
+>   `NSAllowsLocalNetworking`；iOS 14+ 要允许"本地网络"）。
+> - `cap run -l` 只把 `server.url` 写进平台目录临时配置（`android/app/src/main/assets/capacitor.config.json`），
+>   正常退出还原；**被 kill 会残留**，恢复用 `npx cap copy android`。
+> - **实测通过**（真机 K30S）：`location.origin = http://localhost:5173`；改 `<h2>` 文本 HMR 即时生效/还原；
+>   `cap run` 会跑 gradle，需要 **JDK 21**（JAVA_HOME 指向 AS 的 JBR）。
+>
+> **data-channel 0.1.2（`debug` 参数）**：
+> - `startHttp({ debug: true })` / `startWebSocket({ debug: true })`：从当前 WebView URL 推导 origin
+>   （如 `http://localhost:5173`）并加入 Origin 白名单；生产不要传。
+> - 实现：Android `DataChannelServer`/`DataChannelWsServer` 增加 `extraAllowedOrigins`；
+>   iOS 新增 `DataChannelOrigins.swift`（线程安全）+ 两个 server 改用它；TS 类型已加 `debug`。
+> - **实测**：HTTP `debug:true` → `/health` 200；`debug:false` → `Failed to fetch`（丢弃）；
+>   WS `debug:true` + `otp.` 子协议 → onopen；`debug:false` → onerror。
+> - 注意：WS 必须带 **OTP 子协议**（`new WebSocket(url, ['otp.' + otp])`），只加 `?otp=` 不算（`extractOtp`
+>   也支持 query，但项目里统一用子协议）。
+>
+> **已知坑**：
+> - Live Reload 下 `Capacitor.convertFileSrc()` 不可用（`_capacitor_file_` 请求会打到 Vite → 404）。
+> - 切换 USB 模式会丢 `adb reverse`，HMR WebSocket 也会断；重新 reverse 后刷新页面即可。
+> - 其它插件（statusbar/fullscreen/rotation/keyboard/system-info/basics/foreground-state/force-dark/
+>   webview-to-edge/native-files/cpp-bridge）不依赖 origin，**Live Reload 下无需改动**。
+>
+> **下一步**：验证 data-channel 0.1.2 的 iOS CI（push 后自动跑）；以后需要热更新时按上面的命令做即可。
+> ## ⏸ 2026-11-08 23:15 收尾状态（历史记录）
 >
 > **仓库已重建（重要）**：旧的 `cinic <cinic@users.noreply.github.com>` 作者身份会让 GitHub 把
 > 真实用户 `cinic` 算成协作者，因此已删除旧库/旧历史重来：

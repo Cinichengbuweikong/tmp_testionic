@@ -364,7 +364,7 @@ private final class WSConnection {
         headers = parsed
 
         let origin = headers["origin"]
-        if let origin = origin, !Self.isAllowedOrigin(origin) {
+        if let origin = origin, !DataChannelOrigins.allows(origin) {
             CAPLog.print("[DataChannelWs] dropped: disallowed origin")
             finish()
             return
@@ -395,7 +395,7 @@ private final class WSConnection {
         handshake += "Connection: Upgrade\r\n"
         handshake += "Sec-WebSocket-Accept: \(accept)\r\n"
         handshake += "Sec-WebSocket-Protocol: otp.\(usedOtp)\r\n"
-        if let origin = origin, Self.isAllowedOrigin(origin) {
+        if let origin = origin, DataChannelOrigins.allows(origin) {
             handshake += "Access-Control-Allow-Origin: \(origin)\r\n"
         }
         handshake += "\r\n"
@@ -630,8 +630,7 @@ private final class WSConnection {
     // MARK: 工具
 
     private static func isAllowedOrigin(_ origin: String) -> Bool {
-        let normalized = origin.trimmingCharacters(in: .whitespaces).lowercased()
-        return ["capacitor://localhost", "https://localhost", "http://localhost", "ionic://localhost"].contains(normalized)
+        DataChannelOrigins.allows(origin)
     }
 
     private static func parseQuery(_ raw: String?) -> [String: String] {

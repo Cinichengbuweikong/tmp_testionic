@@ -223,6 +223,21 @@ export interface StartHttpOptions {
 
   /** 已认证连接并发上限（默认 16；未认证连接上限固定为 4）。 */
   maxConnections?: number;
+
+  /**
+   * **开发环境（Live Reload）专用**：额外放行「当前页面 origin」。
+   *
+   * 默认 Origin 白名单是 `capacitor://localhost` / `https://localhost` / `http://localhost` /
+   * `ionic://localhost`；而 `npx cap run android -l --host localhost --port 5173` 时页面 origin 是
+   * `http://localhost:5173`（**带端口**，不等于 `http://localhost`），不额外放行会被静默断开
+   * （现象：fetch 一直挂起 / WebSocket 连不上）。
+   *
+   * 传 `true` 后，插件会从**当前 WebView 的 URL** 推导 origin 并加入白名单。
+   * **生产构建不要传**（默认 false）。
+   *
+   * @since 0.1.2
+   */
+  debug?: boolean;
 }
 
 /** 启动 WebSocket Server 的参数。 */
@@ -235,6 +250,14 @@ export interface StartWsOptions {
 
   /** 已认证连接并发上限（默认 16；未认证连接上限固定为 4）。 */
   maxConnections?: number;
+
+  /**
+   * **开发环境（Live Reload）专用**：额外放行「当前页面 origin」。
+   * 说明同 `StartHttpOptions.debug`：这样 WS 才能从 `http://<host>:<port>` 的页面连上。
+   *
+   * @since 0.1.2
+   */
+  debug?: boolean;
 }
 
 /** 创建 HTTP OTP 的参数。 */

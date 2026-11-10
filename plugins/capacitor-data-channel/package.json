@@ -1,6 +1,6 @@
 {
   "name": "capacitor-data-channel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Capacitor 原生↔WebView 二进制数据通道：本地 HTTP Server（127.0.0.1 + token）实现大文件高速上传下载，绕开 JSON/base64 序列化",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",

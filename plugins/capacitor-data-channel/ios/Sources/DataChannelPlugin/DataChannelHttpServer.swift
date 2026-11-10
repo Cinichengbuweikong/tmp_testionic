@@ -398,7 +398,7 @@ private final class HTTPConnection {
             sendAndClose(status: 204, reason: "No Content", json: nil, origin: origin)
             return
         }
-        if let origin = origin, !Self.isAllowedOrigin(origin) {
+        if let origin = origin, !DataChannelOrigins.allows(origin) {
             finish()
             return
         }
@@ -947,7 +947,7 @@ private final class HTTPConnection {
         lines += "Cache-Control: no-store\r\n"
         lines += "X-Content-Type-Options: nosniff\r\n"
         lines += "Referrer-Policy: no-referrer\r\n"
-        if let origin = origin, isAllowedOrigin(origin) {
+        if let origin = origin, DataChannelOrigins.allows(origin) {
             lines += "Access-Control-Allow-Origin: \(origin)\r\n"
             lines += "Access-Control-Allow-Methods: GET, PUT, POST, OPTIONS\r\n"
             lines += "Access-Control-Allow-Headers: Authorization, Content-Type, Range\r\n"
@@ -976,8 +976,7 @@ private final class HTTPConnection {
     // MARK: 工具
 
     private static func isAllowedOrigin(_ origin: String) -> Bool {
-        let normalized = origin.trimmingCharacters(in: .whitespaces).lowercased()
-        return ["capacitor://localhost", "https://localhost", "http://localhost", "ionic://localhost"].contains(normalized)
+        DataChannelOrigins.allows(origin)
     }
 
     private static func parseQuery(_ raw: String?) -> [String: String] {

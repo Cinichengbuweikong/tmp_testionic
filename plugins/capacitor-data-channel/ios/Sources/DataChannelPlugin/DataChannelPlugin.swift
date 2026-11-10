@@ -101,6 +101,8 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
+            self.applyDebugOrigins(call)
+
             let otps = OtpStore()
             let server = DataChannelHttpServer(
                 root: root,
@@ -145,6 +147,8 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
             self.wsEcho = call.getBool("wsEcho", true)
             let configuredConnections = call.getInt("maxConnections", Self.defaultMaxConnections)
             self.wsMaxConnections = max(1, configuredConnections)
+
+            self.applyDebugOrigins(call)
 
             let otps = OtpStore()
             let server = DataChannelWsServer(otpStore: otps, wsEcho: self.wsEcho, maxConnections: self.wsMaxConnections)
@@ -370,6 +374,24 @@ public class DataChannelPlugin: CAPPlugin, CAPBridgedPlugin {
         return info
     }
 
+    /// 开发环境（Live Reload）下放行当前页面 origin；`debug: false` 时清空额外白名单。
+    ///
+    /// Live Reload 时 WebView 加载的是 `http://<host>:<port>`，其 origin（带端口）不在默认白名单里，
+    /// 不额外放行会导致 fetch 挂起 / WebSocket 被静默断开。
+    private func applyDebugOrigins(_ call: CAPPluginCall) {
+        let debug = call.getBool("debug", false)
+        guard debug else {
+            DataChannelOrigins.setExtra([])
+            return
+        }
+        guard let origin = DataChannelOrigins.origin(of: self.bridge?.webView?.url) else {
+            CAPLog.print("[DataChannel] debug=true but cannot derive page origin, extra origins stays empty")
+            DataChannelOrigins.setExtra([])
+            return
+        }
+        CAPLog.print("[DataChannel] debug mode: allowing dev origin \(origin)")
+        DataChannelOrigins.setExtra([origin])
+    }
     private func httpInfo() -> [String: Any] {
         let running = httpServer?.isRunning ?? false
         return [

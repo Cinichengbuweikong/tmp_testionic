@@ -128,3 +128,17 @@ ws.onmessage = async (event) => {
 
 **更多细节**：[README.md](README.md)（API、OTP 规则、上传协议、WebSocket 消息协议、性能实测、
 安全讨论、平台差异）；[EXAMPLES.md](EXAMPLES.md)（可直接复制的完整示例：上传/断点续传/下载/媒体/WS/错误处理）。
+
+## 开发环境（Live Reload）
+
+`npx cap run android -l --host localhost --port 5173`（配合 `adb reverse tcp:5173 tcp:5173`）会让 WebView
+直接加载 Vite dev server，改前端代码即时生效。此时页面 origin 变成 `http://localhost:5173`（带端口），
+不在 Origin 白名单里，需要在启动时打开 **`debug: true`**：
+
+```ts
+await DataChannel.startHttp({ debug: true });
+await DataChannel.startWebSocket({ debug: true });
+```
+
+插件会从当前 WebView URL 推导 origin 并临时放行；**生产构建不要传**。详细命令与实测结果见 README
+「开发环境：Live Reload」一节。

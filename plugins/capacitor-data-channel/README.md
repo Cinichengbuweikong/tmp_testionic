@@ -108,6 +108,70 @@ await DataChannel.stopHttp();
 await DataChannel.stopWebSocket();
 ```
 
+## 开发环境：Live Reload（热更新，不写配置）
+
+`npx cap run ... -l` 会让 WebView 直接加载你的 dev server（例如 `http://localhost:5173`），
+改前端代码即时生效（HMR），**不需要重新安装 App**。
+
+但此时页面 origin 变成 `http://<host>:<port>`（**带端口**），不在本插件的 Origin 白名单里
+（白名单只有 `capacitor://localhost` / `https://localhost` / `http://localhost` / `ionic://localhost`），
+默认会被**静默断开**（现象：fetch 一直挂起、WebSocket 连不上）。
+
+打开 `debug: true` 即可：插件会从**当前 WebView 的 URL** 推导 origin 并额外放行。
+
+```ts
+const http = await DataChannel.startHttp({ debug: true });
+const ws = await DataChannel.startWebSocket({ debug: true });
+```
+
+> `debug` 只影响本次启动的 server（改动后要重启 server 才生效）；**生产构建不要传**。
+
+### Android（推荐 `adb reverse`：不用同 Wi-Fi、不用改 `network_security_config`）
+
+```bash
+# 1) Vite 必须监听 IPv4 —— Vite 3 在 Windows 上默认只绑 ::1，adb reverse 连不上
+npm run dev -- --host 127.0.0.1 --port 5173
+
+# 2) 设备端口反转到本机（切 USB 模式 / 拔插数据线后会丢，重新执行即可）
+adb reverse tcp:5173 tcp:5173
+
+# 3) live reload 构建安装（--forwardPorts 会自动再做一次 adb reverse）
+npx cap run android -l --host localhost --port 5173 --forwardPorts 5173:5173
+```
+
+`cap run -l` 只把 `server.url` 写进**平台目录里的临时配置**
+（`android/app/src/main/assets/capacitor.config.json`），正常退出会还原；
+**如果中途 Ctrl+C / 被 kill，配置会残留**，用 `npx cap copy android` 恢复即可。
+
+### iOS
+
+```bash
+npx cap run ios -l --external --host <你的 LAN IP> --port 5173
+```
+
+- 需要 Mac（Windows 上无法构建 iOS）；
+- `Info.plist` 需要 `NSAllowsLocalNetworking`（见上面宿主配置）；
+- iOS 14+ 首次会弹"本地网络"权限，需要允许。
+
+### 实测（真机 Redmi K30S / Android 10，2026-11-10）
+
+| 检查 | 结果 |
+| --- | --- |
+| 页面来源 | `location.origin = http://localhost:5173` ✅ |
+| HMR | 改一个 `<h2>` 文本 → 设备页面即时更新、不重装；还原也即时 ✅ |
+| `startHttp({ debug: true })` + `GET /health` | 200 `{"ok":true}` ✅ |
+| `startHttp({})` + `GET /health` | `Failed to fetch`（被 Origin 白名单丢弃）✅ |
+| `startWebSocket({ debug: true })` + `otp.` 子协议 | 握手成功（`onopen`）✅ |
+| `startWebSocket({})` + OTP | `onerror`（被丢弃）✅ |
+
+### 其它注意
+
+- **切换 USB 模式 / 拔插数据线会丢掉 `adb reverse`**，HMR 的 WebSocket 也会断；
+  重新 `adb reverse` 后刷新页面即可恢复（Vite 客户端重连较慢）。
+- Live Reload 下 `Capacitor.convertFileSrc()` **不可用**：`_capacitor_file_` 由原生本地服务提供，
+  请求会打到 Vite → 404。需要看图/视频时请用普通构建。
+- `cap run` 会跑 Gradle，项目 `compileOptions = 21` → 本机需要 **JDK 21**
+  （Android Studio 自带 JBR，或 `JAVA_HOME` 指向它）。
 ## OTP 规则速查
 
 | 项目 | 规则 |
@@ -340,6 +404,7 @@ ws.onmessage = async (event) => {
 | `rootDir` | `string` | 见「数据目录」 | 数据根目录 |
 | `maxBodyBytes` | `number` | 512MB | 单请求上限 |
 | `maxConnections` | `number` | 16 | 已认证连接并发上限（未认证固定 4） |
+| `debug` | `boolean` | `false` | **仅开发环境**：额外放行当前页面 origin（Live Reload 用）。见「开发环境：Live Reload」 |
 
 ### startWebSocket(options?) → WsInfo / stopWebSocket() → WsInfo
 
@@ -348,6 +413,7 @@ ws.onmessage = async (event) => {
 | `port` | `number` | `0` | 0 = 随机端口 |
 | `wsEcho` | `boolean` | `true` | echo 模式 |
 | `maxConnections` | `number` | 16 | 已认证连接并发上限（未认证固定 4） |
+| `debug` | `boolean` | `false` | **仅开发环境**：额外放行当前页面 origin（Live Reload 用） |
 
 ### getHttpInfo() → HttpInfo
 

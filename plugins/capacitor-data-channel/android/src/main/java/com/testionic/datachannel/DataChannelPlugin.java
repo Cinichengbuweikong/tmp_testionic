@@ -68,6 +68,42 @@ public class DataChannelPlugin extends Plugin {
 
     // ---------------------------------------------------------------- HTTP
 
+    /**
+     * 开发环境（Live Reload）下额外放行的 Origin：从**当前 WebView 的 URL** 推导。
+     *
+     * 例如 `npx cap run android -l --host localhost --port 5173` 时页面 origin 是
+     * `http://localhost:5173`——它带端口，和内置白名单里的 `http://localhost` **不相等**，
+     * 不额外放行的话 HTTP/WS 请求会被静默断开（表现为 fetch 挂起 / WS 连不上）。
+     *
+     * 只有 `debug: true` 时才生效；生产构建不要传。
+     */
+    private java.util.Set<String> devOriginsFor(PluginCall call) {
+        boolean debug = Boolean.TRUE.equals(call.getBoolean("debug", Boolean.FALSE));
+        if (!debug) {
+            return java.util.Collections.emptySet();
+        }
+        android.webkit.WebView webView = getBridge().getWebView();
+        String url = webView == null ? null : webView.getUrl();
+        if (url == null || url.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+        try {
+            android.net.Uri uri = android.net.Uri.parse(url);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            if (scheme == null || host == null) {
+                return java.util.Collections.emptySet();
+            }
+            int port = uri.getPort();
+            String origin = scheme.toLowerCase(java.util.Locale.ROOT)
+                + "://" + host.toLowerCase(java.util.Locale.ROOT)
+                + (port > 0 ? ":" + port : "");
+            Log.i(TAG, "debug mode: allowing dev origin " + origin);
+            return java.util.Collections.singleton(origin);
+        } catch (Exception e) {
+            return java.util.Collections.emptySet();
+        }
+    }
     @PluginMethod
     public void startHttp(PluginCall call) {
         getBridge().executeOnMainThread(() -> {
@@ -106,6 +142,7 @@ public class DataChannelPlugin extends Plugin {
                     httpOtps,
                     maxBodyBytes,
                     httpMaxConnections,
+                    devOriginsFor(call),
                     this::onHttpRequestCompleted
                 );
                 httpPort = httpServer.start(requestedPort == null ? 0 : requestedPort);
@@ -149,7 +186,7 @@ public class DataChannelPlugin extends Plugin {
                     : Math.max(1, configuredConnections);
 
                 wsOtps = new OtpStore();
-                wsServer = new DataChannelWsServer(wsOtps, wsEcho, wsMaxConnections, this::onWsClientCountChanged);
+                wsServer = new DataChannelWsServer(wsOtps, wsEcho, wsMaxConnections, devOriginsFor(call), this::onWsClientCountChanged);
                 wsPort = wsServer.start(requestedPort == null ? 0 : requestedPort);
                 wsStartedAt = System.currentTimeMillis();
 
