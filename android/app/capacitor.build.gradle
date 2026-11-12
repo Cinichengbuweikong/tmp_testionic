@@ -12,6 +12,8 @@ dependencies {
     implementation project(':capacitor-status-bar')
     implementation project(':capacitor-foreground-state')
     implementation project(':capacitor-cpp-bridge')
+    implementation project(':capacitor-back-button')
+    implementation project(':capacitor-boot-autostart')
     implementation project(':capacitor-data-channel')
     implementation project(':capacitor-fullscreen')
     implementation project(':capacitor-keyboard-avoiding')

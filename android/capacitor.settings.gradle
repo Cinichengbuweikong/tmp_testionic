@@ -11,6 +11,12 @@ project(':capacitor-foreground-state').projectDir = new File('../plugins/capacit
 include ':capacitor-cpp-bridge'
 project(':capacitor-cpp-bridge').projectDir = new File('../plugins/capacitor-cpp-bridge/android')
 
+include ':capacitor-back-button'
+project(':capacitor-back-button').projectDir = new File('../plugins/capacitor-back-button/android')
+
+include ':capacitor-boot-autostart'
+project(':capacitor-boot-autostart').projectDir = new File('../plugins/capacitor-boot-autostart/android')
+
 include ':capacitor-data-channel'
 project(':capacitor-data-channel').projectDir = new File('../plugins/capacitor-data-channel/android')
 

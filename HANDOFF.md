@@ -4,7 +4,44 @@
 > 已完成的 12 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
-> ## ⏸ 2026-11-10 17:40 收尾状态（明天从这里继续）
+> ## ⏸ 2026-11-13 00:00 收尾状态（新增两个插件）
+>
+> **新增 2 个插件（共 14 个）：`capacitor-back-button`、`capacitor-boot-autostart`。**
+>
+> ### capacitor-back-button（返回键拦截 / PopScope 等价）
+> - API：`enable/disable/isEnabled`、`canGoBack/goBack`、`exitApp`、`minimizeApp`、
+>   `addListener('backButton')`；默认**不拦截**。
+> - Android：`OnBackPressedCallback` 注册在 Activity 的 dispatcher 上；enable 后返回键只派发事件。
+> - iOS：无硬件返回键，`enable/disable` 仅记录状态；`canGoBack/goBack` 用 WKWebView 历史；
+>   `exitApp` reject（Apple 不允许主动退出）。
+> - Web：`history.back()` 模拟。
+> - **实测（Android 16 模拟器）**：enable 后连按返回键 2 次 → 事件计数 2、URL 不变、Activity 不退出；
+>   disable 后按返回键 → Activity 退出回桌面 ✅。
+> - 用法：`await BackButton.enable()` + 监听里 `router.back()` 或 `minimizeApp()`。
+>
+> ### capacitor-boot-autostart（开机自启，Android only）
+> - **结论**：Android 可以做到"开机保活"（`BOOT_COMPLETED` → `specialUse` 前台服务），
+>   **不能**做到"开机自动弹界面"（Android 10+ 禁止后台启动 Activity）；**iOS 完全不可能**
+>   （无开机广播/无公开 API），插件在 iOS 返回 `supported:false`。
+> - API：`getStatus/enable/disable`、`requestNotificationPermission`、
+>   `requestIgnoreBatteryOptimizations`、`openAppSettings/openAutostartSettings`。
+> - Manifest 会自动合并：`RECEIVE_BOOT_COMPLETED`、`FOREGROUND_SERVICE(_SPECIAL_USE)`、
+>   `POST_NOTIFICATIONS`、`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` + `BootReceiver` + `BootService`。
+> - **实测（Android 16 模拟器，adb reboot）**：开机日志
+>   `BOOT_COMPLETED` → `Start proc ... for broadcast {BootReceiver}` →
+>   `Background started FGS: Allowed ... code:BOOT_COMPLETED`；重启后进程存活、
+>   `types=0x40000000`、通知 id 1001 ✅。系统广播排队约 **50 秒**后才送达（正常）。
+> - 限制：强行停止后收不到 BOOT_COMPLETED（stopped state）；MIUI 等需手动允许自启动；
+>   Android 13+ 需要通知权限；Play 对 `specialUse`/电池优化白名单有政策要求。
+>
+> ### 其它
+> - 测试页新增两张卡片：`BackButton`、`BootAutostart`；autotest 覆盖两者（Android 上
+>   boot 断言 `serviceRunning true→false`；iOS 断言 `supported:false`）。
+> - `npx cap sync ios` 已执行，iOS SPM 已包含两个新包；`npm run verify:ios` 通过。
+> - **测试只用了模拟器（`emulator-5554`），没有重启真机**；真机 `32e93a6d` 仍在连接但未改动。
+> - 新增插件同样需要在别的项目里按 `npm install file:` + `npx cap sync` 使用；
+>   `back-button` 无宿主配置；`boot-autostart` 的权限/组件由 Manifest 自动合并。
+> ## ⏸ 2026-11-10 17:40 收尾状态（历史记录）
 >
 > **今天做的事：Live Reload（真机热更新）方案落地 + data-channel 0.1.2 的 `debug` 支持。**
 >

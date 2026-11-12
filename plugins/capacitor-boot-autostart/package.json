@@ -1,0 +1,43 @@
+{
+  "name": "capacitor-boot-autostart",
+  "version": "0.1.0",
+  "description": "Capacitor 开机自启插件（Android）：BOOT_COMPLETED 后启动前台服务保持进程存活，点击图标可立即恢复（热启动）。iOS 系统不允许第三方 App 开机自启，仅返回 supported=false。",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "native",
+    "android",
+    "boot",
+    "autostart",
+    "foreground-service"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

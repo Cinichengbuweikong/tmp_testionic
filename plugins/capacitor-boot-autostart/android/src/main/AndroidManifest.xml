@@ -1,0 +1,47 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 接收开机广播 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 前台服务（保持进程存活） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+：specialUse 类型的前台服务需要该权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Android 13+：前台服务的常驻通知 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 可选：申请"忽略电池优化"，降低被 ROM 杀后台的概率 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application>
+
+        <!--
+          开机广播接收器。
+          注意：应用被"强行停止"后，系统不会再把 BOOT_COMPLETED 发给它，
+          直到用户手动打开一次应用（Android 的 stopped state 规则）。
+        -->
+        <receiver
+            android:name="com.testionic.bootautostart.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- 部分厂商 ROM 的快速开机广播 -->
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 前台服务：开机后保持进程存活，点击图标可热启动 -->
+        <service
+            android:name="com.testionic.bootautostart.BootService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="用户主动开启的开机自启：保持应用进程存活，使点击图标时可立即恢复" />
+        </service>
+
+    </application>
+</manifest>

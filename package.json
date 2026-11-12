@@ -19,6 +19,8 @@
     "@capacitor/status-bar": "^8.0.4",
     "capacitor-foreground-state": "file:plugins/capacitor-foreground-state",
     "capacitor-cpp-bridge": "file:plugins/capacitor-cpp-bridge",
+    "capacitor-back-button": "file:plugins/capacitor-back-button",
+    "capacitor-boot-autostart": "file:plugins/capacitor-boot-autostart",
     "capacitor-data-channel": "file:plugins/capacitor-data-channel",
     "capacitor-fullscreen": "file:plugins/capacitor-fullscreen",
     "capacitor-keyboard-avoiding": "file:plugins/capacitor-keyboard-avoiding",

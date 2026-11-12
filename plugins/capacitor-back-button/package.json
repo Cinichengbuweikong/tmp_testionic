@@ -1,0 +1,43 @@
+{
+  "name": "capacitor-back-button",
+  "version": "0.1.0",
+  "description": "Capacitor 返回键插件：拦截 Android 硬件返回键并交给 JS 决定（Flutter PopScope 的等价能力），附带 canGoBack/goBack/exitApp/minimizeApp。",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "native",
+    "android",
+    "back-button",
+    "popscope",
+    "router"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}
