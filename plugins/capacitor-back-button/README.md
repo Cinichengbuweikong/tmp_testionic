@@ -56,6 +56,8 @@ await handle.remove();
 | `goBack()` | `{ wentBack: boolean }` | 让 WebView 回退一页 |
 | `exitApp()` | `void` | 退出 App（**iOS 会 reject**） |
 | `minimizeApp()` | `void` | 退到后台（Android `moveTaskToBack`；iOS no-op） |
+| `setSwipeBackEnabled({ enabled })` | `{ enabled }` | **iOS**：开关 WKWebView 侧滑返回手势（Android 固定 false） |
+| `getSwipeBackEnabled()` | `{ enabled }` | 读取侧滑手势开关（Android 恒 false） |
 | `addListener('backButton', cb)` | `PluginListenerHandle` | 监听返回键；载荷 `{ canGoBack }` |
 | `removeAllListeners()` | `void` | 移除所有监听 |
 
@@ -68,10 +70,38 @@ await handle.remove();
 | `canGoBack / goBack` | ✅ WebView 历史 | ✅ WKWebView 历史 | ✅ `history` |
 | `exitApp` | ✅ `finish()` | ❌ reject（Apple 不允许） | `window.close()`（通常被拦） |
 | `minimizeApp` | ✅ `moveTaskToBack(true)` | no-op | no-op |
+| 侧滑返回手势 | —（系统返回手势由系统处理） | ✅ `allowsBackForwardNavigationGestures`（`enable()` 时自动开） | — |
 
-> iOS 上 `enable()/disable()` 只记录状态，供 JS 统一调用；如果以后要支持"侧滑返回"，
-> 需要另外监听 `WKNavigationDelegate`（不在本插件范围内）。
+> iOS 上 `enable()/disable()` 只记录状态，并会**自动开启/关闭侧滑返回手势**（见下）。
 
+## iOS 侧滑返回（Safari 风格）
+
+iOS 没有硬件返回键，原生应用一般靠"左上角返回按钮 + 左边缘侧滑"。Capacitor 默认两者都没有
+（它是单个 `CAPBridgeViewController`，没有 `UINavigationController`，也没开 WKWebView 的手势）。
+
+本插件在 `enable()` 时会设置：
+
+```swift
+webView.allowsBackForwardNavigationGestures = true
+```
+
+于是 iOS 上可以**从左边缘向右滑**，像 Safari 一样在 WebView 历史里后退。
+对 hash 路由的 SPA（Vue Router / React Router），效果等同于 `router.back()`（会触发 `popstate`）。
+
+也可以单独控制：
+
+```ts
+await BackButton.setSwipeBackEnabled({ enabled: true });
+const { enabled } = await BackButton.getSwipeBackEnabled();
+```
+
+**注意**：
+
+1. 手势依赖 **WebView 历史栈**：在首页（没有历史）时滑不出上一页，这是正常的；
+2. 如果页面内部有水平滑动组件（轮播图），边缘手势可能和它冲突——可以按页面
+   `setSwipeBackEnabled({ enabled: false })` 临时关掉；
+3. Android 没有这个手势（系统返回手势由系统自己处理，`enable()` 的拦截逻辑已经覆盖）；
+4. 左上角返回按钮仍然需要你自己在页面里画（Capacitor 不提供原生导航栏），点击时调 `router.back()`。
 ## 工作方式
 
 - Android：插件在 `load()` 里向 Activity 的 `OnBackPressedDispatcher` 注册一个
@@ -96,3 +126,4 @@ await handle.remove();
 | `enable()` 后按返回键 | `backButton` 事件触发（连按 2 次，计数 2），页面 URL 不变、Activity 不退出 ✅ |
 | `disable()` 后按返回键 | Activity 正常退出，回到桌面 ✅ |
 | autotest | `enabled:false → true → false`，`canGoBack` 正常 ✅ |
+| iOS 侧滑返回 | 编译验证（CI）；无 Mac 无法本机运行，行为需在 iOS 真机/模拟器上确认 |

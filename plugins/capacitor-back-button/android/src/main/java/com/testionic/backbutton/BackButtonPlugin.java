@@ -111,6 +111,22 @@ public class BackButtonPlugin extends Plugin {
         });
     }
 
+    /** iOS 专属能力；Android 无侧滑返回手势，固定返回 false。 */
+    @PluginMethod
+    public void setSwipeBackEnabled(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("enabled", false);
+        call.resolve(ret);
+    }
+
+    /** iOS 专属能力；Android 固定返回 false。 */
+    @PluginMethod
+    public void getSwipeBackEnabled(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("enabled", false);
+        call.resolve(ret);
+    }
+
     private void resolveEnabled(PluginCall call, boolean value) {
         JSObject ret = new JSObject();
         ret.put("enabled", value);

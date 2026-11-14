@@ -20,19 +20,42 @@ public class BackButtonPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "canGoBack", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "goBack", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "exitApp", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "minimizeApp", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "minimizeApp", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSwipeBackEnabled", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getSwipeBackEnabled", returnType: CAPPluginReturnPromise)
     ]
 
     private var enabled = false
+    private var swipeBackEnabled = false
 
     @objc public func enable(_ call: CAPPluginCall) {
         enabled = true
+        setSwipeBack(true)
         call.resolve(["enabled": true])
     }
 
     @objc public func disable(_ call: CAPPluginCall) {
         enabled = false
+        setSwipeBack(false)
         call.resolve(["enabled": false])
+    }
+
+    @objc public func setSwipeBackEnabled(_ call: CAPPluginCall) {
+        let value = call.getBool("enabled", true)
+        setSwipeBack(value)
+        call.resolve(["enabled": value])
+    }
+
+    @objc public func getSwipeBackEnabled(_ call: CAPPluginCall) {
+        call.resolve(["enabled": swipeBackEnabled])
+    }
+
+    /// 开启/关闭 WKWebView 的侧滑返回（Safari 风格边缘手势）。
+    private func setSwipeBack(_ value: Bool) {
+        swipeBackEnabled = value
+        DispatchQueue.main.async {
+            self.bridge?.webView?.allowsBackForwardNavigationGestures = value
+        }
     }
 
     @objc public func isEnabled(_ call: CAPPluginCall) {

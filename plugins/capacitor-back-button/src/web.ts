@@ -42,6 +42,15 @@ export class BackButtonWeb extends WebPlugin implements BackButtonPlugin {
     window.close();
   }
 
+  async setSwipeBackEnabled(): Promise<{ enabled: boolean }> {
+    // 浏览器没有 WKWebView 的侧滑手势
+    return { enabled: false };
+  }
+
+  async getSwipeBackEnabled(): Promise<{ enabled: boolean }> {
+    return { enabled: false };
+  }
+
   async minimizeApp(): Promise<void> {
     // 浏览器没有"最小化"概念
   }

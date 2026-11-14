@@ -87,6 +87,27 @@ export interface BackButtonPlugin {
   minimizeApp(): Promise<void>;
 
   /**
+   * 开启/关闭 iOS 的侧滑返回手势（WKWebView 的 `allowsBackForwardNavigationGestures`）。
+   *
+   * - **iOS**：从屏幕左边缘向右滑，会像 Safari 一样在 WebView 历史中后退；
+   *   对 hash 路由的 SPA，效果等同于 `router.back()`（触发 `popstate`）。
+   * - **Android**：没有这个手势，调用无效果，返回 `{ enabled: false }`。
+   *
+   * `enable()` 在 iOS 上会自动开启它；`disable()` 会自动关闭。
+   * 如果只想单独控制手势，用这个方法。
+   *
+   * @since 0.2.0
+   */
+  setSwipeBackEnabled(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
+
+  /**
+   * 读取 iOS 侧滑返回手势是否开启（Android 恒为 false）。
+   *
+   * @since 0.2.0
+   */
+  getSwipeBackEnabled(): Promise<{ enabled: boolean }>;
+
+  /**
    * 监听返回键。仅在 `enable()` 之后才会触发。
    *
    * 载荷 `canGoBack` 表示事件发生时 WebView 是否有历史可回退。

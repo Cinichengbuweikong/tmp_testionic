@@ -18,7 +18,7 @@
 | [capacitor-native-files](./capacitor-native-files/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 本地文件系统：系统文件/文件夹选择器、**真实绝对路径**读写（可直接拼路径遍历）、删除、列目录、新建/删除/重命名文件夹、`getInfo`、**所有文件访问权限**、**常用目录（23 个单条路径 API）**；README 含「WebView 直接读文件的 3 种方案（`convertFileSrc` / 自定义 scheme / 本地 HTTP）+ Capacitor 8.6.0 实测坑」 |
 | [capacitor-fullscreen](./capacitor-fullscreen/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 沉浸式全屏：隐藏状态栏+导航栏，带状态事件（可监听/解除） |
 | [capacitor-keyboard-avoiding](./capacitor-keyboard-avoiding/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 键盘避让：keyboardChanged 事件（带高度）+ 可选自动避让（Android 补差 / iOS contentInset） |
-| [capacitor-back-button](./capacitor-back-button/) | ✅ 已验证（模拟器） | ✅ CI 编译通过 | ✅ | **返回键拦截**（PopScope 等价）：`enable()` 后 Android 返回键改为派发 `backButton` 事件，由 JS 决定回路由 / `minimizeApp()` / `exitApp()`；另提供 `canGoBack/goBack` |
+| [capacitor-back-button](./capacitor-back-button/) | ✅ 已验证（模拟器） | ✅ CI 编译通过 | ✅ | **返回键拦截**（PopScope 等价）：`enable()` 后 Android 返回键改为派发 `backButton` 事件，由 JS 决定回路由 / `minimizeApp()` / `exitApp()`；另提供 `canGoBack/goBack`；**iOS** 支持 `allowsBackForwardNavigationGestures` 侧滑返回（0.2.0） |
 | [capacitor-boot-autostart](./capacitor-boot-autostart/) | ✅ 已验证（模拟器重启） | —（iOS 系统不支持） | ✅ | **开机自启**：`BOOT_COMPLETED` → `specialUse` 前台服务保活，点图标热启动；**不能**开机自动弹界面；iOS 返回 `supported=false` |
 
 ## 新增插件的标准流程
