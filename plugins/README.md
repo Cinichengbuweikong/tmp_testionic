@@ -19,7 +19,6 @@
 | [capacitor-fullscreen](./capacitor-fullscreen/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 沉浸式全屏：隐藏状态栏+导航栏，带状态事件（可监听/解除） |
 | [capacitor-keyboard-avoiding](./capacitor-keyboard-avoiding/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 键盘避让：keyboardChanged 事件（带高度）+ 可选自动避让（Android 补差 / iOS contentInset） |
 | [capacitor-back-button](./capacitor-back-button/) | ✅ 已验证（模拟器） | ✅ CI 编译通过 | ✅ | **返回键拦截**（PopScope 等价）：`enable()` 后 Android 返回键改为派发 `backButton` 事件，由 JS 决定回路由 / `minimizeApp()` / `exitApp()`；另提供 `canGoBack/goBack`；**iOS** 支持 `allowsBackForwardNavigationGestures` 侧滑返回（0.2.0） |
-| [capacitor-boot-autostart](./capacitor-boot-autostart/) | ✅ 已验证（模拟器重启） | —（iOS 系统不支持） | ✅ | **开机自启**：`BOOT_COMPLETED` → `specialUse` 前台服务保活，点图标热启动；**不能**开机自动弹界面；iOS 返回 `supported=false` |
 
 ## 新增插件的标准流程
 

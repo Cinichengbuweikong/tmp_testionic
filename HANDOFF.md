@@ -4,9 +4,21 @@
 > 已完成的 12 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
+> ## ⏸ 2026-11-14 22:00 收尾状态（删除 boot-autostart + 真机验证返回键）
+>
+> - **已删除 `capacitor-boot-autostart`**（用户决定：与期望差距大、需求不常见）；根依赖、Android
+>   settings/build.gradle、iOS SPM、测试页卡片/autotest、plugins/README 全部移除，现共 **13 个插件**。
+> - **真机（Redmi K30S / Android 10）验证 `capacitor-back-button`**：
+>   ① `enable()` + 路由模式：`#/about` 按返回 → `#/`（事件 1 次、payload `canGoBack:true`、App 存活）；
+>   ② 首页 `minimizeApp()` 模式：按返回 → 回到桌面、进程存活；
+>   ③ `disable()` 后按返回 → Activity 退出回桌面。
+> - 真机首次 autotest 在 data-channel 处偶发失败（1MB 上传/WS 回显疑似超 8s 超时），**重跑 `ok:true`**；
+>   后续可考虑放宽 autotest 的 fetch/WS 超时，避免旧机型偶发。
+> - iOS 侧滑手势的真实手感仍需 iOS 真机确认（CI 已编译通过）。
+>
 > ## ⏸ 2026-11-13 00:00 收尾状态（新增两个插件）
 >
-> **新增 2 个插件（共 14 个）：`capacitor-back-button`、`capacitor-boot-autostart`。**
+> **新增插件：`capacitor-back-button`（保留）；`capacitor-boot-autostart` 已按用户要求删除（2026-11-14，与期望差距大、需求不常见）。**
 >
 > ### capacitor-back-button（返回键拦截 / PopScope 等价）
 > - API：`enable/disable/isEnabled`、`canGoBack/goBack`、`exitApp`、`minimizeApp`、
@@ -19,7 +31,7 @@
 >   disable 后按返回键 → Activity 退出回桌面 ✅。
 > - 用法：`await BackButton.enable()` + 监听里 `router.back()` 或 `minimizeApp()`。
 >
-> ### capacitor-boot-autostart（开机自启，Android only）
+> ### ~~capacitor-boot-autostart（开机自启，Android only）~~ —— **已删除**（结论保留供以后参考）
 > - **结论**：Android 可以做到"开机保活"（`BOOT_COMPLETED` → `specialUse` 前台服务），
 >   **不能**做到"开机自动弹界面"（Android 10+ 禁止后台启动 Activity）；**iOS 完全不可能**
 >   （无开机广播/无公开 API），插件在 iOS 返回 `supported:false`。

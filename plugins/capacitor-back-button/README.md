@@ -55,7 +55,7 @@ await handle.remove();
 | `canGoBack()` | `{ canGoBack: boolean }` | WebView 是否有可回退历史 |
 | `goBack()` | `{ wentBack: boolean }` | 让 WebView 回退一页 |
 | `exitApp()` | `void` | 退出 App（**iOS 会 reject**） |
-| `minimizeApp()` | `void` | 退到后台（Android `moveTaskToBack`；iOS no-op） |
+| `minimizeApp()` | `void` | 退到后台（Android `moveTaskToBack`；iOS 不做任何动作） |
 | `setSwipeBackEnabled({ enabled })` | `{ enabled }` | **iOS**：开关 WKWebView 侧滑返回手势（Android 固定 false） |
 | `getSwipeBackEnabled()` | `{ enabled }` | 读取侧滑手势开关（Android 恒 false） |
 | `addListener('backButton', cb)` | `PluginListenerHandle` | 监听返回键；载荷 `{ canGoBack }` |
@@ -69,15 +69,14 @@ await handle.remove();
 | `backButton` 事件 | ✅ | ❌ | ❌ |
 | `canGoBack / goBack` | ✅ WebView 历史 | ✅ WKWebView 历史 | ✅ `history` |
 | `exitApp` | ✅ `finish()` | ❌ reject（Apple 不允许） | `window.close()`（通常被拦） |
-| `minimizeApp` | ✅ `moveTaskToBack(true)` | no-op | no-op |
+| `minimizeApp` | ✅ `moveTaskToBack(true)` | 不做任何动作 | 不做任何动作 |
 | 侧滑返回手势 | —（系统返回手势由系统处理） | ✅ `allowsBackForwardNavigationGestures`（`enable()` 时自动开） | — |
 
 > iOS 上 `enable()/disable()` 只记录状态，并会**自动开启/关闭侧滑返回手势**（见下）。
 
 ## iOS 侧滑返回（Safari 风格）
 
-iOS 没有硬件返回键，原生应用一般靠"左上角返回按钮 + 左边缘侧滑"。Capacitor 默认两者都没有
-（它是单个 `CAPBridgeViewController`，没有 `UINavigationController`，也没开 WKWebView 的手势）。
+iOS 没有硬件返回键，原生应用一般靠 "左上角返回按钮 + 左边缘侧滑" (实测 Safari 的页面切换规则是 从左到右滑动返回上一页 从右到左滑动返回下一页 我想或许是 iOS 上系统为 webview 组件内实现了三个实际的展示内容的组件(或许这三个展示内容的组件同时使用一个 webview runtime?)  一个展示上一页 一个展示当前页 一个展示之前来到的下一页  iOS 内部就识别手势并在这几个内容组件之间来回切换展示  实测 iOS 是在页面彻底划出屏幕的一瞬间完成当前 webview 的路由切换的)。Capacitor 默认两者都没有（它是单个 `CAPBridgeViewController`，没有 `UINavigationController`，也没开 WKWebView 的手势）。
 
 本插件在 `enable()` 时会设置：
 

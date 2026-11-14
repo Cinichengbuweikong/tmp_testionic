@@ -224,23 +224,7 @@
         关闭后恢复系统行为。iOS 无硬件返回键，只提供 canGoBack/goBack。
       </p>
     </section>
-    <section class="card">
-      <h2>BootAutostart（开机自启）</h2>
-      <div class="actions">
-        <button @click="bootStatus">读取状态</button>
-        <button @click="bootEnable">开启</button>
-        <button @click="bootDisable">关闭</button>
-        <button @click="bootRequestNotifications">通知权限</button>
-        <button @click="bootRequestBattery">忽略电池优化</button>
-        <button @click="bootOpenSettings">应用设置</button>
-        <button @click="bootOpenAutostart">厂商自启动设置</button>
-      </div>
-      <p class="hint">
-        Android：开启后注册开机广播 + 前台服务，重启后进程自动存活（点图标热启动）。
-        开机不会自动弹界面（系统禁止）；小米等 ROM 还需在设置里允许"自启动"。
-        iOS：系统不允许第三方 App 开机自启，状态恒为 supported=false。
-      </p>
-    </section>
+
     <section class="card">
       <h2>WebViewToEdge</h2>
       <div class="actions">
@@ -273,7 +257,6 @@
 <script>
 import { Capacitor } from '@capacitor/core';
 import { BackButton } from 'capacitor-back-button';
-import { BootAutostart } from 'capacitor-boot-autostart';
 import { ForegroundState } from 'capacitor-foreground-state';
 import {
   DataChannel,
@@ -1208,29 +1191,6 @@ export default {
           results.ok = false;
           results.backButtonError = String((err && err.message) || err);
         }
-        // BootAutostart：Android 支持（enable → serviceRunning → disable）；iOS 应 supported=false
-        try {
-          const bootBefore = await BootAutostart.getStatus();
-          let bootOn = bootBefore;
-          let bootOff = bootBefore;
-          if (bootBefore.supported) {
-            await BootAutostart.enable();
-            await new Promise((resolve) => setTimeout(resolve, 600));
-            bootOn = await BootAutostart.getStatus();
-            bootOff = await BootAutostart.disable();
-          }
-          results.bootAutostart = { supported: bootBefore.supported, before: bootBefore, on: bootOn, off: bootOff };
-          const bootOk = bootBefore.supported === true
-            ? (bootOn.enabled === true && bootOn.serviceRunning === true && bootOff.enabled === false && bootOff.serviceRunning === false)
-            : (bootBefore.supported === false && !!bootBefore.reason);
-          if (!bootOk) {
-            results.ok = false;
-            results.reason = `boot-autostart check failed: ${JSON.stringify(results.bootAutostart)}`;
-          }
-        } catch (err) {
-          results.ok = false;
-          results.bootAutostartError = String((err && err.message) || err);
-        }
         // WebViewToEdge：开 → 读安全区 → 关
         const toEdgeOn = await WebViewToEdge.setEnabled({ enabled: true });
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1457,35 +1417,6 @@ export default {
     async backButtonMinimize() {
       await BackButton.minimizeApp();
       this.print('BackButton.minimizeApp', { ok: true });
-    },
-    async bootStatus() {
-      this.print('BootAutostart.getStatus', await BootAutostart.getStatus());
-    },
-
-    async bootEnable() {
-      this.print('BootAutostart.enable', await BootAutostart.enable());
-    },
-
-    async bootDisable() {
-      this.print('BootAutostart.disable', await BootAutostart.disable());
-    },
-
-    async bootRequestNotifications() {
-      this.print('BootAutostart.requestNotificationPermission', await BootAutostart.requestNotificationPermission());
-    },
-
-    async bootRequestBattery() {
-      this.print('BootAutostart.requestIgnoreBatteryOptimizations', await BootAutostart.requestIgnoreBatteryOptimizations());
-    },
-
-    async bootOpenSettings() {
-      await BootAutostart.openAppSettings();
-      this.print('BootAutostart.openAppSettings', { ok: true });
-    },
-
-    async bootOpenAutostart() {
-      await BootAutostart.openAutostartSettings();
-      this.print('BootAutostart.openAutostartSettings', { ok: true });
     },
     async loadFullscreenState() {
       try {

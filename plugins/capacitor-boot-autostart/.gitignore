@@ -1,6 +1,0 @@
-node_modules
-dist
-android/build
-android/.gradle
-android/local.properties
-*.log
