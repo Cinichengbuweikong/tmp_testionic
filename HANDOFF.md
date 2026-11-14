@@ -38,6 +38,9 @@
 > - 测试页新增两张卡片：`BackButton`、`BootAutostart`；autotest 覆盖两者（Android 上
 >   boot 断言 `serviceRunning true→false`；iOS 断言 `supported:false`）。
 > - `npx cap sync ios` 已执行，iOS SPM 已包含两个新包；`npm run verify:ios` 通过。
+> - **iOS CI 已通过**：`8f98c03`（back-button 0.2.0 含侧滑返回）run `43548899833` 全绿
+>   （Build local plugins / Resolve Swift packages / Build app for simulator / 模拟器 autotest 全部 success）。
+>   iOS 侧滑手势的"手感"仍需真机确认（autotest 无法模拟边缘滑动）。
 > - **测试只用了模拟器（`emulator-5554`），没有重启真机**；真机 `32e93a6d` 仍在连接但未改动。
 > - 新增插件同样需要在别的项目里按 `npm install file:` + `npx cap sync` 使用；
 >   `back-button` 无宿主配置；`boot-autostart` 的权限/组件由 Manifest 自动合并。
