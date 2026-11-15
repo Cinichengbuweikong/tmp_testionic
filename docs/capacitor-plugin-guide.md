@@ -454,6 +454,17 @@ npx cap sync
 # iOS: ios/App/CapApp-SPM/Package.swift 里应出现你的包名
 ```
 
+### CLI 是怎么找到你的插件类的（两个隐蔽规则）
+
+`cap sync` 不是靠配置声明找类，而是靠**正则扫描源码**（因此格式错了会"找不到插件"，不报错）：
+
+1. **Java 文件的 `package x.y;` 和 `@CapacitorPlugin(...)` 必须顶格写**（行首不能有空格）。
+   CLI 用 `^@(?:CapacitorPlugin|NativePlugin)[\s\S]+?class (\w+)` 和 `^package ([\w.]+);?$` 定位类名和包名，
+   带缩进就匹配不到。Gradle 模块名 = 包名去掉 `@`、`/` 换 `-`。
+2. **iOS SPM 包名由 CLI 从 npm 包名推导**：只有首字母和 `-`/`_` 后的字母大写。
+   `capacitor-native-statusbar` → `CapacitorNativeStatusbar`（**不是** `CapacitorNativeStatusBar`）；
+   `Package.swift` 的 `name` 必须等于这个推导名，否则 `CapApp-SPM/Package.swift` 引用不到包（编译报找不到）。
+
 ---
 
 ## 7. 调试
