@@ -274,6 +274,7 @@ import { KeyboardAvoiding } from 'capacitor-keyboard-avoiding';
 import { NativeBasics } from 'capacitor-native-basics';
 import { NativeStatusBar } from 'capacitor-native-statusbar';
 import { Rotation } from 'capacitor-native-rotation';
+import { MyPlugin } from 'capacitor-my-plugin';
 import { SetForceDark } from 'capacitor-set-force-dark';
 import { SystemInfo } from 'capacitor-system-info';
 import { WebViewToEdge } from 'capacitor-webview-to-edge';
@@ -1191,6 +1192,24 @@ export default {
           results.ok = false;
           results.backButtonError = String((err && err.message) || err);
         }
+        // MyPlugin（用户自制插件）：三端都应有实现，消息里带平台名
+        try {
+          const my = await MyPlugin.hello({ name: 'CI' });
+          const expected = Capacitor.getPlatform() === 'ios'
+            ? 'Hello CI from iosPlugin!'
+            : Capacitor.getPlatform() === 'android'
+              ? 'Hello CI from AndroidPlugin!'
+              : 'Hello CI from WebPlugin!';
+          results.myPlugin = my;
+          if (!my || my.message !== expected) {
+            results.ok = false;
+            results.reason = `my-plugin check failed: expected ${expected}, got ${JSON.stringify(my)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.myPluginError = String((err && err.message) || err);
+        }
+
         // WebViewToEdge：开 → 读安全区 → 关
         const toEdgeOn = await WebViewToEdge.setEnabled({ enabled: true });
         await new Promise((resolve) => setTimeout(resolve, 300));

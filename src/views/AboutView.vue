@@ -4,16 +4,33 @@
 
     <button @click="count += 1">click {{ count }} times.</button>
     <button @click="count = 0">clear</button>
+
+    <section class="card">
+      <h2>MyPlugin</h2>
+      <div class="actions">
+        <button @click="myPluginHello">hello</button>
+      </div>
+    </section>
   </div>
 </template>
 
 <script>
+import { MyPlugin } from "capacitor-my-plugin";
+
+
 export default {
   data() {
     return {
       count: 0,
     };
-  }
+  },
+
+  methods: {
+    async myPluginHello() {
+      const res = await MyPlugin.hello({ name: "jack" }); 
+      console.log(`myPluginHello: ${ res.message }`);
+    },
+  },
 };
 </script>
 

@@ -80,15 +80,15 @@ for (const entry of entries) {
   let tsName = null;
   for (const file of tsSources) {
     const text = await read(file);
-    const m = text.match(/registerPlugin<[^>]+>\(\s*'([^']+)'/);
+    const m = text.match(/registerPlugin<[^>]+>\(\s*['"]([^'"]+)['"]/);
     if (m) {
       tsName = m[1];
       break;
     }
   }
   const definitions = await read(path.join(dir, 'src', 'definitions.ts'));
-  const iface = definitions.match(/export interface \w+Plugin \{([\s\S]*?)\n\}/);
-  const tsSigs = iface ? [...iface[1].matchAll(/^\s{2}(\w+)(\?)?\(.*?\):\s*Promise</gm)].map((m) => m[1]) : [];
+  const iface = definitions.match(/export interface \w+\s*\{([\s\S]*?)\n\}/);
+  const tsSigs = iface ? [...iface[1].matchAll(/^\s+(\w+)(\?)?\(.*?\):\s*Promise</gm)].map((m) => m[1]) : [];
   const listenerMethods = new Set(['addListener', 'removeAllListeners', 'removeListener', 'addListeners']);
   const tsMethods = tsSigs.filter((name) => !listenerMethods.has(name)).length;
 

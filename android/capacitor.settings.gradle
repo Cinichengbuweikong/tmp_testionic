@@ -5,17 +5,17 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 include ':capacitor-status-bar'
 project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacitor/status-bar/android')
 
-include ':capacitor-foreground-state'
-project(':capacitor-foreground-state').projectDir = new File('../plugins/capacitor-foreground-state/android')
+include ':capacitor-back-button'
+project(':capacitor-back-button').projectDir = new File('../plugins/capacitor-back-button/android')
 
 include ':capacitor-cpp-bridge'
 project(':capacitor-cpp-bridge').projectDir = new File('../plugins/capacitor-cpp-bridge/android')
 
-include ':capacitor-back-button'
-project(':capacitor-back-button').projectDir = new File('../plugins/capacitor-back-button/android')
-
 include ':capacitor-data-channel'
 project(':capacitor-data-channel').projectDir = new File('../plugins/capacitor-data-channel/android')
+
+include ':capacitor-foreground-state'
+project(':capacitor-foreground-state').projectDir = new File('../plugins/capacitor-foreground-state/android')
 
 include ':capacitor-fullscreen'
 project(':capacitor-fullscreen').projectDir = new File('../plugins/capacitor-fullscreen/android')
@@ -23,17 +23,20 @@ project(':capacitor-fullscreen').projectDir = new File('../plugins/capacitor-ful
 include ':capacitor-keyboard-avoiding'
 project(':capacitor-keyboard-avoiding').projectDir = new File('../plugins/capacitor-keyboard-avoiding/android')
 
+include ':capacitor-my-plugin'
+project(':capacitor-my-plugin').projectDir = new File('../plugins/capacitor-my-plugin/android')
+
 include ':capacitor-native-basics'
 project(':capacitor-native-basics').projectDir = new File('../plugins/capacitor-native-basics/android')
 
-include ':capacitor-native-statusbar'
-project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacitor-native-statusbar/android')
+include ':capacitor-native-files'
+project(':capacitor-native-files').projectDir = new File('../plugins/capacitor-native-files/android')
 
 include ':capacitor-native-rotation'
 project(':capacitor-native-rotation').projectDir = new File('../plugins/capacitor-native-rotation/android')
 
-include ':capacitor-native-files'
-project(':capacitor-native-files').projectDir = new File('../plugins/capacitor-native-files/android')
+include ':capacitor-native-statusbar'
+project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacitor-native-statusbar/android')
 
 include ':capacitor-set-force-dark'
 project(':capacitor-set-force-dark').projectDir = new File('../plugins/capacitor-set-force-dark/android')
