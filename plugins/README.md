@@ -1,5 +1,7 @@
 # plugins/ — 自定义 Capacitor 插件集合
 
+> 📘 想自己写插件？先看 **[从零制作 Capacitor 插件指南](../docs/capacitor-plugin-guide.md)**。
+
 这里存放为本项目（以及未来的项目）自己写的 Capacitor 插件。每个插件是一个**独立的 npm 包**，可以被任意 Capacitor 应用用 `file:` 方式引入，也可以日后发布到 npm / 私有 registry。
 
 ## 现有插件
