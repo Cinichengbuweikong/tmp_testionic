@@ -623,3 +623,7 @@ public class HelloPlugin: CAPPlugin, CAPBridgedPlugin {
 | `capacitor-data-channel` | 本地 HTTP/WS 服务、OTP、二进制传输、Live Reload 适配 |
 | `capacitor-cpp-bridge` | JNI / Swift C 互操作、CMake + SPM、零拷贝 |
 | `capacitor-back-button` | 事件、生命周期、Android 返回键、iOS WKWebView 手势 |
+| `capacitor-permissions` | Capacitor `@Permission` 别名、iOS 各框架授权、串行弹窗 |
+| `capacitor-secure-storage` | Keychain / AndroidKeyStore / WebCrypto、生物识别（CryptoObject / SecAccessControl） |
+| `capacitor-background-keepalive` | Android 前台服务与 FGS 类型限制、iOS 后台执行的真实边界 |
+| `capacitor-live-update` | 自定义 zip 解析（Compression 框架）、ECDSA 验签、`setServerBasePath`、OTA 回滚 |

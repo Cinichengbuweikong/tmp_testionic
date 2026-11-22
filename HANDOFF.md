@@ -1,8 +1,386 @@
 # 项目上下文存档（HANDOFF）
 
-> **用途**：这份文件保存了截至 2026-11-03 本对话中掌握的所有关键信息——本机环境、项目结构、
-> 已完成的 12 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑。
+> **用途**：这份文件保存了截至 2026-11-22 本对话中掌握的所有关键信息——本机环境、项目结构、
+> 已完成的 18 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑，以及 2026-11-21~22
+> 关于 Capacitor 官方/内置能力的调研结论。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
+
+> ## 🆕 2026-11-22 15:10 新增 4 个插件（安全存储 / 后台保活 / 热更新 / 权限）
+>
+> **仓库**：HEAD `018c442`（已 push），`plugins/` 共 **18 个**插件。本轮新增四个：
+>
+> | 插件 | Android | iOS | Web |
+> | --- | --- | --- | --- |
+> | `capacitor-secure-storage` | ✅ 真机+模拟器 | ✅ CI | ✅（WebCrypto，非系统级） |
+> | `capacitor-background-keepalive` | ✅ 真机+模拟器 | ✅ CI | ❌（返回 running:false 并说明） |
+> | `capacitor-live-update` | ✅ 真机（含端到端 OTA） | ✅ CI | ❌（只能 check） |
+> | `capacitor-permissions` | ✅ 真机+模拟器 | ✅ CI | ✅（Permissions API） |
+>
+> ### 各插件一句话总结
+>
+> - **secure-storage**：iOS Keychain（`kSecClassGenericPassword` + 可选
+>   `SecAccessControl(.biometryCurrentSet)`）/ Android AndroidKeyStore AES-256-GCM（密文进
+>   SharedPreferences）/ Web WebCrypto AES-GCM（不可导出 CryptoKey 存 IndexedDB）。
+>   `requireBiometric: true` 的条目：iOS 读取时系统自动弹 Face ID，Android 用
+>   `androidx.biometric` + `CryptoObject`（写入与读取都弹）。错误码区分
+>   `BIOMETRY_NOT_ENROLLED` / `BIOMETRY_KEY_INVALIDATED`（换指纹后旧密文永久失效）/
+>   `VAULT_INVALIDATED`（备份恢复导致密钥不匹配）/ `USER_CANCELED`。
+> - **background-keepalive**：Android 前台服务 + 常驻通知（`specialUse` 默认，可选
+>   `mediaPlayback`/`dataSync`；处理 Android 14+ 类型声明、15+ `onTimeout` 6 小时限制、
+>   `FOREGROUND_SERVICE_IMMEDIATE`、电池优化豁免、`keepScreenOn`）。
+>   iOS **没有**等价能力，提供 `audio`（静音循环，App Store 2.5.4 拒审风险）/ `location`
+>   （需要 UIBackgroundModes + Always 权限）/ `backgroundTask`（`beginBackgroundTask` 续期，
+>   约 30s）三种尽力模式，`auto` 会在没有 audio 背景模式时退化为 `backgroundTask`。
+> - **live-update**：`latest.json` → 下载 zip → **SHA-256 + ECDSA P-256（CryptoKit /
+>   `SHA256withECDSA`）验签** → 解压到 staging → rename（原子）→ 写 Capacitor 自己的
+>   `serverBasePath`（Android `CapWebViewSettings` prefs / iOS
+>   `KeyValueStore["serverBasePath"]`）→ reload。**先 resolve 再 reload**（否则 promise 收不到）。
+>   启动自愈：`pending` 未 `notifyAppReady()` 时每次冷启动 +1，到 2 次自动回滚；原生
+>   versionCode/CFBundleVersion 变化时丢弃 OTA。iOS 自带 `ZipArchive.swift`（解析中央目录 +
+>   `Compression` 框架 raw deflate + CRC32 校验 + 防 zip-slip，**零第三方依赖**）。
+> - **permissions**：16 个统一 id（camera/microphone/location/locationCoarse/notifications/
+>   photos/storage/contacts/calendar/reminders/bluetooth/motion/activityRecognition/
+>   bodySensors/tracking/speech）。Android 用 Capacitor `@Permission` 别名 +
+>   `requestPermissionForAliases`；iOS 逐框架映射 + 串行请求（iOS 一次只能弹一个）。
+>   `check()` 绝不弹窗，autotest 只 check 不 request（避免 CI 被弹窗卡住）。
+>
+> ### 本轮踩到/修掉的新坑（重要）
+>
+> 1. **插件 Manifest 里的 `<service android:name=".XxxService">` 会被解析成宿主包名**
+>    （`com.myapp.testionic.XxxService`）→ 运行时 `Unable to start service ... not found`，
+>    必须写**全限定类名** `com.testionic.backgroundkeepalive.KeepaliveService`。
+> 2. **平台 `android.hardware.biometrics.BiometricPrompt` 的构造器是包级私有、且没有
+>    `PromptInfo`** → 用 `androidx.biometric:biometric:1.1.0`（自带依赖，需网络下载）。
+> 3. **`JSObject.put(key, null)` 会删除这个 key**（org.json 语义），要 JS 拿到 `null`
+>    必须 `put(key, JSONObject.NULL)`。
+> 4. **iOS `CNAuthorizationStatus.limited` 是 iOS 18 才有的枚举** → 低版本 SDK 编译报
+>    "only available in iOS 18"，用 `rawValue` 比较（EventKit 同理）。
+> 5. **iOS 持久化 `serverBasePath` 只取路径最后一段**，去
+>    `Library/NoCloud/ionic_built_snapshots/<最后一段>` 找资源 → bundle 必须装在这个目录下。
+> 6. **`addListener` 的返回类型**别写成 `Promise<Handle> & Handle`，Web 实现会类型不匹配；
+>    统一 `Promise<PluginListenerHandle>`。
+> 7. **`capacitor-my-plugin` 的 Android 返回值与 autotest 断言不一致**（"HelloCIfrom
+>    AndroidPlugin~" vs "Hello CI from AndroidPlugin!"）——之前只有 iOS 跑过 autotest 所以没暴露，
+>    本轮修掉。
+> 8. **`scripts/audit-plugins.mjs` 的 TS 方法计数**原来要求签名写在同一行，跨行签名（参数或
+>    返回值为对象）会漏数 → 改为按行首 `name(` 解析（与 verify-ios.mjs 一致）。
+> 9. 模拟器 API 36 上 `uiautomator` / systemui 偶发 ANR（软件渲染），权限弹窗自动化建议在真机做。
+>
+> ### 验证矩阵（本轮实测）
+>
+> - **真机 Redmi K30S（Android 10 / MIUI 12 / API 29）**：
+>   - `npm run android:deploy -- -Device 32e93a6d`（VITE_AUTOTEST=1）→ autotest `ok:true`
+>     （secure-storage 写入读回、permissions 7 项状态、keepalive 前台服务起停、
+>     live-update 离线验签 4 文件全过）；
+>   - `npm run verify:android` → **PASS**；
+>   - 热更新端到端（`scripts/dev-ota-server.py` + `adb reverse tcp:8899`）：
+>     安装 51 文件/1.19MB → reload 后 `currentVersion 9.9.9`、`pending:true` →
+>     `notifyAppReady` 清 pending → **冷启动直接进 9.9.9**（无闪屏）→ `rollback()` 回 1.0 →
+>     再装一次不确认，**第 2 次冷启动自动回滚**并带 `note`；
+>   - 权限真实弹窗：`check(camera)=prompt` → `request(camera)` 弹 MIUI 授权框 → 点"拒绝" →
+>     返回 `prompt-with-rationale`。
+> - **模拟器 Pixel_6（Android 16 / API 36）**：autotest `ok:true` + `verify:android` **PASS**
+>   （notifications/photos 状态为 `prompt`，符合 13+ 才有该权限）。
+> - **iOS**：`npm run verify:ios` 静态检查通过；**CI 全绿**
+>   （run `44997416394`，commit `fa6a8f5`：Build local plugins / Build app for simulator /
+>   模拟器 autotest 全部 success，即 4 个插件的 Swift 全部编译通过，且 iOS autotest
+>   `ok:true` —— 包含 `verifyBundle` 的 deflate zip 解析 + CryptoKit 验签）。
+>   - 第一次 push（`018c442` / run `44996891496`）在 Swift 编译阶段失败：
+>     `LiveUpdatePlugin.swift` 里把 `private func currentVersion()` 当值用（`let current = currentVersion`），
+>     报 "function produces expected type 'String'"；改成计算属性 `private var currentVersion` 后通过。
+>     **CI 日志不需要 token**：`https://api.github.com/repos/<owner>/<repo>/check-runs/<jobId>/annotations`
+>     可以直接拿到 `::error::` 注解（比抓 HTML 更省事，本轮就是这么定位的）。
+>
+> ### 本轮新增的开发工具
+>
+> - `scripts/make-live-update-fixture.py`：生成/复用 `.perf/fixture-key.pem`（P-256），
+>   产出 `src/plugin-test-fixtures.js`（真实 deflate zip + sha256 + 签名，供三端
+>   `verifyBundle` 自检）；`sign <zip>` 子命令可给任意 zip 签名。
+> - `scripts/dev-ota-server.py`：本地热更新后端（`/latest.json` + `/bundle.zip`，自动
+>   zip + 签名并打印公钥），配合 `adb reverse` 做端到端联调。
+> - 测试页新增 4 张卡片 + 自动测试断言；`src/plugin-test-fixtures.js` 是它们的数据源。
+>
+> ### 尚未完成 / 下次可做
+>
+> - iOS **真机**未验证（无 Mac）：secure-storage 的 Face ID 门控、keepalive 的
+>   `audio`/`location` 模式、live-update 的真实 OTA 都只在模拟器/静态检查层面验证过。
+> - secure-storage 的生物识别**弹窗路径**没有进 autotest（真机会阻塞自动化），
+>   只在真机上验证了"未录入时必须 reject"与 `isBiometryAvailable()`。真机上已录指纹
+>   （`available:true`），手动点测试页的"写入（需生物识别）"可验证完整链路。
+> - `background-keepalive` 的 `mediaPlayback`/`dataSync` 类型只做了声明与代码路径，
+>   没有分别实测（默认 `specialUse` 已实测）。
+> - Android 端热更新只实测了 `http://127.0.0.1`（adb reverse）；公网 HTTPS 未实测。
+
+> ## 🧠 2026-11-22 13:59 收尾状态（本轮只补知识，没有改代码）
+>
+> **本轮没有修改任何插件代码，也没有重新 build/deploy。** 下面是把 2026-11-21~22 的问答
+> 沉淀成"下次开新对话可直接用"的结论。结论基于本机 **Capacitor 8.6.0**；也对比了 npm 最新
+> **8.6.2** 的对应二进制/HTTP 代码，关键结论未变。各插件版本在对应条目中注明。
+>
+> **仓库现状**：HEAD `3a2b005`（`docs: 插件指南补充 CLI 识别插件的两个隐蔽规则`）；
+> 本轮开始前工作区干净，**本轮只修改了 `HANDOFF.md`（尚未提交）**；`plugins/` 下共
+> **14 个插件**；`@capacitor/core|android|ios|cli` 均为 `8.6.0`。
+>
+> **新对话怎么接**：第一句让助手读 `HANDOFF.md`，然后直接说要做哪个插件/哪一步。
+> 插件脚手架用 `plugins/capacitor-my-plugin`，规范看 `docs/capacitor-plugin-guide.md`，
+> 不要再从零解释 Capacitor 基础。
+>
+> **用户背景/偏好**：Vue2/Web 前端，无原生开发经验；喜欢先看源码/代码级证据再下结论；
+> 不需要额外文档时不要主动加；README 里用户手改过的段落要保留。
+>
+> ### 1. Browser / InAppBrowser / iframe
+>
+> - **`@capacitor/browser@8.0.5`**（Ionic 官方）：系统 in-app browser。
+>   - iOS：`SFSafariViewController`；Android：Chrome Custom Tabs（`androidx.browser`，
+>     无 Custom Tabs 时回退 Chrome / `ACTION_VIEW`）；Web：`window.open`。
+>   - API：`open({url, toolbarColor, presentationStyle, width, height})`、`close()`、
+>     `browserFinished`、`browserPageLoaded`；**没有** JS 注入 / 自定义 Header / DOM 访问。
+>   - 共享系统浏览器 Cookie（Safari / Chrome），适合 OAuth/SSO/外部链接。
+> - **`@capacitor/inappbrowser@4.1.0`**（OutSystems，repo `ionic-team/capacitor-os-inappbrowser`，
+>   peer `>=8`）：三种模式：
+>   - `openInWebView`：新建独立 WebView，可定制工具栏/URL/导航按钮/UA/自定义 Header；
+>     Android API 28+ 默认独立进程 `:OSInAppBrowser` + 隔离存储（`isIsolated:false` 可关，
+>     不建议关）；iOS 默认隔离；真正文件字节不过桥；
+>   - `openInSystemBrowser`：SFSafariViewController / Custom Tabs；
+>   - `openInExternalBrowser`：`ACTION_VIEW` / `UIApplication.open`，离开 App。
+>   - 事件：`browserClosed`、`browserPageLoaded`、`browserPageNavigationCompleted`；
+>     Android minSdk 26；无 Web 实现。
+> - **为什么不用 iframe**：`X-Frame-Options` / CSP `frame-ancestors` 会直接拒绝；第三方 Cookie /
+>   storage 分区导致登录态丢失；OAuth 规范（RFC 8252）与 Google 都拒绝嵌入式 WebView；
+>   iframe 没有地址栏/下载/弹窗/权限/密码自动填充，且仍与主 WebView 同进程/同存储。
+> - **选型**：普通链接/OAuth → `browser` 或 `inappbrowser.openInSystemBrowser`；
+>   要可定制内嵌页面 → `inappbrowser.openInWebView`；离开 App → `inappbrowser.openInExternalBrowser`
+>   或 `app-launcher.openUrl`；只有自己控制且明确允许 frame 的内容才用 iframe。
+>
+> ### 2. CapacitorCookies（文档 `/docs/apis/cookies`；不是 npm 包）
+>
+> - 是 `@capacitor/core` 内置插件，直接从 core 导入 `CapacitorCookies`。
+> - 在 `native-bridge.js` 里 **patch `document.cookie` 的 getter/setter**，但**仅当**配置开启：
+>   ```json
+>   { "plugins": { "CapacitorCookies": { "enabled": true } } }
+>   ```
+>   默认 `false`，所以不配置时行为与浏览器原生一致。
+> - **目的**：打通两套 Cookie 世界：
+>   - WebView 的 Cookie（`document.cookie` / `WKWebsiteDataStore` / `android.webkit.CookieManager`）；
+>   - 原生 HTTP 的 Cookie（iOS `HTTPCookieStorage.shared` + `URLSession`；Android
+>     `java.net.CookieHandler` / `HttpURLConnection` / CapacitorHttp）。
+> - **iOS**：`document.cookie` 的读写通过 `prompt(JSON)` 同步桥到原生
+>   `CapacitorCookieManager`：写 `HTTPCookieStorage` + `syncCookiesToWebView()` 到
+>   `WKHTTPCookieStore`；`CapacitorWKCookieObserver` 再把 WebView 的 cookie 反向同步回
+>   `HTTPCookieStorage`。get 会过滤 `isHTTPOnly`。
+> - **Android**：setter 走 `@JavascriptInterface CapacitorCookiesAndroidInterface.setCookie` →
+>   `CapacitorCookieManager`（继承 `java.net.CookieManager`，内部用
+>   `android.webkit.CookieManager`）；`CookieHandler.setDefault(...)` 让 Java HTTP 共享；
+>   getter 保留原始 WebView `document.cookie`（避免暴露 HttpOnly）。
+> - **效果**：JS 写的登录 Cookie 能被原生 HTTP 带上；原生 `Set-Cookie` 也能被 JS 看到；
+>   `CapacitorCookies.*` API 与 `document.cookie` 一致。
+> - **坑**：iOS 用同步 `prompt` 桥，频繁读写会阻塞；只 patch 主文档（iframe 不管）；
+>   HttpOnly 仍对 JS 不可见；解析是简化版；不会和系统 Safari/Chrome 共享。
+>
+> ### 3. CapacitorHttp（core 内置；文档 `/docs/apis/http`）
+>
+> - 默认关闭；开启后 **替换 `window.fetch` 和 `window.XMLHttpRequest`**（不是网络层抓包）：
+>   ```json
+>   { "plugins": { "CapacitorHttp": { "enabled": true } } }
+>   ```
+> - **只接管**通过这两个 API 发出的 http(s) 请求；`<img>`、`<script>`、`<link>`、CSS、iframe、
+>   WebSocket、EventSource、Service Worker 内的 fetch、`sendBeacon`、`<form>` 提交都不管。
+> - 路径分流：
+>   - **GET/HEAD/OPTIONS/TRACE**：URL 改写成
+>     `https://localhost/_capacitor_http_interceptor_?u=<真实URL>`，WebView 发出后由原生
+>     `shouldInterceptRequest` / `URLSchemeTask` 拦截，再用平台 HTTP 请求；
+>     Android 用 `WebResourceResponse(..., InputStream)` **流式**；iOS 用
+>     `URLSession.dataTask` 收完整 `Data` 再回传（**全量缓冲**）。
+>   - **POST/PUT/PATCH/DELETE**：直接 `nativePromise('CapacitorHttp','request', ...)`，
+>     请求/响应都过桥、全量缓冲，再在 JS 构造 `Response`。
+> - **大体积/二进制的实际限制**（8.6.0 与 8.6.2 均存在）：
+>   - `convertBody` 对 `Uint8Array`/`ReadableStream` 用 `new TextDecoder().decode(...)`，
+>     二进制会被 UTF-8 破坏；`Blob`/`ArrayBuffer` 没有专门分支，可能变成 `[object Blob]`/
+>     `[object ArrayBuffer]`；**只有 `File` 走 base64**，相对可靠；
+>   - 原生默认 `responseType = text`：非 JSON 二进制响应会按 UTF-8 解码，`response.arrayBuffer()`
+>     拿到的不是原始字节；`responseType: 'arraybuffer'/'blob'` 返回的是 **base64 字符串**，
+>     需自己解码；
+>   - 大响应全量缓冲（iOS GET 也是整包进内存）；`AbortController`/进度事件不可靠；
+>     `statusText`/`type`/`redirected` 等语义与浏览器不同；
+>   - 需要 `CapacitorCookies.enabled` 才能让原生请求共享 WebView 登录态。
+> - **实用价值**：适合 JSON/text 的**跨域 API**（服务器没配 CORS）、需要共享 Cookie、
+>   设置 `User-Agent` 等受限 Header 的场景；**不是大文件/流式/二进制通道**。
+>   同源或已正确配置 CORS 时直接用原生 `fetch` 更好。
+>
+> ### 4. `@capacitor/file-transfer@2.0.6`（原生文件上传/下载）
+>
+> - 真正原生执行：Android 用 `ionfiletransfer-android`，iOS 用 `ion-ios-filetransfer`
+>   （原生 HTTP + 文件流读写，iOS 是 `URLSession` 下载/上传 task + delegate 进度）。
+>   **文件字节不过 JS Bridge**，只传 URL/路径/Header/进度/结果。
+> - API：
+>   ```ts
+>   const { uri } = await Filesystem.getUri({ directory: Directory.Data, path: 'a.pdf' });
+>   await FileTransfer.downloadFile({ url, path: uri, headers, progress: true });
+>   FileTransfer.addListener('progress', p => { /* p.bytes, p.contentLength, p.lengthComputable */ });
+>
+>   const r = await FileTransfer.uploadFile({
+>     url, path: uri, chunkedMode: true, mimeType: 'image/png', fileKey: 'file',
+>     headers, progress: true,
+>   });
+>   // r: bytesSent, responseCode(string), response, headers
+>   ```
+> - 支持：超时 `readTimeout`/`connectTimeout`（默认 60s）、`disableRedirects`、
+>   `shouldEncodeUrlParams`；上传默认 `multipart/form-data`（要原始流需显式设 `Content-Type`）。
+> - 坑：不负责创建目录；**没有暴露断点续传 API**；**不是后台下载器**（无 Android
+>   DownloadManager / iOS background URLSession 保证）；iOS 要扩展名；Android 公共目录仍受
+>   Scoped Storage 限制；
+>   Web 端是 `fetch + Blob`（内存实现，不是原生）。
+> - 选型：**API 请求用 CapacitorHttp，文件传输用 FileTransfer**。
+>
+> ### 5. `@capacitor/file-viewer@2.0.4`
+>
+> - 仅 Android/iOS，无 Web。
+> - **Android**：本地文件走 `FileProvider`（authority `<packageName>.opener.provider`）+
+>   `Intent.ACTION_VIEW`（`FLAG_GRANT_READ_URI_PERMISSION`）；MIME 由扩展名推断。
+>   - 多个 App 且无默认 → 系统弹"打开方式"；有默认 → 直接打开；**插件不强制 `createChooser`**；
+>   - `openDocumentFromUrl` 在 Android 只是 `ACTION_VIEW` 这个 URL（通常打开浏览器），**不会下载预览**。
+> - **iOS**：`UIDocumentInteractionController.presentPreview(...)` → **App 内 Quick Look 预览**，
+>   不是"Open in..."选择器；用户可点分享按钮再用其他 App 打开。
+> - **Quick Look** 是系统 `QuickLook.framework`；官方常见支持：iWork、Office、RTF、PDF、图片、
+>   符合 `public.text` 的文本、CSV、USDZ；Live Photos/音视频也支持（插件媒体预览另用
+>   `AVPlayerViewController`）。支持列表可能随 iOS 版本变化，第三方可用 Quick Look Extension 扩展。
+>   - `.txt`：✅ 文本预览（UTF-8 最稳）；
+>   - `.html`：UTI `public.html` conforms to `public.text`，会进文本类预览，但**渲染成网页不可靠**；
+>     要渲染网页用 `WKWebView`/`SFSafariViewController`；
+>   - `.zip`：UTI `public.zip-archive` conforms to `public.data`/`public.archive`，**不在 Quick Look
+>     常见支持列表**，通常无法预览；需第三方解压 App 或自己解压。
+> - **`openDocumentFromLocalPath` vs `openDocumentFromResources`**：
+>   - Local：设备文件系统**绝对路径**（可带 `file://`），文件必须存在；
+>   - Resources：App 资源相对路径；Android 从 **`assets/`** 读并复制到 `externalCacheDir` 再打开；
+>     iOS 用 `Bundle.main.path(forResource:ofType:inDirectory:)`；Capacitor 内置 web 资源通常写
+>     `public/docs/help.pdf`；iOS 要求有扩展名。
+> - **`openDocumentFromUrl` 不支持 data URL**：Android/iOS 校验正则都只接受 `http[s]://`。
+>   WebView 生成的 `data:` URL 要先落成带扩展名的临时文件（`Filesystem.writeFile`，
+>   base64 用对应 encoding），再 `openDocumentFromLocalPath`。
+>
+> ### 6. WebView assets 在 Android / iOS 的哪里
+>
+> - **不会解压到可写存储**。
+> - **Android**：`cap sync` 把 `dist/` 复制到 `android/app/src/main/assets/public/`，Gradle 打包进
+>   APK；运行时用 `AssetManager` 从 APK 读（`getAssets().open("public/index.html")`、
+>   `getAssets().list("public")`），不是普通文件路径，只读。查看 APK：
+>   `adb pull .../base.apk` → `unzip -l base.apk | grep assets/public`。
+> - **iOS**：`cap sync` 复制到 `ios/App/App/public/`，打包进 `.app` bundle；用
+>   `Bundle.main.path(forResource:ofType:inDirectory:"public")` / `Bundle.main.url(...)` 读，只读。
+> - JS 侧直接相对路径 `fetch('/index.html')` 即可（WebView 拦截器/AssetHandler 提供）。
+> - `FileViewer.openDocumentFromResources({ path: 'public/...' })` 的根就是 assets/bundle 根。
+> - 要修改/导出：先用原生 API 复制到 cache/files/documents；assets 本身不可写。
+>
+> ### 7. 热更新（web 资源 OTA）
+>
+> - **assets 只读不代表不能热更新**：Capacitor 内置 `WebView` 插件可把 WebView 的 base path
+>   指向可写目录：
+>   ```ts
+>   import { WebView } from '@capacitor/core';
+>
+>   await WebView.setServerBasePath({ path: '/data/.../files/updates/1.2.3' });
+>   await WebView.persistServerBasePath(); // 下次启动仍生效
+>   const { path } = await WebView.getServerBasePath();
+>   await WebView.setServerAssetPath({ path: 'public' }); // 指回内置 assets/bundle
+>   ```
+>   - 路径是**文件系统绝对路径**，不是 `file://` URI；目录里要有 `index.html`；
+>   - Android `Bridge.setServerBasePath` 会 `localServer.hostFiles(path)` 并 reload；
+>   - iOS 会更新 `WebViewAssetHandler` 的 asset path 并 reload；
+>   - origin 不变（`https://localhost` / `capacitor://localhost`），localStorage/IndexedDB 不丢。
+> - **持久化路径**：Android 写 `CapWebViewSettings` SharedPreferences；iOS 写
+>   `KeyValueStore["serverBasePath"]`，重启后按
+>   `Library/NoCloud/ionic_built_snapshots/<最后一段路径>` 解析（Ionic Live Updates 约定）。
+> - **能更新**：HTML/JS/CSS/图片；**不能更新**：Java/Kotlin/Swift 原生代码、插件、权限、
+>   大部分 native 配置。新 JS 必须兼容已安装的旧原生二进制。
+> - 商店政策：Apple 允许解释型代码更新但不得改变 App 主要目的/绕过审核；Google Play 不允许
+>   下载 DEX/native 代码。不要用它绕审核。
+> - 生产建议：Capgo（`@capgo/capacitor-updater`）、Ionic Appflow Live Updates，或自己做
+>   "HTTPS 下载 zip → 校验哈希/签名 → 解压到可写目录 → setServerBasePath → persist → reload"，
+>   并保留旧版本回滚。
+>
+> ### 8. `@capacitor/geolocation@8.2.5` 的 `Position` 单位
+>
+> | 字段 | 单位 |
+> |---|---|
+> | `timestamp` | **毫秒（Unix epoch，UTC）**（Android `Location.getTime()`；iOS `Date*1000`） |
+> | `coords.latitude` / `longitude` | **十进制度（WGS-84）** |
+> | `coords.accuracy` | **米**（水平精度） |
+> | `coords.altitudeAccuracy` | **米**（垂直精度；Android 8.0+ / iOS 全版本，否则 null） |
+> | `coords.altitude` | **米**（Android WGS-84 椭球面以上；iOS 海平面以上） |
+> | `coords.speed` | **米/秒**（iOS 可能 -1、Android 可能 0 表示未知，判断 `>= 0`） |
+> | `coords.heading` | **度**（0–360，优先 trueHeading → magneticHeading → course） |
+> | `coords.magneticHeading` / `trueHeading` / `headingAccuracy` | **度**（仅 `watchPosition`） |
+> | `coords.course` | **度**（相对真北的行进方向；仅 `watchPosition`） |
+>
+> ### 9. `@capacitor/app-launcher@8.0.1` 的 `openUrl`
+>
+> - **不限制协议**：任何系统有处理者的 URL 都能打开，包括 `http/https`、`mailto:`、`sms:`、
+>   `tel:`、`geo:`、`market://`、`whatsapp://`、`tg://`、自定义 scheme 等。
+> - Android：`Intent.ACTION_VIEW` + `Uri.parse(url)` → `startActivity`；失败时还会把 `url`
+>   当包名 `getLaunchIntentForPackage(url)` 尝试启动。iOS：`UIApplication.shared.open(url)`。
+> - `mailto` / `sms` / `tel` **可以**，前提是设备有对应 App：
+>   - `mailto:a@x.com?subject=...&body=...`（参数要 URL 编码）；
+>   - `sms:+86138...?body=...`（iOS 新版本对预填 body 有限制）；
+>   - `tel:+86138...`（RFC 3966，不要空格；iPad/模拟器可能没有电话 App）。
+> - 返回 `{ completed: boolean }` **只表示系统成功接收 Intent/URL**，不代表用户真的发信/通话。
+> - 没有处理者时通常 resolve `completed:false`（不是 reject）；`url` 缺失才 reject。
+> - 如果先调 `canOpenUrl`：Android 11+ 需 `<queries>` 声明 scheme（否则误报 false）；
+>   iOS 自定义 scheme 需 `LSApplicationQueriesSchemes`。`openUrl` 本身不需要这些白名单。
+>
+> ### 10. 原生代码里的"编译期宏"
+>
+> - **Capacitor 不提供统一宏系统**；原生代码由 Gradle / Xcode 编译，用各自构建系统。
+> - **Android（Java/Kotlin 没有预处理器宏）**：
+>   - `buildConfigField`（AGP 8 要先 `buildFeatures { buildConfig true }`）：
+>     ```gradle
+>     buildTypes {
+>       debug   { buildConfigField "String", "API_BASE_URL", "\"https://dev...\"" }
+>       release { buildConfigField "String", "API_BASE_URL", "\"https://api...\"" }
+>     }
+>     ```
+>     生成 `BuildConfig.API_BASE_URL`（`static final` 常量，使用处可内联）。
+>   - 要保证"源码里也没有 if"：用变体源码集
+>     `android/src/debug/java/.../AppEnvironment.java` 与 `src/release/...`，各放一份
+>     `public static final String API_BASE_URL = "...";`（Kotlin 用 `const val`）；每个变体只编译一个。
+>   - `BuildConfig.DEBUG` 在新 AGP 不一定是编译期常量；不要依赖它做严格死代码消除。
+> - **iOS（Swift/ObjC 有真正条件编译）**：
+>   - `#if DEBUG ... #else ... #endif`；`DEBUG` 由 Xcode Debug 的
+>     `Active Compilation Conditions` / `GCC_PREPROCESSOR_DEFINITIONS` 提供；
+>   - 自定义 `STAGING`/`PRODUCTION` 加到对应 configuration 的 Active Compilation Conditions；
+>     Xcode 默认不定义 `RELEASE`，用 `#if !DEBUG` 或手动加；
+>   - Swift 的 `#if` 只能判断编译标志/平台，不能比较字符串；任意值（CI 环境）用 Run Script
+>     生成 `AppEnvironment.swift`，或 `Package.swift` 的
+>     `swiftSettings: [.define("DEBUG", .when(configuration: .debug))]`；
+>   - ObjC 可直接 `#if DEBUG` + `#define API_BASE_URL @"..."`。
+> - 编译期常量会进 APK/IPA，**不要放 secret**。
+>
+> ### 11. 本轮涉及的官方文档
+>
+> - Browser：<https://capacitorjs.com/docs/apis/browser>
+> - InAppBrowser：<https://capacitorjs.com/docs/apis/inappbrowser>
+> - Cookies：<https://capacitorjs.com/docs/apis/cookies>
+> - HTTP：<https://capacitorjs.com/docs/apis/http>
+> - FileTransfer：<https://capacitorjs.com/docs/apis/file-transfer>
+> - FileViewer：<https://capacitorjs.com/docs/apis/file-viewer>
+> - Geolocation：<https://capacitorjs.com/docs/apis/geolocation>
+> - AppLauncher：<https://capacitorjs.com/docs/apis/app-launcher>
+>
+> ### 12. 下一步 / 待办
+>
+> - **当前没有未完成的代码任务**；用户准备开始做新插件，但尚未指定具体插件。
+> - 新插件建议流程：
+>   1. 复制 `plugins/capacitor-my-plugin` 为 `plugins/capacitor-xxx`，改 package name、
+>      `@CapacitorPlugin(name=...)`、Android 包名/类名、iOS `jsName`/SPM product/target；
+>   2. 写 `src/definitions.ts` + `index.ts` + Web fallback；Android/iOS 实现；
+>   3. `npm run build:plugins` → `npm run audit:plugins`；
+>   4. 在 `src/views/PluginTestView.vue` 加卡片/autotest；`npx cap sync`；
+>   5. Android 真机/模拟器 + iOS CI（`npm run verify:ios`）；
+>   6. 补 README（API 字段详解）+ INTRO，更新 `plugins/README.md` 与 HANDOFF。
+> - 常用命令：`npm run build:plugins`、`npm run audit:plugins`、`npm run android:sync`、
+>   `npm run android:deploy`、`npm run verify:android`、`npm run verify:ios`。
+> - 环境/JDK/设备/CI 细节仍见下方 2026-11-14、2026-11-10、2026-11-08 的历史块；
+>   本机 JDK 21 路径 `C:\Program Files\Android\Android Studio\jbr`。
+> - 本轮只改了 `HANDOFF.md`，没有新增/修改插件。
 
 > ## ⏸ 2026-11-14 22:00 收尾状态（删除 boot-autostart + 真机验证返回键）
 >
