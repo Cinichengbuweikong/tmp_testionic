@@ -593,7 +593,8 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
         viewController.setServerBasePath(path: path)
     }
 
-    private func currentVersion() -> String {
+    /// 当前生效的版本号（OTA 包或内置）。用计算属性而不是方法，方便直接当值用。
+    private var currentVersion: String {
         if let currentId = defaults.string(forKey: Keys.current),
            FileManager.default.fileExists(atPath: bundleDir(currentId).path) {
             return defaults.string(forKey: Keys.currentVersion) ?? currentId
