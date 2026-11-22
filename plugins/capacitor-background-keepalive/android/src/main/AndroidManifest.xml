@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 前台服务本体 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ 按类型申请的权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13+ 通知要显示必须有这个权限（属于运行时权限） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 可选：keepScreenOn + 电池优化豁免 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application>
+        <!-- 注意：必须写**全限定类名**。`.KeepaliveService` 会被解析成宿主 App 的包名
+             （com.myapp.testionic.KeepaliveService），运行时 "not found"，服务根本起不来。 -->
+        <service
+            android:name="com.testionic.backgroundkeepalive.KeepaliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse|mediaPlayback|dataSync">
+            <!-- specialUse 类型必须声明用途（Android 14+ 与 Play 审核都要求） -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the app process alive for a user-started background task (socket/file transfer) while a persistent notification is shown." />
+        </service>
+    </application>
+</manifest>

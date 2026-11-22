@@ -8,6 +8,9 @@ project(':capacitor-status-bar').projectDir = new File('../node_modules/@capacit
 include ':capacitor-back-button'
 project(':capacitor-back-button').projectDir = new File('../plugins/capacitor-back-button/android')
 
+include ':capacitor-background-keepalive'
+project(':capacitor-background-keepalive').projectDir = new File('../plugins/capacitor-background-keepalive/android')
+
 include ':capacitor-cpp-bridge'
 project(':capacitor-cpp-bridge').projectDir = new File('../plugins/capacitor-cpp-bridge/android')
 
@@ -23,6 +26,9 @@ project(':capacitor-fullscreen').projectDir = new File('../plugins/capacitor-ful
 include ':capacitor-keyboard-avoiding'
 project(':capacitor-keyboard-avoiding').projectDir = new File('../plugins/capacitor-keyboard-avoiding/android')
 
+include ':capacitor-live-update'
+project(':capacitor-live-update').projectDir = new File('../plugins/capacitor-live-update/android')
+
 include ':capacitor-my-plugin'
 project(':capacitor-my-plugin').projectDir = new File('../plugins/capacitor-my-plugin/android')
 
@@ -37,6 +43,12 @@ project(':capacitor-native-rotation').projectDir = new File('../plugins/capacito
 
 include ':capacitor-native-statusbar'
 project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacitor-native-statusbar/android')
+
+include ':capacitor-permissions'
+project(':capacitor-permissions').projectDir = new File('../plugins/capacitor-permissions/android')
+
+include ':capacitor-secure-storage'
+project(':capacitor-secure-storage').projectDir = new File('../plugins/capacitor-secure-storage/android')
 
 include ':capacitor-set-force-dark'
 project(':capacitor-set-force-dark').projectDir = new File('../plugins/capacitor-set-force-dark/android')

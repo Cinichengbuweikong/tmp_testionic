@@ -88,7 +88,9 @@ for (const entry of entries) {
   }
   const definitions = await read(path.join(dir, 'src', 'definitions.ts'));
   const iface = definitions.match(/export interface \w+\s*\{([\s\S]*?)\n\}/);
-  const tsSigs = iface ? [...iface[1].matchAll(/^\s+(\w+)(\?)?\(.*?\):\s*Promise</gm)].map((m) => m[1]) : [];
+  // 方法签名可能跨多行（参数对象、返回对象换行），所以按"行首是方法名 + 左括号"来数，
+  // 与 verify-ios.mjs 用同一种解析方式，避免两个脚本对同一份代码给出不同结论。
+  const tsSigs = iface ? [...iface[1].matchAll(/^\s+(\w+)\s*\(/gm)].map((m) => m[1]) : [];
   const listenerMethods = new Set(['addListener', 'removeAllListeners', 'removeListener', 'addListeners']);
   const tsMethods = tsSigs.filter((name) => !listenerMethods.has(name)).length;
 

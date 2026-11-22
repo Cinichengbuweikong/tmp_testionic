@@ -1,0 +1,43 @@
+{
+  "name": "capacitor-live-update",
+  "version": "0.1.0",
+  "description": "Capacitor 热更新插件：从后端拉取 zip 包、校验 SHA-256 + ECDSA 签名、原子安装到私有目录并切换 WebView 根路径，支持启动自愈与回滚。",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "live-update",
+    "ota",
+    "hot-update",
+    "code-push",
+    "setServerBasePath"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

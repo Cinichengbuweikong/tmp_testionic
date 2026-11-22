@@ -239,6 +239,75 @@
     </section>
 
     <section class="card">
+      <h2>SecureStorage（Keychain / Keystore）</h2>
+      <div class="actions">
+        <button @click="secureSet">写入 token</button>
+        <button @click="secureGet">读取 token</button>
+        <button @click="secureList">列出键名</button>
+        <button @click="secureRemove">删除 token</button>
+        <button @click="secureClear">清空</button>
+      </div>
+      <div class="actions">
+        <button @click="secureBiometry">生物识别探测</button>
+        <button @click="secureSetBiometric">写入（需生物识别）</button>
+        <button @click="secureAuthenticate">主动验证身份</button>
+      </div>
+      <p class="hint">
+        Android：AndroidKeyStore AES-256-GCM + SharedPreferences；iOS：Keychain；
+        Web：WebCrypto 不可导出密钥。requireBiometric 的条目在读取时会弹系统认证框。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>Permissions（权限检查 / 申请）</h2>
+      <div class="actions">
+        <button @click="permissionsCheck">检查常用权限</button>
+        <button @click="permissionsRequest">申请通知权限</button>
+        <button @click="permissionsRequestCamera">申请相机权限</button>
+        <button @click="permissionsSupported">支持列表</button>
+        <button @click="permissionsOpenSettings">打开应用设置</button>
+      </div>
+      <p class="hint">
+        check() 只读状态、不弹窗；request() 会弹系统授权框（iOS 一次只能弹一个，串行执行）。
+        iOS 记得在 Info.plist 里写好 usage description，否则系统会直接崩溃。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>BackgroundKeepalive（后台保活）</h2>
+      <div class="actions">
+        <button @click="keepaliveStart">启动保活</button>
+        <button @click="keepaliveStop">停止保活</button>
+        <button @click="keepaliveStatus">读取状态</button>
+        <button @click="keepaliveCapabilities">能力矩阵</button>
+        <button @click="keepaliveBattery">电池优化豁免</button>
+      </div>
+      <p class="hint">
+        Android 用前台服务 + 常驻通知（唯一被系统承认的方式）；iOS 没有等价能力，
+        只有 audio / location / backgroundTask 三种「尽力而为」模式，详见能力矩阵。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>LiveUpdate（热更新）</h2>
+      <div class="actions">
+        <button @click="liveUpdateState">读取状态</button>
+        <button @click="liveUpdateVerify">离线自检（zip + 签名）</button>
+        <button @click="liveUpdateCheck">检查更新</button>
+        <button @click="liveUpdateConfigure">配置后端</button>
+      </div>
+      <div class="actions">
+        <button @click="liveUpdateRollback">回滚</button>
+        <button @click="liveUpdateReset">清空 OTA 包</button>
+        <button @click="liveUpdateReload">重载 WebView</button>
+      </div>
+      <p class="hint">
+        离线自检不需要服务器：用内置的已签名 zip 验证「解压 + SHA-256 + ECDSA P-256 验签」。
+        真正安装请先配置 serverUrl（后端需提供 /latest.json 与 zip）。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>配色样例（用来看 forceDark 是否把颜色搞坏）</h2>
       <div class="swatches">
         <div class="swatch" style="background: #f44336">#F44336</div>
@@ -278,6 +347,11 @@ import { MyPlugin } from 'capacitor-my-plugin';
 import { SetForceDark } from 'capacitor-set-force-dark';
 import { SystemInfo } from 'capacitor-system-info';
 import { WebViewToEdge } from 'capacitor-webview-to-edge';
+import { SecureStorage } from 'capacitor-secure-storage';
+import { Permissions } from 'capacitor-permissions';
+import { BackgroundKeepalive } from 'capacitor-background-keepalive';
+import { LiveUpdate } from 'capacitor-live-update';
+import { LIVE_UPDATE_FIXTURE } from '../plugin-test-fixtures';
 
 export default {
   data() {
@@ -1245,6 +1319,185 @@ export default {
           results.ok = false;
           results.fullscreenError = String((err && err.message) || err);
         }
+        // ---------------- SecureStorage（Android Keystore / iOS Keychain / Web WebCrypto） ----------------
+        try {
+          await SecureStorage.clear();
+          const setRes = await SecureStorage.set({ key: 'autotest.token', value: 'secret-token-123' });
+          const got = await SecureStorage.get({ key: 'autotest.token' });
+          const listed = await SecureStorage.keys();
+          const removed = await SecureStorage.remove({ key: 'autotest.token' });
+          const afterRemove = await SecureStorage.get({ key: 'autotest.token' });
+          const info = await SecureStorage.getInfo();
+          const biometry = await SecureStorage.isBiometryAvailable();
+
+          // 生物识别：**不在自动测试里弹窗**（真机上会阻塞流程）。
+          // 只有在设备明确没有可用生物识别时，才验证"必须立刻 reject"这条路径。
+          let biometricPath = 'skipped';
+          if (!biometry.available) {
+            try {
+              await SecureStorage.set({ key: 'autotest.bio', value: 'x', requireBiometric: true });
+              biometricPath = 'unexpected-success';
+            } catch (err) {
+              biometricPath = `rejected:${String((err && err.message) || err).slice(0, 60)}`;
+            }
+          }
+
+          results.secureStorage = {
+            setRes,
+            got,
+            keys: listed.keys,
+            removed,
+            afterRemove,
+            backend: info.backend,
+            itemCount: info.itemCount,
+            biometry,
+            biometricPath,
+          };
+          const ssOk = setRes.requireBiometric === false
+            && got.value === 'secret-token-123'
+            && got.notFound === false
+            && listed.keys.includes('autotest.token')
+            && removed.deleted === true
+            && afterRemove.notFound === true
+            && afterRemove.value === null
+            && typeof info.backend === 'string'
+            && biometricPath !== 'unexpected-success';
+          if (!ssOk) {
+            results.ok = false;
+            results.reason = `secure-storage 失败: ${JSON.stringify(results.secureStorage)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.secureStorageError = String((err && err.message) || err);
+        }
+
+        // ---------------- Permissions（只查不申请，避免系统弹窗卡住 CI） ----------------
+        try {
+          const checked = await Permissions.check({
+            permissions: ['camera', 'microphone', 'location', 'notifications', 'photos', 'contacts', 'bluetooth'],
+          });
+          const supported = await Permissions.getSupported();
+          const validStates = ['granted', 'denied', 'prompt', 'prompt-with-rationale', 'limited', 'restricted', 'unsupported'];
+          const allValid = Object.values(checked.results).every((state) => validStates.includes(state));
+          results.permissions = {
+            results: checked.results,
+            supportedCount: supported.permissions.length,
+            supportedIds: supported.permissions.map((item) => item.id),
+          };
+          if (!allValid || supported.permissions.length === 0) {
+            results.ok = false;
+            results.reason = `permissions 失败: ${JSON.stringify(results.permissions)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.permissionsError = String((err && err.message) || err);
+        }
+
+        // ---------------- BackgroundKeepalive（Android 前台服务 / iOS 尽力模式） ----------------
+        try {
+          const capabilities = await BackgroundKeepalive.getCapabilities();
+          const started = await BackgroundKeepalive.start({ mode: 'auto' });
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          const running = await BackgroundKeepalive.isRunning();
+          const stopped = await BackgroundKeepalive.stop();
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          const afterStop = await BackgroundKeepalive.isRunning();
+          results.keepalive = {
+            platform: capabilities.platform,
+            continuous: capabilities.continuous,
+            modes: capabilities.modes.map((mode) => mode.mode),
+            started,
+            running,
+            stopped,
+            afterStop,
+          };
+          const expectedStart = Capacitor.getPlatform() === 'web' ? false : true;
+          const kOk = capabilities.modes.length > 0
+            && started.running === expectedStart
+            && running.running === expectedStart
+            && stopped.running === false
+            && afterStop.running === false;
+          if (!kOk) {
+            results.ok = false;
+            results.reason = `background-keepalive 失败: ${JSON.stringify(results.keepalive)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.keepaliveError = String((err && err.message) || err);
+        }
+
+        // ---------------- LiveUpdate（离线自检 zip + SHA-256 + ECDSA 验签） ----------------
+        try {
+          const state = await LiveUpdate.getState();
+          const configured = await LiveUpdate.configure({
+            serverUrl: 'https://updates.example.com/testionic',
+            publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+            channel: 'production',
+            allowUnsigned: false,
+          });
+          const config = await LiveUpdate.getConfig();
+          results.liveUpdate = {
+            state: { currentVersion: state.currentVersion, usingOta: state.usingOta, pending: state.pending },
+            configured: { channel: configured.channel, preview: configured.publicKeyPreview },
+            config: { channel: config.channel, appId: config.appId, timeoutMs: config.timeoutMs },
+          };
+
+          if (Capacitor.isNativePlatform()) {
+            const [good, tampered, badSha] = await Promise.all([
+              LiveUpdate.verifyBundle({
+                zipBase64: LIVE_UPDATE_FIXTURE.zipBase64,
+                sha256: LIVE_UPDATE_FIXTURE.sha256,
+                signature: LIVE_UPDATE_FIXTURE.signatureBase64,
+                publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+              }),
+              LiveUpdate.verifyBundle({
+                zipBase64: LIVE_UPDATE_FIXTURE.zipBase64,
+                sha256: LIVE_UPDATE_FIXTURE.sha256,
+                signature: LIVE_UPDATE_FIXTURE.tamperedSignatureBase64,
+                publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+              }),
+              LiveUpdate.verifyBundle({ zipBase64: LIVE_UPDATE_FIXTURE.zipBase64, sha256: 'deadbeef' }),
+            ]);
+            results.liveUpdate.verify = {
+              good: {
+                valid: good.valid,
+                sha256: good.sha256,
+                sha256Matches: good.sha256Matches,
+                signatureValid: good.signatureValid,
+                files: good.files,
+                entries: good.entries,
+                note: good.note,
+              },
+              tampered: { valid: tampered.valid, signatureValid: tampered.signatureValid },
+              badSha: { valid: badSha.valid, sha256Matches: badSha.sha256Matches },
+            };
+            const luOk = good.valid === true
+              && good.signatureValid === true
+              && good.sha256Matches === true
+              && good.sha256 === LIVE_UPDATE_FIXTURE.sha256
+              && good.files === LIVE_UPDATE_FIXTURE.files.length
+              && tampered.valid === false
+              && tampered.signatureValid === false
+              && badSha.valid === false
+              && badSha.sha256Matches === false;
+            if (!luOk) {
+              results.ok = false;
+              results.reason = `live-update 失败: ${JSON.stringify(results.liveUpdate)}`;
+            }
+          } else {
+            results.liveUpdate.verify = 'skipped-on-web';
+          }
+
+          const cfgOk = !!config.publicKeyPreview && config.channel === 'production' && config.timeoutMs === 30000;
+          if (!cfgOk) {
+            results.ok = false;
+            results.reason = `live-update 配置失败: ${JSON.stringify(config)}`;
+          }
+        } catch (err) {
+          results.ok = false;
+          results.liveUpdateError = String((err && err.message) || err);
+        }
+
       } catch (err) {
         results.ok = false;
         results.error = String((err && err.message) || err);
@@ -1253,6 +1506,275 @@ export default {
       window.__pluginTestResult = results;
       this.print('AUTOTEST 结果', results);
       console.log(`PLUGIN_AUTOTEST_RESULT ${JSON.stringify(results)}`);
+    },
+
+    // ---------------- SecureStorage ----------------
+
+    async secureSet() {
+      try {
+        const res = await SecureStorage.set({ key: 'demo.token', value: `token-${Date.now()}` });
+        this.print('SecureStorage.set 成功', res);
+      } catch (err) {
+        this.error('SecureStorage.set', err);
+      }
+    },
+
+    async secureGet() {
+      try {
+        const res = await SecureStorage.get({ key: 'demo.token', reason: '读取演示 token' });
+        this.print('SecureStorage.get 成功', res);
+      } catch (err) {
+        this.error('SecureStorage.get', err);
+      }
+    },
+
+    async secureList() {
+      try {
+        const [keys, info] = await Promise.all([SecureStorage.keys(), SecureStorage.getInfo()]);
+        this.print('SecureStorage 状态', { keys, info });
+      } catch (err) {
+        this.error('SecureStorage.keys', err);
+      }
+    },
+
+    async secureRemove() {
+      try {
+        const res = await SecureStorage.remove({ key: 'demo.token' });
+        this.print('SecureStorage.remove', res);
+      } catch (err) {
+        this.error('SecureStorage.remove', err);
+      }
+    },
+
+    async secureClear() {
+      try {
+        const res = await SecureStorage.clear();
+        this.print('SecureStorage.clear', res);
+      } catch (err) {
+        this.error('SecureStorage.clear', err);
+      }
+    },
+
+    async secureBiometry() {
+      try {
+        const res = await SecureStorage.isBiometryAvailable();
+        this.print('生物识别能力', res);
+      } catch (err) {
+        this.error('isBiometryAvailable', err);
+      }
+    },
+
+    async secureSetBiometric() {
+      try {
+        const res = await SecureStorage.set({
+          key: 'demo.bio',
+          value: 'biometric-secret',
+          requireBiometric: true,
+          title: '保存生物识别数据',
+          reason: '请验证身份以保存演示数据',
+        });
+        this.print('SecureStorage.set(requireBiometric) 成功', res);
+      } catch (err) {
+        this.error('SecureStorage.set(requireBiometric)', err);
+      }
+    },
+
+    async secureAuthenticate() {
+      try {
+        const res = await SecureStorage.authenticate({ reason: '请验证身份（演示）', title: '身份验证' });
+        this.print('authenticate', res);
+      } catch (err) {
+        this.error('authenticate', err);
+      }
+    },
+
+    // ---------------- Permissions ----------------
+
+    async permissionsCheck() {
+      try {
+        const res = await Permissions.check({
+          permissions: ['camera', 'microphone', 'location', 'notifications', 'photos', 'contacts'],
+        });
+        this.print('权限检查', res);
+      } catch (err) {
+        this.error('Permissions.check', err);
+      }
+    },
+
+    async permissionsRequest() {
+      try {
+        const res = await Permissions.request({ permissions: ['notifications'] });
+        this.print('申请通知权限', res);
+      } catch (err) {
+        this.error('Permissions.request(notifications)', err);
+      }
+    },
+
+    async permissionsRequestCamera() {
+      try {
+        const res = await Permissions.request({ permissions: ['camera'] });
+        this.print('申请相机权限', res);
+      } catch (err) {
+        this.error('Permissions.request(camera)', err);
+      }
+    },
+
+    async permissionsSupported() {
+      try {
+        const res = await Permissions.getSupported();
+        this.print('支持的权限', res);
+      } catch (err) {
+        this.error('Permissions.getSupported', err);
+      }
+    },
+
+    async permissionsOpenSettings() {
+      try {
+        const res = await Permissions.openAppSettings();
+        this.print('打开设置页', res);
+      } catch (err) {
+        this.error('Permissions.openAppSettings', err);
+      }
+    },
+
+    // ---------------- BackgroundKeepalive ----------------
+
+    async keepaliveStart() {
+      try {
+        const res = await BackgroundKeepalive.start({
+          mode: 'auto',
+          notification: {
+            title: '后台保活运行中',
+            text: '点按返回应用',
+            subText: '由 capacitor-background-keepalive 提供',
+          },
+        });
+        this.print('启动保活', res);
+      } catch (err) {
+        this.error('BackgroundKeepalive.start', err);
+      }
+    },
+
+    async keepaliveStop() {
+      try {
+        const res = await BackgroundKeepalive.stop();
+        this.print('停止保活', res);
+      } catch (err) {
+        this.error('BackgroundKeepalive.stop', err);
+      }
+    },
+
+    async keepaliveStatus() {
+      try {
+        const res = await BackgroundKeepalive.isRunning();
+        this.print('保活状态', res);
+      } catch (err) {
+        this.error('BackgroundKeepalive.isRunning', err);
+      }
+    },
+
+    async keepaliveCapabilities() {
+      try {
+        const res = await BackgroundKeepalive.getCapabilities();
+        this.print('保活能力矩阵', res);
+      } catch (err) {
+        this.error('BackgroundKeepalive.getCapabilities', err);
+      }
+    },
+
+    async keepaliveBattery() {
+      try {
+        const [ignored, requested] = await Promise.all([
+          BackgroundKeepalive.isBatteryOptimizationIgnored(),
+          BackgroundKeepalive.requestBatteryOptimizationExemption(),
+        ]);
+        this.print('电池优化豁免', { ignored, requested });
+      } catch (err) {
+        this.error('batteryOptimization', err);
+      }
+    },
+
+    // ---------------- LiveUpdate ----------------
+
+    async liveUpdateState() {
+      try {
+        const [state, config] = await Promise.all([LiveUpdate.getState(), LiveUpdate.getConfig()]);
+        this.print('热更新状态', { state, config });
+      } catch (err) {
+        this.error('LiveUpdate.getState', err);
+      }
+    },
+
+    async liveUpdateVerify() {
+      try {
+        const [ok, tampered, badSha] = await Promise.all([
+          LiveUpdate.verifyBundle({
+            zipBase64: LIVE_UPDATE_FIXTURE.zipBase64,
+            sha256: LIVE_UPDATE_FIXTURE.sha256,
+            signature: LIVE_UPDATE_FIXTURE.signatureBase64,
+            publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+          }),
+          LiveUpdate.verifyBundle({
+            zipBase64: LIVE_UPDATE_FIXTURE.zipBase64,
+            sha256: LIVE_UPDATE_FIXTURE.sha256,
+            signature: LIVE_UPDATE_FIXTURE.tamperedSignatureBase64,
+            publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+          }),
+          LiveUpdate.verifyBundle({ zipBase64: LIVE_UPDATE_FIXTURE.zipBase64, sha256: 'deadbeef' }),
+        ]);
+        this.print('离线自检', { ok, tampered, badSha });
+      } catch (err) {
+        this.error('LiveUpdate.verifyBundle', err);
+      }
+    },
+
+    async liveUpdateConfigure() {
+      try {
+        const res = await LiveUpdate.configure({
+          serverUrl: 'https://updates.example.com/testionic',
+          publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+          channel: 'production',
+          allowUnsigned: false,
+        });
+        this.print('配置热更新后端', res);
+      } catch (err) {
+        this.error('LiveUpdate.configure', err);
+      }
+    },
+
+    async liveUpdateCheck() {
+      try {
+        const res = await LiveUpdate.checkForUpdate();
+        this.print('检查更新', res);
+      } catch (err) {
+        this.error('LiveUpdate.checkForUpdate', err);
+      }
+    },
+
+    async liveUpdateRollback() {
+      try {
+        const res = await LiveUpdate.rollback();
+        this.print('回滚', res);
+      } catch (err) {
+        this.error('LiveUpdate.rollback', err);
+      }
+    },
+
+    async liveUpdateReset() {
+      try {
+        const res = await LiveUpdate.reset();
+        this.print('清空 OTA 包', res);
+      } catch (err) {
+        this.error('LiveUpdate.reset', err);
+      }
+    },
+
+    async liveUpdateReload() {
+      try {
+        await LiveUpdate.reload();
+      } catch (err) {
+        this.error('LiveUpdate.reload', err);
+      }
     },
 
     async runEcho() {

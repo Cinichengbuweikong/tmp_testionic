@@ -22,6 +22,10 @@
 | [capacitor-keyboard-avoiding](./capacitor-keyboard-avoiding/) | ✅ 已验证 | ✅ CI 通过 | ✅ | 键盘避让：keyboardChanged 事件（带高度）+ 可选自动避让（Android 补差 / iOS contentInset） |
 | [capacitor-my-plugin](./capacitor-my-plugin/) | ✅ 已验证（手机） | ✅ CI 编译通过 | ✅ | 学习用最小插件：`hello({ name })` 三端返回问候语（Android/iOS/Web） |
 | [capacitor-back-button](./capacitor-back-button/) | ✅ 已验证（模拟器） | ✅ CI 编译通过 | ✅ | **返回键拦截**（PopScope 等价）：`enable()` 后 Android 返回键改为派发 `backButton` 事件，由 JS 决定回路由 / `minimizeApp()` / `exitApp()`；另提供 `canGoBack/goBack`；**iOS** 支持 `allowsBackForwardNavigationGestures` 侧滑返回（0.2.0） |
+| [capacitor-secure-storage](./capacitor-secure-storage/) | ✅ 已验证（真机 + 模拟器） | ✅ CI 通过 | ✅（WebCrypto，非系统级） | **安全加密存储**：iOS Keychain / Android Keystore(AES-256-GCM) / Web WebCrypto；支持 `requireBiometric` 生物识别门控（Face ID / 指纹），错误码区分"未录入/取消/密钥失效/备份恢复" |
+| [capacitor-background-keepalive](./capacitor-background-keepalive/) | ✅ 已验证（真机 + 模拟器） | ✅ CI 通过 | ❌（浏览器无后台执行） | **后台保活**：Android 前台服务 + 常驻通知（`specialUse`/`mediaPlayback`/`dataSync`，处理 Android 14+ 类型与 15+ 超时）+ 电池优化豁免；iOS 提供 `audio`/`location`/`backgroundTask` 三种**明确标注限制**的尽力模式（README 有 App Store 2.5.4 风险说明） |
+| [capacitor-live-update](./capacitor-live-update/) | ✅ 已验证（真机，含端到端 OTA） | ✅ CI 通过 | ❌（只能 check） | **热更新（OTA）**：从后端拉 zip → **SHA-256 + ECDSA P-256 验签** → 解压到私有目录 → 切换 Capacitor 的 WebView 根路径；**原子安装 + 启动自愈（未确认自动回滚）+ 原生升级丢弃 OTA**；iOS 自带 ZipArchive（Compression 框架，无第三方依赖） |
+| [capacitor-permissions](./capacitor-permissions/) | ✅ 已验证（真机 + 模拟器） | ✅ CI 通过 | ✅（Permissions API） | **权限检查/申请**：统一 id（camera/microphone/location/notifications/photos/storage/contacts/calendar/reminders/bluetooth/motion/activityRecognition/bodySensors/tracking/speech），Android 走 Capacitor `@Permission` 别名，iOS 逐框架映射并串行请求 |
 
 ## 新增插件的标准流程
 

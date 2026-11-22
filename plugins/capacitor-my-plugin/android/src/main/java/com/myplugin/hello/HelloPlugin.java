@@ -15,7 +15,8 @@ public class HelloPlugin extends Plugin {
     @PluginMethod
     public void hello(PluginCall call) {
         String name = call.getString("name", "--");
-        String res = "Hello" + name +  "from AndroidPlugin~";
+        // 与 iOS/Web 实现和 autotest 的断言保持一致："Hello {name} from AndroidPlugin!"
+        String res = "Hello " + name + " from AndroidPlugin!";
 
         JSObject ret = new JSObject(); 
         ret.put("message", res); 

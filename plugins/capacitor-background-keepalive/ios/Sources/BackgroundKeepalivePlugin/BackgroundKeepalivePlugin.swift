@@ -1,0 +1,413 @@
+import AVFoundation
+import Capacitor
+import CoreLocation
+import Foundation
+import UIKit
+
+/**
+ * 后台保活（iOS 侧）。
+ *
+ * iOS **没有** Android 那种「常驻通知 + 前台服务」的等价物，也没有任何 API 能保证任意 App
+ * 在后台持续运行。本插件提供三种"尽力而为"的方式，每种都有明确的适用条件与副作用：
+ *
+ * 1. `audio`  —— 后台播放静音音频（`AVAudioSession.playback` + 循环静音 WAV）。
+ *    这是唯一能让进程**持续**运行的方案，需要宿主 Info.plist 里有
+ *    `UIBackgroundModes = [audio]`。非音频类 App 有被 App Store 拒审的风险。
+ * 2. `location` —— 持续定位（`allowsBackgroundLocationUpdates`）。需要
+ *    `UIBackgroundModes = [location]` + 定位权限，只适合导航/运动类 App。
+ * 3. `backgroundTask` —— `beginBackgroundTask` 续期，只能多争取几十秒~几分钟，
+ *    之后系统仍然会挂起 App（`expirationHandler` 会被调用）。
+ *
+ * Web 端没有后台执行保证。README 有完整能力矩阵与商店政策说明。
+ */
+@objc(BackgroundKeepalivePlugin)
+public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "BackgroundKeepalivePlugin"
+    public let jsName = "BackgroundKeepalive"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "isRunning", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "updateNotification", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getCapabilities", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "isBatteryOptimizationIgnored", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestBatteryOptimizationExemption", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openBatteryOptimizationSettings", returnType: CAPPluginReturnPromise)
+    ]
+
+    private enum ActiveMode: String {
+        case none
+        case audio
+        case location
+        case backgroundTask = "background-task"
+    }
+
+    private var activeMode: ActiveMode = .none
+    private var audioPlayer: AVAudioPlayer?
+    private var locationManager: CLLocationManager?
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    private var audioVolume: Float = 1.0
+    private var distanceFilter: Double = 10
+    private var lastNote: String?
+
+    // MARK: - 生命周期
+
+    deinit {
+        stopEverything()
+    }
+
+    // MARK: - API
+
+    @objc public func start(_ call: CAPPluginCall) {
+        let requested = call.getString("mode", "auto") ?? "auto"
+        audioVolume = call.getFloat("audioVolume", 1.0)
+        distanceFilter = call.getDouble("distanceFilter", 10)
+
+        switch requested {
+        case "auto":
+            startAuto(call)
+        case "audio":
+            startAudio(call)
+        case "location":
+            startLocation(call)
+        case "backgroundTask", "background-task":
+            startBackgroundTask(call)
+        case "specialUse", "mediaPlayback", "dataSync":
+            // 这些是 Android 的模式名；iOS 上按 auto 处理，方便跨平台代码复用
+            startAuto(call)
+        default:
+            call.reject("UNSUPPORTED_MODE: iOS 只支持 auto / audio / location / backgroundTask", "UNSUPPORTED_MODE")
+        }
+    }
+
+    @objc public func stop(_ call: CAPPluginCall) {
+        stopEverything()
+        notifyStatus()
+        call.resolve(statusObject())
+    }
+
+    @objc public func isRunning(_ call: CAPPluginCall) {
+        call.resolve(statusObject())
+    }
+
+    @objc public func updateNotification(_ call: CAPPluginCall) {
+        // iOS 没有常驻通知，能做的只有给 iOS 16+ 的 Live Activity（需要 Widget Extension，超出插件范围）
+        lastNote = "iOS 没有常驻通知；updateNotification() 是空操作。"
+        call.resolve(statusObject())
+    }
+
+    @objc public func getCapabilities(_ call: CAPPluginCall) {
+        var modes: [[String: Any]] = []
+        modes.append([
+            "mode": "audio",
+            "supported": true,
+            "requires": [
+                "Info.plist: UIBackgroundModes 包含 audio",
+                "（可选）AVAudioSession 允许与其他音频共存"
+            ],
+            "effect": "后台持续运行（唯一能长期保活的方式）；非音频类 App 有 App Store 拒审风险",
+            "recommended": hasBackgroundMode("audio")
+        ])
+        modes.append([
+            "mode": "location",
+            "supported": true,
+            "requires": [
+                "Info.plist: UIBackgroundModes 包含 location",
+                "Info.plist: NSLocationAlwaysAndWhenInUseUsageDescription",
+                "用户授予「始终允许」定位权限"
+            ],
+            "effect": "靠持续定位保持运行；只适合导航/运动类 App，耗电明显",
+            "recommended": false
+        ])
+        modes.append([
+            "mode": "backgroundTask",
+            "supported": true,
+            "requires": [],
+            "effect": "每次 beginBackgroundTask 只能延长约 30 秒，可续期但系统仍会挂起 App",
+            "recommended": !hasBackgroundMode("audio")
+        ])
+        call.resolve([
+            "platform": "ios",
+            "continuous": hasBackgroundMode("audio") || hasBackgroundMode("location"),
+            "note": "iOS 没有常驻通知/前台服务；任意 App 的永久后台运行在系统层面不存在。",
+            "modes": modes
+        ])
+    }
+
+    @objc public func isBatteryOptimizationIgnored(_ call: CAPPluginCall) {
+        call.resolve(["applicable": false, "ignored": true])
+    }
+
+    @objc public func requestBatteryOptimizationExemption(_ call: CAPPluginCall) {
+        call.resolve(["applicable": false, "ignored": true, "requested": false])
+    }
+
+    @objc public func openBatteryOptimizationSettings(_ call: CAPPluginCall) {
+        call.resolve(["opened": false])
+    }
+
+    // MARK: - 模式实现
+
+    private func startAuto(_ call: CAPPluginCall) {
+        if hasBackgroundMode("audio") {
+            startAudio(call)
+        } else {
+            startBackgroundTask(call)
+            lastNote = "宿主 Info.plist 没有 UIBackgroundModes: audio，已退化为 backgroundTask（只能延长约 30 秒）。"
+            call.resolve(statusObject())
+        }
+    }
+
+    private func startAudio(_ call: CAPPluginCall) {
+        guard hasBackgroundMode("audio") else {
+            call.reject(
+                "BACKGROUND_MODE_MISSING: 需要在 Info.plist 的 UIBackgroundModes 里加入 audio",
+                "BACKGROUND_MODE_MISSING"
+            )
+            return
+        }
+        DispatchQueue.main.async {
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                try session.setActive(true)
+
+                let data = self.makeSilentWav()
+                let player = try AVAudioPlayer(data: data)
+                player.numberOfLoops = -1
+                player.volume = self.audioVolume
+                player.prepareToPlay()
+                guard player.play() else {
+                    throw NSError(domain: "BackgroundKeepalive", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "AVAudioPlayer.play() 返回 false"])
+                }
+                self.audioPlayer?.stop()
+                self.audioPlayer = player
+                self.stopLocation()
+                self.endBackgroundTask()
+                self.activeMode = .audio
+                self.observeAudioInterruptions()
+                self.lastNote = "正在后台播放静音音频保持运行；App Store 审核可能要求这是音频类 App。"
+                self.notifyStatus()
+                call.resolve(self.statusObject())
+            } catch {
+                call.reject("AUDIO_START_FAILED: \(error.localizedDescription)", "AUDIO_START_FAILED")
+            }
+        }
+    }
+
+    private func startLocation(_ call: CAPPluginCall) {
+        guard hasBackgroundMode("location") else {
+            call.reject(
+                "BACKGROUND_MODE_MISSING: 需要在 Info.plist 的 UIBackgroundModes 里加入 location",
+                "BACKGROUND_MODE_MISSING"
+            )
+            return
+        }
+        DispatchQueue.main.async {
+            let manager = CLLocationManager()
+            manager.delegate = self
+            manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+            manager.distanceFilter = self.distanceFilter
+            manager.allowsBackgroundLocationUpdates = true
+            manager.pausesLocationUpdatesAutomatically = false
+            let status = manager.authorizationStatus
+            if status == .notDetermined {
+                manager.requestAlwaysAuthorization()
+            }
+            manager.startUpdatingLocation()
+            self.locationManager = manager
+            self.stopAudio()
+            self.endBackgroundTask()
+            self.activeMode = .location
+            self.lastNote = "正在持续定位保持运行；需要「始终允许」定位权限。"
+            self.notifyStatus()
+            call.resolve(self.statusObject())
+        }
+    }
+
+    private func startBackgroundTask(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.stopAudio()
+            self.stopLocation()
+            self.beginBackgroundTask()
+            self.activeMode = .backgroundTask
+            self.lastNote = "backgroundTask 只能把挂起时间往后推约 30 秒（可续期，但不保证），"
+                + "不适合需要长期在线的场景；请改用推送或后台 URLSession。"
+            self.notifyStatus()
+            call.resolve(self.statusObject())
+        }
+    }
+
+    private func stopEverything() {
+        stopAudio()
+        stopLocation()
+        endBackgroundTask()
+        activeMode = .none
+        lastNote = nil
+    }
+
+    private func stopAudio() {
+        if let player = audioPlayer {
+            player.stop()
+            audioPlayer = nil
+            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        }
+    }
+
+    private func stopLocation() {
+        locationManager?.stopUpdatingLocation()
+        locationManager?.delegate = nil
+        locationManager = nil
+    }
+
+    // MARK: - 后台任务续期
+
+    private func beginBackgroundTask() {
+        endBackgroundTask()
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "capacitor-background-keepalive") { [weak self] in
+            guard let self = self, self.activeMode == .backgroundTask else { return }
+            // 到期：系统即将挂起 App。这里再申请一次（尽力而为，不保证成功）。
+            let note = "上一次后台任务已到期，已重新申请（iOS 不保证长期有效）。"
+            DispatchQueue.main.async {
+                self.lastNote = note
+                self.beginBackgroundTask()
+                self.notifyStatus()
+            }
+        }
+        if bgTask == .invalid {
+            activeMode = .none
+            lastNote = "beginBackgroundTask 申请失败：App 可能已经在后台，或系统拒绝了请求。"
+        }
+    }
+
+    private func endBackgroundTask() {
+        if bgTask != .invalid {
+            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask = .invalid
+        }
+    }
+
+    // MARK: - 音频中断
+
+    /// 来电/Siri/其他 App 抢占音频会话时，iOS 会中断播放；中断结束后（shouldResume）自动恢复。
+    private func observeAudioInterruptions() {
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleAudioInterruption(_ notification: Notification) {
+        guard activeMode == .audio,
+              let info = notification.userInfo,
+              let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            lastNote = "音频会话被中断（来电/其他 App），保活暂时失效。"
+            notifyStatus()
+        case .ended:
+            let options = (info[AVAudioSessionInterruptionOptionKey] as? UInt).map {
+                AVAudioSession.InterruptionOptions(rawValue: $0)
+            }
+            if options?.contains(.shouldResume) ?? false {
+                try? AVAudioSession.sharedInstance().setActive(true)
+                if audioPlayer?.play() == true {
+                    lastNote = "音频中断结束，已恢复静音播放。"
+                    notifyStatus()
+                    return
+                }
+            }
+            lastNote = "音频中断结束，但无法自动恢复播放；请重新 start({ mode: 'audio' })。"
+            notifyStatus()
+        @unknown default:
+            break
+        }
+    }
+
+    // MARK: - 工具
+
+    private func hasBackgroundMode(_ mode: String) -> Bool {
+        guard let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] else {
+            return false
+        }
+        return modes.contains(mode)
+    }
+
+    /// 生成 1 秒 8kHz 单声道 16bit 的**全零** WAV（无声），用于循环播放。
+    private func makeSilentWav(seconds: Double = 1.0, sampleRate: Int = 8000) -> Data {
+        let sampleCount = Int(Double(sampleRate) * seconds)
+        let dataSize = sampleCount * 2
+        var data = Data()
+        func ascii(_ value: String) { data.append(contentsOf: Array(value.utf8)) }
+        func u32(_ value: UInt32) {
+            var little = value.littleEndian
+            withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+        }
+        func u16(_ value: UInt16) {
+            var little = value.littleEndian
+            withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+        }
+        ascii("RIFF")
+        u32(UInt32(36 + dataSize))
+        ascii("WAVE")
+        ascii("fmt ")
+        u32(16)
+        u16(1)                      // PCM
+        u16(1)                      // 单声道
+        u32(UInt32(sampleRate))
+        u32(UInt32(sampleRate * 2)) // byte rate
+        u16(2)                      // block align
+        u16(16)                     // bits per sample
+        ascii("data")
+        u32(UInt32(dataSize))
+        data.append(Data(count: dataSize))
+        return data
+    }
+
+    private func statusObject() -> [String: Any] {
+        var result: [String: Any] = [
+            "running": activeMode != .none,
+            "platform": "ios",
+            "mode": activeMode.rawValue
+        ]
+        if activeMode == .backgroundTask {
+            let remaining = UIApplication.shared.backgroundTimeRemaining
+            result["backgroundTimeRemaining"] = remaining.isFinite ? remaining : -1
+        } else {
+            result["backgroundTimeRemaining"] = NSNull()
+        }
+        if let note = lastNote {
+            result["note"] = note
+        }
+        return result
+    }
+
+    private func notifyStatus() {
+        notifyListeners("keepaliveChanged", data: statusObject())
+    }
+}
+
+// MARK: - CLLocationManagerDelegate
+
+extension BackgroundKeepalivePlugin: CLLocationManagerDelegate {
+    public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        // 只是为了让 App 保持活跃，不需要处理坐标
+    }
+
+    public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        lastNote = "定位失败：\(error.localizedDescription)（持续定位可能已中断）"
+        notifyStatus()
+    }
+
+    public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
+            lastNote = "定位权限被拒绝，location 模式无法保活。"
+            notifyStatus()
+        }
+    }
+}

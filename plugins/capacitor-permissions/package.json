@@ -1,0 +1,43 @@
+{
+  "name": "capacitor-permissions",
+  "version": "0.1.0",
+  "description": "Capacitor 权限插件：统一 id 检查/申请 Android 运行时权限与 iOS 系统权限（相机、麦克风、定位、通知、照片、联系人、日历、蓝牙、运动、ATT、语音）。",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "dist/"
+  ],
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "permissions",
+    "runtime-permissions",
+    "camera",
+    "notifications",
+    "location"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}
