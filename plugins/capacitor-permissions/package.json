@@ -1,6 +1,6 @@
 {
   "name": "capacitor-permissions",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Capacitor 权限插件：统一 id 检查/申请 Android 运行时权限与 iOS 系统权限（相机、麦克风、定位、通知、照片、联系人、日历、蓝牙、运动、ATT、语音）。",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",

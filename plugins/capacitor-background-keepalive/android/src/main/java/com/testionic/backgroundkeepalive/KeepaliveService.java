@@ -7,8 +7,8 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
-import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
@@ -24,6 +24,10 @@ import androidx.core.app.ServiceCompat;
  * 这是 Android 上唯一被系统承认的"后台长期存活"手段（普通 `notify()` 不会阻止进程被杀）。
  *
  * - `START_STICKY`：服务被系统杀掉后会尝试重建；
+ * - 系统重建时 **intent 为 null**（这是 Android 的约定），所以通知文案/类型/常亮开关会
+ *   从 SharedPreferences 里的「上次配置」恢复（见 {@link #loadConfig()}）。
+ *   如果没保存过配置（例如用户主动 stop 过），则直接结束服务 —— 否则会出现
+ *   "被杀了又被拉起来、但没有通知"的僵尸服务。
  * - 通知是 `ongoing`（默认不可划掉），带一个"停止"动作；
  * - Android 14+ 前台服务类型必须在 manifest 里声明，且不同类型有不同的时长/权限要求：
  *   `specialUse` 没有 6 小时限制（上架需要说明用途），`dataSync` 在 Android 15 上被限制为
@@ -49,6 +53,18 @@ public class KeepaliveService extends Service {
 
     private static final int NOTIFICATION_ID = 4301;
 
+    /** 保存「上次启动的配置」，供系统按 START_STICKY 重建（intent=null）时恢复。 */
+    private static final String PREFS_NAME = "capacitor_keepalive_service";
+    private static final String P_TITLE = "title";
+    private static final String P_TEXT = "text";
+    private static final String P_SUB_TEXT = "subText";
+    private static final String P_SMALL_ICON = "smallIcon";
+    private static final String P_CHANNEL_ID = "channelId";
+    private static final String P_CHANNEL_NAME = "channelName";
+    private static final String P_DISMISSIBLE = "dismissible";
+    private static final String P_FGS_TYPE = "fgsType";
+    private static final String P_KEEP_SCREEN_ON = "keepScreenOn";
+
     private static volatile boolean running = false;
     private static volatile String activeMode = "none";
 
@@ -71,59 +87,51 @@ public class KeepaliveService extends Service {
         return activeMode;
     }
 
-    private Notification.Builder ongoingNotification;
     private PowerManager.WakeLock wakeLock;
 
     @Override
-    public void onCreate() {
-        super.onCreate();
-    }
-
-    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null || ACTION_STOP.equals(intent.getAction())) {
+        // 用户点了通知上的"停止"（或插件 stop()）：清掉保存的配置，别再被系统拉起来
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            clearSavedConfig();
             stopSelf();
             return START_NOT_STICKY;
         }
 
-        String action = intent.getAction();
-        boolean update = ACTION_UPDATE.equals(action);
+        boolean update = intent != null && ACTION_UPDATE.equals(intent.getAction());
 
-        String title = intent.getStringExtra(EXTRA_TITLE);
-        String text = intent.getStringExtra(EXTRA_TEXT);
-        String subText = intent.getStringExtra(EXTRA_SUB_TEXT);
-        String channelId = intent.getStringExtra(EXTRA_CHANNEL_ID);
-        String channelName = intent.getStringExtra(EXTRA_CHANNEL_NAME);
-        boolean dismissible = intent.getBooleanExtra(EXTRA_DISMISSIBLE, false);
-        String fgsType = intent.getStringExtra(EXTRA_FGS_TYPE);
-        boolean keepScreenOn = intent.getBooleanExtra(EXTRA_KEEP_SCREEN_ON, false);
-
-        if (title == null || title.isEmpty()) {
-            title = "应用正在后台运行";
-        }
-        if (text == null || text.isEmpty()) {
-            text = "点击返回应用";
-        }
-        if (channelId == null || channelId.isEmpty()) {
-            channelId = "capacitor_keepalive";
-        }
-        if (channelName == null || channelName.isEmpty()) {
-            channelName = "后台运行";
-        }
-        if (fgsType == null || fgsType.isEmpty()) {
-            fgsType = "specialUse";
+        Config config;
+        if (intent == null) {
+            // 系统按 START_STICKY 重建服务时 intent 一定是 null：
+            // 用上次的配置把前台服务重新拉起来（否则"常驻"就名存实亡）
+            config = loadConfig();
+            if (config == null) {
+                Log.i(TAG, "restarted with null intent but no saved config; stopping");
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            Log.i(TAG, "restarted by system (null intent); restoring foreground service");
+        } else if (update) {
+            // 只改通知文案：必须**合并**到上次配置上，否则会把 fgsType / keepScreenOn 重置成默认值
+            // （旧实现就是每次 updateNotification 都把 keepScreenOn 的 WakeLock 放掉）
+            config = mergeUpdate(intent);
+            saveConfig(config);
+        } else {
+            config = configFromIntent(intent);
+            saveConfig(config);
         }
 
-        createChannel(channelId, channelName);
+        createChannel(config.channelId, config.channelName);
         Notification notification = buildNotification(
-                channelId, title, text, subText, dismissible,
-                intent.getStringExtra(EXTRA_SMALL_ICON));
+                config.channelId, config.title, config.text, config.subText,
+                config.dismissible, config.smallIcon);
 
-        int type = resolveServiceType(fgsType);
+        int type = resolveServiceType(config.fgsType);
         try {
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type);
         } catch (Exception e) {
-            // Android 12+ 从后台启动前台服务会被拒（ForegroundServiceStartNotAllowedException）
+            // Android 12+ 从后台启动前台服务会被拒（ForegroundServiceStartNotAllowedException）；
+            // START_STICKY 的重建是系统豁免的，所以这里主要是"用户从后台调 start()"的场景
             Log.e(TAG, "startForeground failed", e);
             running = false;
             activeMode = "none";
@@ -133,21 +141,150 @@ public class KeepaliveService extends Service {
         }
 
         running = true;
-        activeMode = mapMode(fgsType);
+        activeMode = mapMode(config.fgsType);
 
-        if (keepScreenOn) {
+        if (config.keepScreenOn) {
             acquireWakeLock();
         } else {
             releaseWakeLock();
         }
         notifyListener();
 
-        if (update) {
-            // 只更新通知内容，不影响服务状态
-            return START_STICKY;
-        }
+        // 更新通知内容 / 系统重建 都保持粘性
         return START_STICKY;
     }
+
+    // ------------------------------------------------------------ 配置
+
+    private static final class Config {
+        String title;
+        String text;
+        String subText;
+        String smallIcon;
+        String channelId;
+        String channelName;
+        String fgsType;
+        boolean dismissible;
+        boolean keepScreenOn;
+    }
+
+    private Config configFromIntent(Intent intent) {
+        Config config = new Config();
+        config.title = intent.getStringExtra(EXTRA_TITLE);
+        config.text = intent.getStringExtra(EXTRA_TEXT);
+        config.subText = intent.getStringExtra(EXTRA_SUB_TEXT);
+        config.smallIcon = intent.getStringExtra(EXTRA_SMALL_ICON);
+        config.channelId = intent.getStringExtra(EXTRA_CHANNEL_ID);
+        config.channelName = intent.getStringExtra(EXTRA_CHANNEL_NAME);
+        config.dismissible = intent.getBooleanExtra(EXTRA_DISMISSIBLE, false);
+        config.fgsType = intent.getStringExtra(EXTRA_FGS_TYPE);
+        config.keepScreenOn = intent.getBooleanExtra(EXTRA_KEEP_SCREEN_ON, false);
+        applyDefaults(config);
+        return config;
+    }
+
+    /**
+     * `ACTION_UPDATE`：在上次配置的基础上只覆盖**非空**的文案字段。
+     * 这样 `updateNotification({ title })` 不会把 `fgsType` / `keepScreenOn` 重置成默认值。
+     */
+    private Config mergeUpdate(Intent intent) {
+        Config config = loadConfig();
+        if (config == null) {
+            config = new Config();
+        }
+        String title = intent.getStringExtra(EXTRA_TITLE);
+        if (title != null && !title.isEmpty()) {
+            config.title = title;
+        }
+        String text = intent.getStringExtra(EXTRA_TEXT);
+        if (text != null && !text.isEmpty()) {
+            config.text = text;
+        }
+        if (intent.hasExtra(EXTRA_SUB_TEXT)) {
+            config.subText = intent.getStringExtra(EXTRA_SUB_TEXT);
+        }
+        String smallIcon = intent.getStringExtra(EXTRA_SMALL_ICON);
+        if (smallIcon != null && !smallIcon.isEmpty()) {
+            config.smallIcon = smallIcon;
+        }
+        String channelId = intent.getStringExtra(EXTRA_CHANNEL_ID);
+        if (channelId != null && !channelId.isEmpty()) {
+            config.channelId = channelId;
+        }
+        String channelName = intent.getStringExtra(EXTRA_CHANNEL_NAME);
+        if (channelName != null && !channelName.isEmpty()) {
+            config.channelName = channelName;
+        }
+        if (intent.hasExtra(EXTRA_DISMISSIBLE)) {
+            config.dismissible = intent.getBooleanExtra(EXTRA_DISMISSIBLE, config.dismissible);
+        }
+        applyDefaults(config);
+        return config;
+    }
+
+    private void applyDefaults(Config config) {
+        if (config.title == null || config.title.isEmpty()) {
+            config.title = "应用正在后台运行";
+        }
+        if (config.text == null || config.text.isEmpty()) {
+            config.text = "点击返回应用";
+        }
+        if (config.channelId == null || config.channelId.isEmpty()) {
+            config.channelId = "capacitor_keepalive";
+        }
+        if (config.channelName == null || config.channelName.isEmpty()) {
+            config.channelName = "后台运行";
+        }
+        if (config.fgsType == null || config.fgsType.isEmpty()) {
+            config.fgsType = "specialUse";
+        }
+    }
+
+    private SharedPreferences prefs() {
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    private void saveConfig(Config config) {
+        prefs().edit()
+                .putString(P_TITLE, config.title)
+                .putString(P_TEXT, config.text)
+                .putString(P_SUB_TEXT, config.subText)
+                .putString(P_SMALL_ICON, config.smallIcon)
+                .putString(P_CHANNEL_ID, config.channelId)
+                .putString(P_CHANNEL_NAME, config.channelName)
+                .putBoolean(P_DISMISSIBLE, config.dismissible)
+                .putString(P_FGS_TYPE, config.fgsType)
+                .putBoolean(P_KEEP_SCREEN_ON, config.keepScreenOn)
+                .apply();
+    }
+
+    /** 没有保存过配置时返回 null（表示"不应该恢复"）。 */
+    @Nullable
+    private Config loadConfig() {
+        SharedPreferences prefs = prefs();
+        String fgsType = prefs.getString(P_FGS_TYPE, null);
+        if (fgsType == null) {
+            return null;
+        }
+        Config config = new Config();
+        config.title = prefs.getString(P_TITLE, null);
+        config.text = prefs.getString(P_TEXT, null);
+        config.subText = prefs.getString(P_SUB_TEXT, null);
+        config.smallIcon = prefs.getString(P_SMALL_ICON, null);
+        config.channelId = prefs.getString(P_CHANNEL_ID, null);
+        config.channelName = prefs.getString(P_CHANNEL_NAME, null);
+        config.dismissible = prefs.getBoolean(P_DISMISSIBLE, false);
+        config.fgsType = fgsType;
+        config.keepScreenOn = prefs.getBoolean(P_KEEP_SCREEN_ON, false);
+        applyDefaults(config);
+        return config;
+    }
+
+    private void clearSavedConfig() {
+        prefs().edit().clear().apply();
+    }
+
+    // ------------------------------------------------------------ 通知
 
     private String mapMode(String fgsType) {
         switch (fgsType) {
@@ -246,6 +383,8 @@ public class KeepaliveService extends Service {
         return android.R.drawable.stat_notify_sync;
     }
 
+    // ------------------------------------------------------------ 屏幕常亮
+
     private void acquireWakeLock() {
         if (wakeLock != null && wakeLock.isHeld()) {
             return;
@@ -266,6 +405,8 @@ public class KeepaliveService extends Service {
         wakeLock = null;
     }
 
+    // ------------------------------------------------------------ 生命周期
+
     /**
      * Android 15+：按类型的前台服务超时回调（`dataSync` / `mediaProcessing` 为 24 小时内 6 小时）。
      *
@@ -277,6 +418,7 @@ public class KeepaliveService extends Service {
         running = false;
         activeMode = "none";
         releaseWakeLock();
+        clearSavedConfig();
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
         notifyListener();
         stopSelf();
@@ -293,6 +435,8 @@ public class KeepaliveService extends Service {
         running = false;
         activeMode = "none";
         releaseWakeLock();
+        // 注意：不要在这里 clearSavedConfig() —— 服务可能是被系统杀掉后重建的，
+        // 配置要留到用户真正 stop() 时再清（ACTION_STOP 分支）。
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
         notifyListener();
         super.onDestroy();

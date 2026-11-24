@@ -5,6 +5,80 @@
 > 关于 Capacitor 官方/内置能力的调研结论。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
+> ## 🆕 2026-11-24 23:20 测试视角自查轮（13 个 bug 修复 + 跨插件注意事项）
+>
+> 用户要求"以测试视角重读四个插件、找 bug 并修，同时考虑与其它插件共用的问题"。
+> 下面按插件列出**本轮实际改掉的 bug**（都已编译/真机验证，见末尾）：
+>
+> ### background-keepalive
+> 1. **Android 粘性服务重启即自杀**：`START_STICKY` 重建时 `intent == null`，旧代码把它等同于
+>    `ACTION_STOP` → `stopSelf()`，所谓"常驻"名存实亡。修：把启动配置（文案/渠道/fgsType/
+>    keepScreenOn）持久化到 `capacitor_keepalive_service` prefs；`intent == null` 时恢复并重新
+>    `startForeground`；只有用户 `stop()`（ACTION_STOP）或 `dataSync` 超时才清配置。
+> 2. **`updateNotification()` 会悄悄重置服务配置**：旧实现用 update intent 重建整个 Config，
+>    没带 `keepScreenOn` → 先 `start({keepScreenOn:true})` 再更新文案，**唤醒锁被释放**、
+>    fgsType 也可能回落。修：ACTION_UPDATE 走 `mergeUpdate()`，只覆盖非空文案字段。
+> 3. **iOS `start({mode:'backgroundTask'})` 状态可能假报成功**：旧顺序是先
+>    `beginBackgroundTask()` 再 `activeMode = .backgroundTask`，而 `beginBackgroundTask` 失败会把
+>    activeMode 置 `.none` → 被后一行覆盖。修：先设模式再申请，失败时保持 `.none`。
+>
+> ### live-update
+> 4. **Android 原生升级自愈失效**：`runStartupSelfHeal` 先 `clearState()` 再判断
+>    `getCurrentBundleId() != null` → 永远 false，**WebView 继续用已被删除的 OTA 目录**。
+>    修：先取 `hadOta` 再清理。
+> 5. **`clearState()` 漏清版本号**：`st_current_version` / `st_previous_version` 残留 →
+>    `getState().previousVersion` 显示已不存在的版本。修：一起清。
+> 6. **重装同一个包后 rollback 无效**：`previous == current`（同 bundleId），"回滚到自己"。
+>    修：`sameBundle` 时不写 previous（两端同步）。
+> 7. **iOS 会删掉别人的 OTA 包（跨插件/跨工具）**：`clearBundles()` / `pruneBundles()` 无差别
+>    删除 `Library/NoCloud/ionic_built_snapshots` 下所有目录 —— 那是 Ionic 公共约定目录，
+>    **Ionic Appflow Live Updates / Capgo 也把包放这里**。修：新增
+>    `isOwnBundleId()`（`<version>-<sha8>` 命名规则），清理与 `getState()` 只处理自己的包。
+> 8. **阻塞 Capacitor 串行插件线程（影响所有插件）**：网络请求（最长 30s）、下载、解压都跑在
+>    `CapacitorPlugins` 单线程上 → 期间 Toast/状态栏/键盘等**所有插件调用全被堵住**。
+>    修：Android 用专用单线程 `WORKER`（顺带串行化安装），iOS 把 `checkForUpdate` /
+>    `verifyBundle` 挪到全局队列（`downloadAndInstall` 原本就在）。
+> 9. **下载体积无上限**：只有"解压后 ≤ 200MB"，但恶意/出错的服务端可以无限流式写盘。
+>    修：两端都加 **512MB** 下载硬上限。
+>
+> ### permissions
+> 10. **Android `storage` 在 API 30–32 永远拿不到 granted**：别名同时包含
+>     `WRITE_EXTERNAL_STORAGE`，而它在 Manifest 里是 `maxSdkVersion=29` → 30+ 上该权限必然 denied，
+>     别名"全部授予才算 granted"的语义被带崩。修：30–32 用只读别名 `storageRead`；33+ 直接
+>     `unsupported`（`effectiveAlias` 返回 null）。
+> 11. **Android 部分授权被误报**：12+ 只给"大致位置"时旧实现报 `prompt`（**会反复弹窗**）；
+>     13+ 只给图片或只给视频时 `photos` 也报非 granted。修：新增模板扩展点 `REFINERS`
+>     （`StateRefiner`），`location` / `photos` 在"部分授予"时返回 **`limited`**。
+>
+> ### secure-storage
+> 12. **Android 线程泄漏**：`BiometricGate.prompt` 每次弹窗 `Executors.newSingleThreadExecutor()`
+>     且从不 shutdown → 多次认证线程数持续增长。修：全类共用一个守护线程 `EXECUTOR`。
+> 13. **Android 坏记录会抛到桥外**：`get()` 里 base64 解码 / 空 IV 在 `try` 之外，
+>     `IllegalArgumentException` 可能直接崩。修：捕获 → `CORRUPTED_DATA`；空 iv/ct 也拒绝。
+>
+> ### 跨插件注意事项（写进了四份 README 的「与其他插件一起使用」）
+> - **secure-storage × back-button**：认证弹窗期间返回键可能同时触发 `backButton` → 建议等待
+>   Promise 时忽略 backButton；`androidx.biometric` 版本要全项目统一。
+> - **permissions × keepalive**：Android 13+ 先申请 `notifications` 再 `start()`，否则通知不显示；
+>   **permissions × native-files**：`storage` 只读，写公共目录用 native-files 的 all-files 权限。
+> - **keepalive × foreground-state**：FGS 保的是进程，不是"App 在前台"；划掉后 JS 已死。
+>   **keepalive × data-channel**：Android 需电池优化豁免，iOS 后台 socket 会被挂起。
+>   通知 id 固定 **4301**（与其它通知可能互相覆盖）。
+> - **live-update × 一切**：reload 会重建 JS 上下文 —— `data-channel` 的原生 server 还在但
+>   端口/OTP 变量丢了（建议装前 `revokeAllOtps`）；各插件 `addListener` 全部失效需重注册；
+>   `native-statusbar`/`webview-to-edge`/`fullscreen` 的原生状态保留；`set-force-dark` 会自动重注入；
+>   **不要与 Ionic Appflow / Capgo 同时启用**（抢同一个 `serverBasePath`）。
+>
+> ### 版本 & 验证
+> - 版本：permissions **0.3.0**、background-keepalive **0.3.0**、live-update **0.2.0**、
+>   secure-storage **0.2.0**。
+> - `build:plugins` / `audit:plugins` 通过；Android `assembleDebug` 编译通过。
+> - 真机 autotest **ok:true**；`verify:android` **PASS**。
+> - **真机定向验证**：`pm grant` 只给 COARSE、revoke FINE 后
+>   `check(['location','locationCoarse','storage','photos'])` →
+>   `location: limited`、`locationCoarse: granted`、`storage: granted`（API 29 走 READ+WRITE 别名）。
+> - 设备已恢复为普通构建（`#/`，`version 1.0`，无 OTA）。
+
 > ## 🆕 2026-11-24 22:40 文档答疑轮（live-update 语义 / 版本比较 / 通知渠道）
 >
 > 用户提了 4 个文档问题，**在回答过程中发现 2 个真 bug，一并修了**：

@@ -155,7 +155,9 @@ public class UpdateStore {
     void clearState() {
         prefs().edit()
                 .remove("st_current")
+                .remove("st_current_version")
                 .remove("st_previous")
+                .remove("st_previous_version")
                 .remove("st_pending")
                 .remove("st_boot_attempts")
                 .apply();

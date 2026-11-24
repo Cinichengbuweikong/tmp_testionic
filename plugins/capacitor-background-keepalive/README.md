@@ -467,3 +467,26 @@ Safari 的进程挂起），WebSocket 也可能被断开。`start()` 会返回 `
 - iOS 上**不存在**"像 Android 一样保活"的方案，任何声称能做到的插件最终都落在
   `audio` / `location` / 后台推送 这几条路上；
 - iOS 被系统**直接终止**（不是挂起）时，`keepaliveExpired` 的补发也不会发生（进程已经没了）。
+
+---
+
+## 与其他插件一起使用（注意事项）
+
+| 一起用的插件 | 会不会冲突 | 注意事项 |
+| --- | --- | --- |
+| `capacitor-permissions` | ⚠️ 有依赖 | Android 13+ 需要 `POST_NOTIFICATIONS` 才能显示前台服务通知：先 `Permissions.request({permissions:['notifications']})`。没授权时服务照跑但通知不显示（`notificationVisible:false`） |
+| `capacitor-foreground-state` | ⚠️ 语义容易混淆 | 前台服务让**进程**活着，但 Activity 生命周期照旧。用户从最近任务划掉 App 后进程仍在，而 JS 上下文已销毁 → `foreground-state` 会停在最后一次事件，**不要**把 `running:true` 当成"App 在前台" |
+| `capacitor-data-channel` | ✅ 推荐组合，但注意 Doze | 后台传文件是本插件的典型用途。Android：Doze 会掐网络，建议 `requestBatteryOptimizationExemption()`（Play 有政策限制）；iOS：后台 socket 会被挂起，**本插件帮不上忙**（见 data-channel README 的 iOS 说明） |
+| `capacitor-live-update` | ⚠️ 监听会失效 | OTA reload 只重建 JS 上下文，原生前台服务继续运行；但之前 `addListener('keepaliveChanged')` 的监听**没了**，新代码要重新注册。安装更新前建议先 `stop()`，避免"旧 JS 已死、新 JS 还没接手"的空窗 |
+| `capacitor-fullscreen` / `capacitor-webview-to-edge` / `capacitor-native-statusbar` | ✅ 无冲突 | 各自操作 DecorView/Insets。注意 `keepScreenOn:true` + 全屏会让屏幕**一直亮**，耗电明显 |
+| `capacitor-secure-storage` | ✅ 无冲突 | Keystore/Keychain 与前台服务互不影响 |
+| 宿主自己建的通知 / 其他通知类插件 | ⚠️ 可能覆盖 | 本插件固定用通知 id **4301** 与默认渠道 **`capacitor_keepalive`**。如果宿主自己或别的插件也用同一个 id，会互相覆盖（表现为通知突然变内容/消失）。**改 `channelId` 不会改通知 id**，需要时改插件常量 |
+
+其它注意：
+
+- Android 上 `start()` 会最多阻塞 ~1.5s（等服务真正 `startForeground`），而 Capacitor 的插件调用是
+  **单线程串行**的 → 这期间其它插件的调用会排队。不要在动画/输入关键路径上同步 await 它。
+- 多个插件同时申请 `FOREGROUND_SERVICE_*` 类型时，Android 只按**每个服务**审批；本插件与别的
+  前台服务插件（如果有）会各自显示通知，用户可能看到两条常驻通知。
+- iOS 的 `backgroundTask` 与其它插件的后台任务（例如 `URLSession` 后台传输）**共享** iOS 给的
+  后台时间，实际能拖多久会互相影响；`keepaliveExpired` 早到属于正常。

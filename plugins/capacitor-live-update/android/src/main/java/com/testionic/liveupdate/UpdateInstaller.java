@@ -30,6 +30,11 @@ public final class UpdateInstaller {
     private static final String TAG = "UpdateInstaller";
     private static final int MAX_ENTRIES = 5000;
     private static final long MAX_TOTAL_BYTES = 200L * 1024 * 1024;
+    /**
+     * 下载体积硬上限（512MB）：服务器/中间人如果无限流式返回，会先把设备磁盘写满。
+     * 解压后的体积另有 {@link #MAX_TOTAL_BYTES} 限制。
+     */
+    private static final long MAX_DOWNLOAD_BYTES = 512L * 1024 * 1024;
 
     public interface ProgressListener {
         void onProgress(long bytes, long total);
@@ -81,6 +86,9 @@ public final class UpdateInstaller {
                 while ((read = input.read(buffer)) > 0) {
                     output.write(buffer, 0, read);
                     written += read;
+                    if (written > MAX_DOWNLOAD_BYTES) {
+                        throw new IOException("DOWNLOAD_TOO_LARGE: > " + MAX_DOWNLOAD_BYTES + " bytes");
+                    }
                     if (listener != null) {
                         listener.onProgress(written, total);
                     }

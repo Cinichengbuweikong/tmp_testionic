@@ -15,6 +15,8 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 热更新（Android）。
@@ -28,8 +30,21 @@ import java.util.List;
 @CapacitorPlugin(name = "LiveUpdate")
 public class LiveUpdatePlugin extends Plugin {
 
+    /**
+     * 网络/解压专用的单线程 worker。
+     *
+     * Capacitor 的插件方法跑在**单个串行线程**上（`CapacitorPlugins`），所以任何阻塞操作
+     * （HTTP 最长 30s、下载几十 MB、解压上千文件）都会把**所有其他插件**的调用堵住。
+     * 单线程还顺带保证了"检查/安装不会并发"，避免两个安装同时 rename 同一个目录。
+     */
+    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "capacitor-live-update");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     private UpdateStore store;
-    /** 上一次 `checkForUpdate` 的结果，供 `downloadAndInstall()` 缺省使用 */
+    /** 上一次 `checkForUpdate` 的结果，供 `downloadAndInstall()` 缺省使用（只在 WORKER 线程读写） */
     private JSONObject lastCheck;
 
     @Override
@@ -57,12 +72,15 @@ public class LiveUpdatePlugin extends Plugin {
             return;
         }
         if (storedCode != currentCode) {
+            // 必须在 clearState() 之前判断"之前是否在用 OTA 包"，否则读到的永远是 null
+            // （旧实现就是先清状态再判断，导致原生升级后 WebView 一直用已删除的 OTA 目录，直到下次启动）
+            boolean hadOta = store.getCurrentBundleId() != null;
             clearAllBundles();
             store.clearState();
             store.clearCapacitorBasePath();
             store.setInstalledAppVersion(currentCode);
-            // 插件 load() 时 WebView 可能已经按旧持久化路径加载了 OTA 包 → 切回内置资源
-            if (store.getCurrentBundleId() != null) {
+            if (hadOta) {
+                // 插件 load() 时 WebView 已经按旧持久化路径加载了 OTA 包 → 切回内置资源
                 getBridge().setServerAssetPath("public");
             }
             return;
@@ -150,6 +168,13 @@ public class LiveUpdatePlugin extends Plugin {
 
     @PluginMethod
     public void checkForUpdate(PluginCall call) {
+        // 网络请求最长可达 timeoutMs（默认 30s）：不能占着 Capacitor 的串行插件线程，
+        // 否则期间其它插件（Toast/状态栏/键盘…）的调用全部被堵住。
+        // 单线程 worker 同时保证"两次检查/安装不会并发执行"。
+        WORKER.execute(() -> doCheckForUpdate(call));
+    }
+
+    private void doCheckForUpdate(PluginCall call) {
         String serverUrl = call.getString("serverUrl", store.getServerUrl());
         if (serverUrl == null || serverUrl.isEmpty()) {
             call.reject("NOT_CONFIGURED: 请先调用 configure({ serverUrl })", "NOT_CONFIGURED");
@@ -215,6 +240,11 @@ public class LiveUpdatePlugin extends Plugin {
 
     @PluginMethod
     public void downloadAndInstall(PluginCall call) {
+        // 下载 + 解压可能几十秒（大包），必须挪出插件串行线程，否则整个桥被堵死
+        WORKER.execute(() -> doDownloadAndInstall(call));
+    }
+
+    private void doDownloadAndInstall(PluginCall call) {
         String url = call.getString("url");
         String version = call.getString("version");
         String sha256 = call.getString("sha256");
@@ -283,15 +313,23 @@ public class LiveUpdatePlugin extends Plugin {
 
             String previousId = store.getCurrentBundleId();
             String previousVersion = store.prefs().getString("st_current_version", null);
-            store.setPreviousBundleId(previousId);
-            store.prefs().edit().putString("st_previous_version", previousVersion).apply();
+            boolean sameBundle = bundleId.equals(previousId);
+            if (sameBundle) {
+                // 重装同一个包（同版本 + 同 sha256）：不要把"自己"记成上一版，
+                // 否则回滚会变成"回滚到自己"，等于没有回滚目标
+                store.setPreviousBundleId(null);
+                store.prefs().edit().remove("st_previous_version").apply();
+            } else {
+                store.setPreviousBundleId(previousId);
+                store.prefs().edit().putString("st_previous_version", previousVersion).apply();
+            }
             store.setCurrentBundleId(bundleId);
             store.prefs().edit().putString("st_current_version", version).apply();
             store.setPending(true);
             store.setBootAttempts(0);
             store.setLastNote(null);
             store.persistCapacitorBasePath(target.getAbsolutePath());
-            store.pruneOldBundles(bundleId, previousId);
+            store.pruneOldBundles(bundleId, sameBundle ? null : previousId);
 
             JSObject ret = new JSObject();
             ret.put("installed", true);
@@ -442,6 +480,11 @@ public class LiveUpdatePlugin extends Plugin {
 
     @PluginMethod
     public void verifyBundle(PluginCall call) {
+        // Base64 解码 + 解压可能很大，同样挪到 worker
+        WORKER.execute(() -> doVerifyBundle(call));
+    }
+
+    private void doVerifyBundle(PluginCall call) {
         String zipBase64 = call.getString("zipBase64");
         if (zipBase64 == null || zipBase64.isEmpty()) {
             call.reject("zipBase64 不能为空", "INVALID_ARGUMENT");

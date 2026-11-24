@@ -200,8 +200,21 @@ public class SecureStoragePlugin extends Plugin {
             return;
         }
         boolean bio = record.optBoolean("bio", false);
-        byte[] iv = Base64.decode(record.optString("iv"), Base64.NO_WRAP);
-        byte[] cipherBytes = Base64.decode(record.optString("ct"), Base64.NO_WRAP);
+        byte[] iv;
+        byte[] cipherBytes;
+        try {
+            // 记录可能被外部改坏（备份恢复、调试时手动改 prefs）：
+            // Base64 非法 / 空 IV 都会抛 IllegalArgumentException，不能让它冒到桥外面
+            iv = Base64.decode(record.optString("iv"), Base64.NO_WRAP);
+            cipherBytes = Base64.decode(record.optString("ct"), Base64.NO_WRAP);
+        } catch (IllegalArgumentException e) {
+            call.reject("CORRUPTED_DATA: iv/ct 不是合法 base64", "CORRUPTED_DATA");
+            return;
+        }
+        if (iv.length == 0 || cipherBytes.length == 0) {
+            call.reject("CORRUPTED_DATA: iv 或密文为空", "CORRUPTED_DATA");
+            return;
+        }
 
         if (bio && Build.VERSION.SDK_INT < MIN_BIOMETRIC_SDK) {
             call.reject("BIOMETRY_UNSUPPORTED: 该条目需要 Android 10 (API 29) 及以上", "BIOMETRY_UNSUPPORTED");

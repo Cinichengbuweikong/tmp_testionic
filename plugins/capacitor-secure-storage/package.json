@@ -1,6 +1,6 @@
 {
   "name": "capacitor-secure-storage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capacitor 安全加密存储插件：iOS Keychain / Android Keystore(AES-256-GCM) / Web WebCrypto，支持生物识别门控。",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",

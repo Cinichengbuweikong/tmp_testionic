@@ -1237,3 +1237,33 @@ if __name__ == "__main__":
         main()
 
 ```
+
+---
+
+## 与其他插件一起使用（重要）
+
+> 热更新的本质是 **重建整个 WebView 页面**：原生状态都还在，**JS 侧的一切都会丢**。
+> 这是与其它插件配合时绝大多数坑的来源。
+
+| 一起用的插件 | 会不会冲突 | 注意事项 |
+| --- | --- | --- |
+| `capacitor-data-channel` | ⚠️ 状态会"半保留" | 原生 HTTP/WS server **继续运行**（端口、OTP 表都在原生内存里），但 JS 侧的端口号/OTP 变量没了。更新后要重新 `getHttpInfo()` / `createHttpOtp()`。未消费的旧 OTP 仍在表里（上限 256），**建议安装前 `revokeAllOtps`**，否则可能"表满" |
+| `capacitor-foreground-state` / `capacitor-background-keepalive` / `capacitor-native-rotation` / `capacitor-fullscreen` | ⚠️ 监听失效 | 这些插件的 `addListener` 都在 JS 侧：reload 后监听全部消失，需要重新注册（App 启动代码会重新跑一遍，确保它确实注册了） |
+| `capacitor-native-statusbar` / `capacitor-webview-to-edge` / `capacitor-fullscreen` | ✅ 原生状态保留 | 状态栏色块、insets 监听、全屏标志都在原生侧，reload 不影响。但**新包的 CSS**要自己处理（例如 `data-theme`、安全区变量） |
+| `capacitor-set-force-dark` | ✅ 会自动重注入 | 它监听 `onPageCommitVisible` / `onPageLoaded` 并在页面加载后注入 `data-theme`，所以 OTA 后主题仍生效；前提是该插件仍被 `cap sync` 注册 |
+| `capacitor-native-files` | ⚠️ 不要手动改 OTA 目录 | 包在 App 私有目录（Android `filesDir/live-update/bundles`、iOS `Library/NoCloud/ionic_built_snapshots`），native-files 能列出来；**但不要写入/改名**，否则签名与文件一致性失效（下次安装会覆盖，回滚目标也可能被破坏） |
+| `capacitor-secure-storage` | ✅ 数据不受影响 | Keystore/Keychain 与 Web 资源无关。但安装时若有认证弹窗或 pending 的 `get()`，回调会落到已销毁的 JS 上下文 |
+| `capacitor-permissions` | ⚠️ 有依赖 | 新包要用**新的原生权限**时，宿主 Manifest 不会因为 OTA 变 → 申请不到。发版策略：先发原生（含权限），再用 `minNativeVersion` 放开 Web 包 |
+| Ionic Appflow Live Updates / Capgo（`@capgo/capacitor-updater`） | ⚠️ 不要同时启用 | iOS 的 `Library/NoCloud/ionic_built_snapshots` 是 Ionic 公共约定目录：本插件只清理自己命名的 `<version>-<sha8>` 目录（不会删别家的包），但**两个 OTA 系统会互相覆盖 `serverBasePath`** → 只选一个 |
+| 宿主直接用 Capacitor 内置的 `WebView.setServerBasePath` / `persistServerBasePath` | ⚠️ 会互相覆盖 | 本插件持久化用的正是 Capacitor 的 `CapWebViewSettings/serverBasePath`（Android）与 `KeyValueStore["serverBasePath"]`（iOS）。宿主若也调用这些 API，两者会抢同一个 key |
+
+其它注意（跨插件的通用坑）：
+
+- **安装期间不要有 pending 的原生交互**：`native-files.pickFiles`（等用户选文件）、`secure-storage` 的
+  生物识别弹窗、`data-channel` 的大文件上传……reload 后这些回调的 JS 端已经没了。
+  建议：先停止前台任务 → 再安装更新。
+- **插件方法在 Capacitor 里是单线程串行执行的**：本插件已经把网络请求、下载、解压放到专用
+  worker（Android 单线程 `Executor` / iOS 全局队列），不会堵住 Toast/状态栏等其它插件调用；
+  但 `getState()` 会遍历本地包目录统计大小，包很多时略有耗时。
+- **存储占用**：最多保留 3 个包（每个是完整 web 资源）。如果同时装了体积很大的别的资源
+  （data-channel 的上传缓存、native-files 临时文件），注意设备空间：解压前要留出 ~2 倍包大小的空间。

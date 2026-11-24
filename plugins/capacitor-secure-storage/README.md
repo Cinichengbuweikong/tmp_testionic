@@ -395,3 +395,26 @@ Face ID 门控的弹窗路径需要 iOS 真机（模拟器需手动 `Features > 
 - Android：`SecureStoragePlugin.java` + `BiometricGate.java`
 - iOS：`SecureStoragePlugin.swift`
 - Web：`src/web.ts`
+
+---
+
+## 与其他插件一起使用（注意事项）
+
+本插件自带 `androidx.biometric:1.1.0` 依赖，并会往宿主合并 `USE_BIOMETRIC` 权限；除此之外不改动全局状态。
+
+| 一起用的插件 | 会不会冲突 | 注意事项 |
+| --- | --- | --- |
+| `capacitor-back-button` | ⚠️ 可能互相干扰 | Android 的认证框是 DialogFragment，正常情况下会**自己消费返回键**（按返回 = 取消认证）。但部分 ROM（MIUI/EMUI）可能把返回键同时交给 Activity 的 `OnBackPressedDispatcher` → 如果 `BackButton.enable()` 开着，认证期间可能收到 `backButton` 事件。**建议：在等待 `get()/set({requireBiometric:true})/authenticate()` 的 Promise 期间忽略 backButton 事件**（或用 `disable()` 临时关掉），否则用户按返回会同时"取消认证 + 页面后退" |
+| `capacitor-background-keepalive` | ✅ 无冲突 | 前台服务与本插件的 Keystore/Keychain 相互独立。注意：App 在后台时 Android 调 `get()`（需认证项）会弹认证框并把 App 拉回前台；iOS 在设备锁屏/未解锁时读 Keychain 会返回 `INTERACTION_NOT_ALLOWED`/`AUTH_FAILED` |
+| `capacitor-permissions` | ✅ 无冲突 | 生物识别不需要运行时权限（`USE_BIOMETRIC` 是普通权限，安装即授予）；不要和 `camera`/`microphone` 混淆 |
+| `capacitor-live-update` | ✅ 数据安全，但要注意时序 | OTA 只替换 Web 资源，Keystore/Keychain 里的数据**不受影响**。但 reload 会销毁 JS 上下文：如果安装更新时正好有认证弹窗/`get()` 在等回调，回调会落到已销毁的上下文（JS 收不到结果）。建议安装前先结束敏感操作。另外新包若改了存储 key 的名字/schema，旧数据还在但读不到，需要自己迁移 |
+| `capacitor-native-files` / `capacitor-data-channel` | ✅ 无冲突 | 本插件只用私有的 SharedPreferences / Keychain service，不会碰文件系统 |
+| 宿主自己 / 其他库也用 `androidx.biometric` | ⚠️ 版本会合并 | Gradle 会解析到最高版本；如果差异很大（例如 1.1.0 vs 1.4.x），`BiometricPrompt.PromptInfo` 的行为可能变化。建议全项目统一版本 |
+
+其它注意：
+
+- 本插件的 Android 存储键是 `capacitor_secure_storage`（prefs 文件名）与 Keystore 别名
+  `capacitor_secure_storage_v1` / `capacitor_secure_storage_bio_v1`；iOS 的 Keychain service 是
+  `com.testionic.securestorage`。**不要**在别的插件里复用这些名字。
+- 同一把 bio 密钥承载所有"需认证"条目：一条在读，另一条就不能同时读（prompt 是模态的），
+  并发 `get()` 会排队/互相打断 → 业务上串行使用。

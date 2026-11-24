@@ -199,6 +199,12 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
     // MARK: - 检查更新
 
     @objc public func checkForUpdate(_ call: CAPPluginCall) {
+        // 网络请求可能几秒~30 秒：Capacitor 的插件调用走**串行**桥队列，
+        // 在这里阻塞会把其它插件（Toast/状态栏/键盘…）的调用一起堵住。
+        DispatchQueue.global(qos: .userInitiated).async { self.doCheckForUpdate(call) }
+    }
+
+    private func doCheckForUpdate(_ call: CAPPluginCall) {
         guard let serverUrl = call.getString("serverUrl") ?? defaults.string(forKey: Keys.serverUrl),
               !serverUrl.isEmpty else {
             call.reject("NOT_CONFIGURED: 请先调用 configure({ serverUrl })", "NOT_CONFIGURED")
@@ -325,6 +331,18 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
                 })
                 try downloader.download(url: url, to: tempZip, timeout: TimeInterval(self.timeoutMs) / 1000.0)
 
+                // 下载体积硬上限（512MB）：防止服务端无限流式返回把磁盘写满
+                var fileSize: Int64 = 0
+                if let attributes = try? FileManager.default.attributesOfItem(atPath: tempZip.path),
+                   let bytes = attributes[.size] as? NSNumber {
+                    fileSize = bytes.int64Value
+                }
+                guard fileSize <= 512 * 1024 * 1024 else {
+                    throw NSError(domain: "LiveUpdate", code: 8, userInfo: [
+                        NSLocalizedDescriptionKey: "DOWNLOAD_TOO_LARGE: \(fileSize) bytes > 512MB"
+                    ])
+                }
+
                 let fileData = try Data(contentsOf: tempZip)
                 let digest = SHA256.hash(data: fileData).map { String(format: "%02x", $0) }.joined()
                 guard digest.caseInsensitiveCompare(sha256) == .orderedSame else {
@@ -352,14 +370,22 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
                 try? FileManager.default.removeItem(at: target)
                 try FileManager.default.moveItem(at: staging, to: target)
 
-                self.defaults.set(previousId, forKey: Keys.previous)
-                self.defaults.set(previousVersion, forKey: Keys.previousVersion)
+                // 重装同一个包（同版本 + 同 sha256）时不要把"自己"记成上一版，
+                // 否则 rollback() 会"回滚到自己"，等于没有回滚目标
+                let sameBundle = (previousId == bundleId)
+                if sameBundle {
+                    self.defaults.removeObject(forKey: Keys.previous)
+                    self.defaults.removeObject(forKey: Keys.previousVersion)
+                } else {
+                    self.defaults.set(previousId, forKey: Keys.previous)
+                    self.defaults.set(previousVersion, forKey: Keys.previousVersion)
+                }
                 self.defaults.set(bundleId, forKey: Keys.current)
                 self.defaults.set(version, forKey: Keys.currentVersion)
                 self.defaults.set(true, forKey: Keys.pending)
                 self.defaults.set(0, forKey: Keys.bootAttempts)
                 self.defaults.removeObject(forKey: Keys.lastNote)
-                self.pruneBundles(keep: [bundleId, previousId].compactMap { $0 })
+                self.pruneBundles(keep: sameBundle ? [bundleId] : [bundleId, previousId].compactMap { $0 })
 
                 self.notifyListeners("liveUpdateStateChanged", data: self.stateObject())
                 call.resolve([
@@ -419,6 +445,9 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
             at: snapshotsDir, includingPropertiesForKeys: [.fileSizeKey]) {
             for dir in contents where dir.hasDirectoryPath && !dir.lastPathComponent.hasPrefix(".") {
                 let id = dir.lastPathComponent
+                // 只列本插件管理的包：同一个目录可能还有 Ionic Appflow / Capgo 的包，
+                // 不能把它们当成"我们的更新包"展示或参与回滚
+                guard LiveUpdatePlugin.isOwnBundleId(id) else { continue }
                 var bytes = 0
                 if let enumerator = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) {
                     for case let fileURL as URL in enumerator {
@@ -503,6 +532,11 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
     // MARK: - 离线自检
 
     @objc public func verifyBundle(_ call: CAPPluginCall) {
+        // base64 解码 + 解压可能很大，挪出串行桥队列
+        DispatchQueue.global(qos: .userInitiated).async { self.doVerifyBundle(call) }
+    }
+
+    private func doVerifyBundle(_ call: CAPPluginCall) {
         guard let zipBase64 = call.getString("zipBase64"),
               let zipData = Data(base64Encoded: zipBase64, options: .ignoreUnknownCharacters) else {
             call.reject("zipBase64 不能为空或不是合法 base64", "INVALID_ARGUMENT")
@@ -614,12 +648,29 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
         defaults.set(0, forKey: Keys.bootAttempts)
     }
 
+    /// 只处理本插件创建的 bundle 目录（`<version>-<sha256 前 8 位>`）。
+    ///
+    /// `Library/NoCloud/ionic_built_snapshots` 是 Ionic 的公共约定目录，
+    /// Ionic Appflow Live Updates / Capgo（`@capgo/capacitor-updater`）也把包放在这里。
+    /// 如果 `clear()` / `reset()` 无差别删除所有子目录，就会**把别的 OTA 方案的包一起删掉**，
+    /// 导致那个插件下次启动找不到资源。所以这里用命名规则把"自己的包"识别出来。
+    private static func isOwnBundleId(_ name: String) -> Bool {
+        guard let dash = name.lastIndex(of: "-") else { return false }
+        let versionPart = name[..<dash]
+        let hashPart = name[name.index(after: dash)...]
+        guard !versionPart.isEmpty, hashPart.count == 8 else { return false }
+        guard hashPart.allSatisfy({ $0.isHexDigit }) else { return false }
+        // 版本号里允许字母/数字/`.`/`_`/`-`（sanitize() 会把其它字符替换成 `_`）
+        return versionPart.allSatisfy { $0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-" }
+    }
+
     @discardableResult
     private func clearBundles() -> Int {
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: snapshotsDir, includingPropertiesForKeys: nil) else { return 0 }
         var count = 0
         for dir in contents where dir.hasDirectoryPath {
+            guard LiveUpdatePlugin.isOwnBundleId(dir.lastPathComponent) else { continue }
             try? FileManager.default.removeItem(at: dir)
             count += 1
         }
@@ -631,6 +682,7 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
             at: snapshotsDir, includingPropertiesForKeys: nil) else { return }
         for dir in contents where dir.hasDirectoryPath {
             let name = dir.lastPathComponent
+            guard LiveUpdatePlugin.isOwnBundleId(name) else { continue }
             if !keep.contains(name) && !name.hasPrefix(".staging-") {
                 try? FileManager.default.removeItem(at: dir)
             }

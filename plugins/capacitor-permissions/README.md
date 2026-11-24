@@ -377,3 +377,27 @@ async permissionsOpenSettings() {
 - iOS：`PermissionsPlugin.swift`（`descriptors` 表 + 逐框架状态映射 + 串行请求）
 - Web：`src/web.ts`
 - **改造指南：[TEMPLATE.md](./TEMPLATE.md)**
+
+---
+
+## 与其他插件一起使用（注意事项）
+
+| 一起用的插件 | 会不会冲突 | 注意事项 |
+| --- | --- | --- |
+| `capacitor-background-keepalive` | ⚠️ 有依赖 | Android 13+ 的前台服务通知需要 `POST_NOTIFICATIONS`：**先** `Permissions.request({ permissions: ['notifications'] })` **再** `BackgroundKeepalive.start()`。否则 FGS 在跑但通知不显示（`status.notificationVisible === false`），用户无法从通知栏停止服务 |
+| `capacitor-native-files` | ⚠️ 语义重叠 | 本插件的 `storage` 只是**读**公共目录的旧权限；写公共目录/全盘访问要用 native-files 的 `checkAllFilesAccess` / `requestAllFilesAccess`（`MANAGE_EXTERNAL_STORAGE`）。Android 13+ 本插件的 `storage` 直接返回 `unsupported` |
+| `capacitor-live-update` | ⚠️ 有依赖 | 新包如果需要**新的原生权限**，宿主 Manifest 没变就申请不到。发版前用 `minNativeVersion` 卡住旧 App；先发原生 + 权限，再发需要它的 Web 包 |
+| `capacitor-camera` 类 / `getUserMedia` | ✅ 无冲突 | 本插件只负责"申请"，不打开设备。授权后其他插件/WebView 才能用。Android 的 `camera`/`microphone` 是独立权限；iOS 缺 Info.plist 会崩 |
+| `capacitor-back-button` | ✅ 无冲突 | 系统权限弹窗是**系统 UI**（不是 App 的 Dialog），返回键归系统处理，不受 `OnBackPressedDispatcher` 影响 |
+| `capacitor-keepalive`（再强调） | — | iOS 没有这个依赖（通知权限由 `UNUserNotificationCenter` 单独申请） |
+
+其它注意：
+
+- 本插件会往宿主**合并 12 组权限**（camera / microphone / location×2 / notifications / photos /
+  storage×2 / contacts / calendar / activityRecognition / bodySensors / bluetooth×2）。
+  和 native-files（MANAGE_EXTERNAL_STORAGE）、keepalive（FOREGROUND_SERVICE*）叠加后，
+  **上架前统一审一遍**：`READ_CONTACTS` / `BODY_SENSORS` / `ACTIVITY_RECOGNITION` 都属敏感权限。
+- Android 的 `location` 现在会在"只给大致位置"时返回 `limited`（不是 `granted` 也不是 `prompt`），
+  业务要按 `limited` 处理（例如提示用户"当前为大致位置"）。
+- Android 13+ 的 `photos` 可能在"只给图片/只给视频"时返回 `limited`；`limited` 不等于失败。
+- 同一个 `request()` 不要并发调用（iOS 弹窗会互相打断；Android 第二次可能直接拿到 denied）。

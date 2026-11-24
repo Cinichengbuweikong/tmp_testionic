@@ -25,6 +25,13 @@ import javax.crypto.Cipher;
  */
 public final class BiometricGate {
 
+    /** 所有弹窗共用一个守护线程（只用来跑 BiometricPrompt 的回调，不做重活）。 */
+    private static final Executor EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "capacitor-secure-storage-biometric");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     // 与 BiometricManager 常量等值（androidx 与平台数值一致）
     public static final int STATUS_OK = 0;
     public static final int STATUS_ERROR_HW_UNAVAILABLE = 1;
@@ -83,7 +90,9 @@ public final class BiometricGate {
             return;
         }
         FragmentActivity fragmentActivity = (FragmentActivity) activity;
-        Executor executor = Executors.newSingleThreadExecutor();
+        // 复用同一个后台线程：旧实现每次弹窗都 new 一个 SingleThreadExecutor 且从不 shutdown，
+        // 用户多试几次就会泄漏线程（在低端机上表现为线程数持续增长）
+        Executor executor = EXECUTOR;
 
         BiometricPrompt.AuthenticationCallback authCallback = new BiometricPrompt.AuthenticationCallback() {
             @Override

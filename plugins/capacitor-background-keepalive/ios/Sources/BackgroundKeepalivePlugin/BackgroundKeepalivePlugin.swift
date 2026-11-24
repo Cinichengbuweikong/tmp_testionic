@@ -255,10 +255,14 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async {
             self.stopAudio()
             self.stopLocation()
-            self.beginBackgroundTask()
+            // 先设模式再申请：`beginBackgroundTask` 失败时会把 activeMode 复位为 .none，
+            // 反过来写就会出现"申请失败但状态显示 running:true"的假象（旧实现就是这个 bug）。
             self.activeMode = .backgroundTask
-            self.lastNote = "backgroundTask 只能把挂起时间往后推约 30 秒（可续期，但不保证），"
-                + "不适合需要长期在线的场景；请改用推送或后台 URLSession。"
+            self.beginBackgroundTask()
+            if self.activeMode == .backgroundTask {
+                self.lastNote = "backgroundTask 只能把挂起时间往后推约 30 秒（可续期，但不保证），"
+                    + "不适合需要长期在线的场景；请改用推送或后台 URLSession。"
+            }
             self.notifyStatus()
             call.resolve(self.statusObject())
         }

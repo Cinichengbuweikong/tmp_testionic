@@ -1,12 +1,15 @@
 package com.testionic.permissions;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
 
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -66,6 +69,9 @@ import java.util.Set;
                         Manifest.permission.READ_EXTERNAL_STORAGE,
                         Manifest.permission.WRITE_EXTERNAL_STORAGE
                 }),
+                // Android 11（API 30）起 WRITE_EXTERNAL_STORAGE 不再可授予，
+                // 所以 30~32 用"只读"别名；否则 alias 永远拿不到 GRANTED。
+                @Permission(alias = "storageRead", strings = { Manifest.permission.READ_EXTERNAL_STORAGE }),
                 @Permission(alias = "contacts", strings = { Manifest.permission.READ_CONTACTS }),
                 @Permission(alias = "calendar", strings = { Manifest.permission.READ_CALENDAR }),
                 @Permission(alias = "activityRecognition", strings = { Manifest.permission.ACTIVITY_RECOGNITION }),
@@ -147,7 +153,7 @@ public class PermissionsPlugin extends Plugin {
                 "unsupported",
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 new String[]{ Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION },
-                "Android 12+ 用户可能只给「大致位置」，此时 location 也是 granted（精度由系统决定）",
+                "Android 12+ 用户可能只给「大致位置」：此时 location 返回 limited，locationCoarse 才是 granted",
                 24, -1));
 
         map.put("locationCoarse", new PermissionDef(
@@ -170,20 +176,22 @@ public class PermissionsPlugin extends Plugin {
         // 同一个 id 两套后缀：13+ 用 READ_MEDIA_*，12 及以下用 READ_EXTERNAL_STORAGE
         map.put("photos", new PermissionDef(
                 "photos",
-                sdk -> sdk >= 33 ? "photos" : "storage",
+                sdk -> sdk >= 33 ? "photos" : "storageRead",
                 "unsupported",
                 Manifest.permission.READ_EXTERNAL_STORAGE,
                 new String[]{ "android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO" },
-                "Android 14+ 支持「仅选中部分照片」，本模板按 granted/denied 二元处理",
+                "Android 13+ 只给图片/只给视频时返回 limited；Android 14 的「仅选中部分照片」需要读 READ_MEDIA_VISUAL_USER_SELECTED（本模板未细分）",
                 24, -1));
 
         map.put("storage", new PermissionDef(
                 "storage",
-                sdk -> "storage",
+                // API 33+ 没有可用别名（READ_EXTERNAL_STORAGE 对 targetSdk 33+ 无效）
+                sdk -> sdk >= 33 ? null : (sdk >= 30 ? "storageRead" : "storage"),
                 "unsupported",
                 Manifest.permission.READ_EXTERNAL_STORAGE,
                 new String[]{ Manifest.permission.READ_EXTERNAL_STORAGE },
-                "Android 13+ 请用 photos（分区存储已废弃 READ_EXTERNAL_STORAGE）；Android 10+ 公共目录受分区存储限制",
+                "Android 13+ 请用 photos（分区存储已废弃 READ_EXTERNAL_STORAGE）；"
+                        + "Android 11+ 只能读公共目录（写需要 MANAGE_EXTERNAL_STORAGE，由 native-files 处理）",
                 24, 33));
 
         map.put("contacts", new PermissionDef(
@@ -229,6 +237,52 @@ public class PermissionsPlugin extends Plugin {
 
         // ⬇️ 新增权限：照上面的格式加一行即可（再补 @Permission 注解 + Manifest）
         return map;
+    }
+
+    /**
+     * 状态细化器：某些权限在 Android 上有"部分授权"的中间态，而 Capacitor 的别名机制只能给出
+     * granted / prompt / prompt-with-rationale / denied，需要在外面再细分一次。
+     *
+     * 返回 `limited` 表示"用户只给了一部分"（业务上通常按"能用但功能受限"处理）。
+     */
+    private interface StateRefiner {
+        String refine(Context context, String alias, String state);
+    }
+
+    /** ==================== 状态细化表（模板扩展点） ==================== */
+    private static final Map<String, StateRefiner> REFINERS = buildRefiners();
+
+    private static Map<String, StateRefiner> buildRefiners() {
+        Map<String, StateRefiner> refiners = new LinkedHashMap<>();
+
+        // Android 12+ 用户可以在「精确 / 大致」里选：只给大致位置时 FINE 未授予、COARSE 已授予。
+        // 如果不细化，Capacitor 会把 location 报成 prompt（"还没问过"），App 就会反复弹窗。
+        refiners.put("location", (context, alias, state) -> {
+            if ("granted".equals(state) || "unsupported".equals(state) || alias == null) {
+                return state;
+            }
+            boolean fine = isGranted(context, Manifest.permission.ACCESS_FINE_LOCATION);
+            boolean coarse = isGranted(context, Manifest.permission.ACCESS_COARSE_LOCATION);
+            return (coarse && !fine) ? "limited" : state;
+        });
+
+        // Android 13+ 的 READ_MEDIA_IMAGES / READ_MEDIA_VIDEO 是两个独立权限，
+        // 用户可以只给图片不给视频（或反过来）→ 报 limited。
+        refiners.put("photos", (context, alias, state) -> {
+            if ("granted".equals(state) || "unsupported".equals(state) || !"photos".equals(alias)) {
+                return state;
+            }
+            boolean images = isGranted(context, "android.permission.READ_MEDIA_IMAGES");
+            boolean video = isGranted(context, "android.permission.READ_MEDIA_VIDEO");
+            return (images != video) ? "limited" : state;
+        });
+
+        // ⬇️ 新增权限：如果它有"部分授权"的中间态，在这里加一个细化器
+        return refiners;
+    }
+
+    private static boolean isGranted(Context context, String permission) {
+        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED;
     }
 
     // ------------------------------------------------------------ API
@@ -341,6 +395,11 @@ public class PermissionsPlugin extends Plugin {
                 PermissionState permissionState = getPermissionState(alias);
                 state = permissionState == null ? "unsupported" : permissionState.toString();
             }
+            // 部分授权（limited）等中间态在这里细化
+            StateRefiner refiner = REFINERS.get(id);
+            if (refiner != null) {
+                state = refiner.refine(getContext(), alias, state);
+            }
             results.put(id, state);
             details.put(id, describe(id, alias, state));
         }
@@ -354,6 +413,10 @@ public class PermissionsPlugin extends Plugin {
         PermissionDef def = DEFINITIONS.get(id);
         if (def == null) {
             return "未知权限 id：" + id + "（检查 DEFINITIONS 表，或参考 TEMPLATE.md 添加）";
+        }
+        if ("limited".equals(state)) {
+            return "部分授权（limited）：用户只给了一部分（例如只给大致位置 / 只给图片不给视频），"
+                    + "请按业务决定是否够用，或引导用户去设置页调整";
         }
         if (alias == null) {
             return "当前系统版本不需要该权限（" + state + "）";
