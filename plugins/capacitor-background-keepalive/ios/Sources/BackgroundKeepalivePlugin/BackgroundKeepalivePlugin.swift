@@ -70,7 +70,7 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
             queue: .main
-        ) { [weak self] in
+        ) { [weak self] _ in
             guard let self = self, self.activeMode == .backgroundTask else { return }
             // beginBackgroundTask 的计时是从「进入后台」开始的，这里重新申请一次
             self.beginBackgroundTask()
