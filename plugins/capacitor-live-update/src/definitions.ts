@@ -35,6 +35,11 @@ export interface LiveUpdatePlugin {
     channel?: string;
     /** 忽略 `version` 比较，强制认为有更新（调试用） */
     force?: boolean;
+    /**
+     * 临时覆盖 `configure({ allowDowngrade })`：为 `true` 时，后端给的版本比当前**旧**也会视为可安装
+     * （默认 `false`，防降级攻击）。
+     */
+    allowDowngrade?: boolean;
   }): Promise<UpdateCheckResult>;
 
   /**

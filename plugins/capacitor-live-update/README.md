@@ -50,7 +50,7 @@ npx cap sync
 | `url` | string | 是 | zip 的下载地址。建议 https + CDN；`http` 只适合本地联调 |
 | `sha256` | string | 是 | zip **整个文件**的 SHA-256，小写 hex。客户端会重新计算并比对 |
 | `signature` | string | 是* | ECDSA P-256（SHA-256）对 zip **整个文件字节**的签名，DER 编码后 base64。`allowUnsigned: true` 时可省 |
-| `size` | number | 否 | 字节数，仅用于展示/校验进度 |
+| `size` | number | 否 | zip 包的字节数（**单位：bytes**，不是 KB/MB）。仅用于展示/估算下载进度，**不参与校验**（校验看 `sha256`） |
 | `notes` | string | 否 | 更新说明，会透传给 `checkForUpdate()` 的返回值 |
 | `minNativeVersion` | string | 否 | 低于此内置版本时客户端返回 `available:false, reason:'NATIVE_TOO_OLD'` |
 
@@ -58,6 +58,35 @@ npx cap sync
 - **签名必须对 zip 的原始字节**做（不是对 JSON、不是对 zip 的哈希再签名 —— 当然两者等价，
   但本插件约定直接签字节，实现最简单也最不容易出错）；`sha256` 是第二道校验。
 - 允许返回 302/307 重定向（客户端跟随），但**签名与摘要始终针对最终下载到的字节**。
+
+### 查询参数（客户端 → 后端）
+
+`checkForUpdate()` 会把下面 4 个参数**逐个 URL 编码**后拼到 `latest.json` 上
+（Android 用 `Uri.encode`，iOS 用 `URLComponents`；值里的空格、中文、`/` 都会被编码）：
+
+| 参数 | 类型 | 取值来源 | 示例 | 后端可以拿它做什么 |
+| --- | --- | --- | --- | --- |
+| `appId` | string | `configure({ appId })`；没配时用包名（Android `applicationId`）/ bundle id（iOS） | `com.myapp.testionic` | 一个后端服务多个 App / 多条产品线时区分是哪一个 |
+| `platform` | `'android' \| 'ios'` | 客户端按当前平台固定传 | `android` | 同一个版本号给两端发**不同**的包（两端原生桥/资源可能不同）；也可以用来做两端灰度 |
+| `channel` | string | `configure({ channel })` 或 `checkForUpdate({ channel })`；默认 `production` | `production` / `beta` / `gray` | 灰度、内测、A/B：同一 `appId` 按渠道返回不同版本 |
+| `version` | string | 当前**实际运行**的版本（正在用 OTA 包就是 OTA 版本，否则是内置版本，即 `getState().currentVersion`） | `9.9.9` | 判断"要不要给更新"、决定返回全量还是提示、记录灰度指标 |
+
+后端怎么用（建议）：
+
+- 这 4 个参数**都是客户端自述**，服务端可以完全忽略（例如永远返回最新包）。
+  客户端拿到响应后还会**自己再比一次版本**（见 `checkForUpdate` 的「行为细节」），
+  所以"后端多给"不会被误装；但如果后端**少给**（比如总是返回旧版本），客户端就永远收不到更新。
+- **`platform` 建议务必参与选择包**：如果两个平台的 web 资源完全一致，也可以忽略；
+  一旦两端的原生桥/插件集合不同（例如只有 Android 有某个插件），就必须分开发包。
+- **灰度不要靠客户端随机数**（会破坏 CDN/HTTP 缓存，且每次请求结果不稳定）；
+  正确做法是后端根据 `appId + channel + version`（或你自己的用户身份，如果有鉴权）决定返回哪个版本。
+- **不要把 token / 密码放进这些查询参数**：它们会进服务器访问日志、CDN 日志、浏览器历史。
+  当前实现**不发送自定义 header**；如果更新接口必须鉴权，建议：
+  1. 在 `configure({ serverUrl })` 里带一次性签名参数（后端校验签名 + 过期时间），或
+  2. 改造插件给请求加 header（Android `HttpURLConnection.setRequestProperty` /
+     iOS `URLRequest.addValue`）—— 但**不要**把 token 放进 `latest.json` 的响应里。
+- `version` 可能为空字符串或格式不规范（用户改过包名/版本号），后端要能容错返回，
+  不要因为 version 解析失败就 500。
 
 本地联调可以直接用仓库里的脚本：
 
@@ -175,6 +204,7 @@ if (Capacitor.isNativePlatform()) {
 | `options.serverUrl?` | `string` | 已配置值 | 临时覆盖后端地址（做灰度/多环境时有用） |
 | `options.channel?` | `string` | 已配置值 | 临时覆盖渠道 |
 | `options.force?` | `boolean` | `false` | 忽略版本比较，强制认为"有更新"（调试用） |
+| `options.allowDowngrade?` | `boolean` | 已配置值 | 临时覆盖 `configure({ allowDowngrade })`：`true` 时后端给的版本比当前**旧**也视为可安装（默认拒绝，防降级攻击） |
 
 返回 `UpdateCheckResult`：
 
@@ -186,16 +216,55 @@ if (Capacitor.isNativePlatform()) {
 | `url?` | `string` | zip 地址（直接传给 `downloadAndInstall`） |
 | `sha256?` | `string` | 后端给出的摘要 |
 | `signature?` | `string` | 后端给出的签名 |
-| `size?` | `number` | 包大小 |
+| `size?` | `number` | zip 包的字节数（**单位：bytes**），即后端 `latest.json` 里的 `size`。可用于显示"约 1.2 MB"或估算下载进度；**不要**用它做完整性校验（那是 `sha256` 的事）。服务器没给时为 `undefined` |
 | `notes?` | `string` | 更新说明 |
 | `reason?` | `'UP_TO_DATE' \| 'DOWNGRADE_BLOCKED' \| 'NATIVE_TOO_OLD'` | `available:false` 时的原因 |
 
 行为细节：
 
-- 版本比较是语义化的（按 `.`/`-`/`+` 分段，数字段按数值比、字母段按字典序，数字段更"新"）；
-- `available` 的判定：`version > currentVersion` 或（版本相等但字符串不同且非"降级"）；
+- 版本比较是**语义化**的，规则与完整例子见下面「版本比较规则与示例」；
+- `available` 的判定：
+  - 后端版本比当前**新** → 有更新；
+  - 后端版本与当前**相等但字符串不同** → 也认为有更新（兼容后端版本号格式调整，例如 `1.2` ↔ `1.2.0`）；
+  - 后端版本比当前**旧** → `DOWNGRADE_BLOCKED`，除非 `force` 或 `allowDowngrade: true`；
+  - 后端没给 `version`（空字符串）→ `UP_TO_DATE`；
 - 后端如果返回 `minNativeVersion` 且高于内置版本 → `NATIVE_TOO_OLD`（不下载，提示用户升级 App）；
 - 成功后会记录 `lastCheckAt`（`getState()` 可见）。
+
+#### 版本比较规则与示例
+
+实现（Android `LiveUpdatePlugin.compareVersions` / iOS 同名方法，两端逻辑完全一致）
+把版本号按 `.`、`-`、`+` 切成段，从左到右逐段比较：
+
+1. **数字段按数值比**（不是字典序）：`10 > 9`；
+2. **字母段按字典序**（区分大小写）：`beta < rc`；
+3. **同一位置：数字段比字母段"新"**：`1.0.0.1 > 1.0.0.1-rc`；
+4. **段数不同时，缺的段按 `0` 补**：`1.2 == 1.2.0`、`1.0.0 < 1.0.0.1`；
+   但如果对侧剩下的是**字母段**，说明它是预发布版，**段数少的一侧更新**：`1.0.0 > 1.0.0-beta`。
+
+| 当前版本 | 后端返回 | 结果 | 说明 |
+| --- | --- | --- | --- |
+| `1.2.0` | `1.2.1` | ✅ 更新 | 补丁位数字变大 |
+| `1.2.0` | `1.2.0` | ⏸ `UP_TO_DATE` | 完全相等 |
+| `1.2` | `1.2.0` | ✅ 更新 | 比较结果相等但字符串不同 → 仍会装一次（见上面的说明） |
+| `1.2.0-beta` | `1.2.0` | ✅ 更新 | 正式版 > 预发布版 |
+| `1.2.0` | `1.2.0-beta` | ⛔ `DOWNGRADE_BLOCKED` | 后端给的是预发布版，比当前旧（除非允许降级） |
+| `1.2.0` | `1.2.0-beta.2` | ⛔ `DOWNGRADE_BLOCKED` | 先比到 `1.2.0` vs `1.2.0-beta`，预发布更旧 |
+| `1.2.0-beta` | `1.2.0-beta.2` | ✅ 更新 | 预发布号递增（`beta` < `beta.2`） |
+| `1.0.0-alpha` | `1.0.0-beta` | ✅ 更新 | 字母段字典序 |
+| `1.10.0` | `1.9.0` | ⛔ `DOWNGRADE_BLOCKED` | 按**数值**比：10 > 9，所以 1.10 比 1.9 新（反向即降级） |
+| `2.0` | `1.9.9` | ⛔ `DOWNGRADE_BLOCKED` | 主版本号更大的一方更新 |
+| `1.0.0` | `1.0.0.1` | ✅ 更新 | 多一个补丁段（缺段补 0 后 0 < 1） |
+| `1.0.0+build5` | `1.0.0+build6` | ✅ 更新 | `+` 后面的段继续按字母/数字规则比 |
+| `v1.2.0` | `1.2.0` | ⛔ `DOWNGRADE_BLOCKED` | **别加 `v` 前缀**：`v` 是字母段，比数字段"旧" |
+
+⚠️ 已知取舍（用的时候避开）：
+
+- **纯数字后缀会被当成补丁段**：`1.0.0-1` 比 `1.0.0` **新**（缺段补 0 后 1 > 0）。
+  所以预发布请用 `alpha` / `beta` / `rc` 这类**字母**标识，不要用纯数字；
+- **区分大小写**：`1.0.0-RC` 与 `1.0.0-rc` 不相等，且 `RC < rc`（字典序），建议全小写；
+- 后端最好**固定一种格式**（例如始终 `MAJOR.MINOR.PATCH[-prerelease]`），不要混用
+  `1.2` / `1.2.0` —— 虽然能比，但会因为"字符串不同"触发一次多余的安装。
 
 错误：`NOT_CONFIGURED` / `CHECK_FAILED`（含 HTTP 状态码）。
 
@@ -263,7 +332,7 @@ if (Capacitor.isNativePlatform()) {
 | `version` | `string` | 版本号 |
 | `bundleId` | `string` | 目录名 |
 | `path` | `string` | 该包在设备上的绝对路径 |
-| `bytes` | `number` | 目录占用字节数 |
+| `bytes` | `number` | 该包在设备上占用的字节数（**单位：bytes**） |
 | `active` | `boolean` | 是否是当前生效的包 |
 | `previous` | `boolean` | 是否是 `rollback()` 的目标 |
 
@@ -323,7 +392,7 @@ if (Capacitor.isNativePlatform()) {
 | `sha256Matches` | `boolean \| null` | 传了 sha256 时的比对结果 |
 | `signatureValid` | `boolean \| null` | 传了 signature（+公钥）时的验签结果 |
 | `files` | `number` | 解压出的文件数（失败为 0） |
-| `bytes` | `number` | 解压出的总字节数 |
+| `bytes` | `number` | 解压出的总字节数（**单位：bytes**；是解压后的体积，通常大于 `size` 里 zip 的字节数） |
 | `entries` | `string[]` | 解压出的相对路径（最多 100 条，便于肉眼检查） |
 | `note?` | `string` | 失败原因（例如 `error in opening zip file`、缺少签名） |
 
@@ -335,7 +404,7 @@ if (Capacitor.isNativePlatform()) {
 
 | payload 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `bytes` | `number` | 已下载字节 |
+| `bytes` | `number` | 已下载字节数（**单位：bytes**） |
 | `total` | `number` | 总字节（服务器没给 Content-Length 时为 `-1`） |
 | `percent` | `number` | `0~100`；`total<=0` 时为 `-1` |
 
@@ -354,6 +423,114 @@ await handle.remove();
 ```ts
 const { check, install } = await syncUpdate({ force: false });
 // check: UpdateCheckResult；install: UpdateInstallResult | null（没更新时为 null）
+```
+
+## 使用例(前端)
+
+```vue
+<section class="card">
+  <h2>LiveUpdate（热更新）</h2>
+  <div class="actions">
+    <button @click="liveUpdateState">读取状态</button>
+    <button @click="liveUpdateVerify">离线自检（zip + 签名）</button>
+    <button @click="liveUpdateCheck">检查更新</button>
+    <button @click="liveUpdateConfigure">配置后端</button>
+  </div>
+  <div class="actions">
+    <button @click="liveUpdateRollback">回滚</button>
+    <button @click="liveUpdateReset">清空 OTA 包</button>
+    <button @click="liveUpdateReload">重载 WebView</button>
+  </div>
+  <p class="hint">
+    离线自检不需要服务器：用内置的已签名 zip 验证「解压 + SHA-256 + ECDSA P-256 验签」。
+    真正安装请先配置 serverUrl（后端需提供 /latest.json 与 zip）。
+  </p>
+</section>
+
+<script>
+import { LiveUpdate } from 'capacitor-live-update';
+
+async liveUpdateState() {
+  try {
+    const [state, config] = await Promise.all([LiveUpdate.getState(), LiveUpdate.getConfig()]);
+    this.print('热更新状态', { state, config });
+  } catch (err) {
+    this.error('LiveUpdate.getState', err);
+  }
+},
+
+async liveUpdateVerify() {
+  try {
+    const [ok, tampered, badSha] = await Promise.all([
+      LiveUpdate.verifyBundle({
+        zipBase64: LIVE_UPDATE_FIXTURE.zipBase64,
+        sha256: LIVE_UPDATE_FIXTURE.sha256,
+        signature: LIVE_UPDATE_FIXTURE.signatureBase64,
+        publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+      }),
+      LiveUpdate.verifyBundle({
+        zipBase64: LIVE_UPDATE_FIXTURE.zipBase64,
+        sha256: LIVE_UPDATE_FIXTURE.sha256,
+        signature: LIVE_UPDATE_FIXTURE.tamperedSignatureBase64,
+        publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+      }),
+      LiveUpdate.verifyBundle({ zipBase64: LIVE_UPDATE_FIXTURE.zipBase64, sha256: 'deadbeef' }),
+    ]);
+    this.print('离线自检', { ok, tampered, badSha });
+  } catch (err) {
+    this.error('LiveUpdate.verifyBundle', err);
+  }
+},
+
+async liveUpdateConfigure() {
+  try {
+    const res = await LiveUpdate.configure({
+      serverUrl: 'https://updates.example.com/testionic',
+      publicKey: LIVE_UPDATE_FIXTURE.publicKeyPem,
+      channel: 'production',
+      allowUnsigned: false,
+    });
+    this.print('配置热更新后端', res);
+  } catch (err) {
+    this.error('LiveUpdate.configure', err);
+  }
+},
+
+async liveUpdateCheck() {
+  try {
+    const res = await LiveUpdate.checkForUpdate();
+    this.print('检查更新', res);
+  } catch (err) {
+    this.error('LiveUpdate.checkForUpdate', err);
+  }
+},
+
+async liveUpdateRollback() {
+  try {
+    const res = await LiveUpdate.rollback();
+    this.print('回滚', res);
+  } catch (err) {
+    this.error('LiveUpdate.rollback', err);
+  }
+},
+
+async liveUpdateReset() {
+  try {
+    const res = await LiveUpdate.reset();
+    this.print('清空 OTA 包', res);
+  } catch (err) {
+    this.error('LiveUpdate.reset', err);
+  }
+},
+
+async liveUpdateReload() {
+  try {
+    await LiveUpdate.reload();
+  } catch (err) {
+    this.error('LiveUpdate.reload', err);
+  }
+},
+</script>
 ```
 
 ---

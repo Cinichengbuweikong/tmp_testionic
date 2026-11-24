@@ -195,7 +195,10 @@ public class LiveUpdatePlugin extends Plugin {
             }
             int cmp = compareVersions(version, currentVersion);
             boolean newer = cmp > 0 || (cmp == 0 && !version.equals(currentVersion));
-            if (!newer && !force) {
+            // 允许降级时，比当前旧的版本也当作"可安装"（默认拒绝，防降级攻击）
+            boolean downgradeAllowed = Boolean.TRUE.equals(
+                    call.getBoolean("allowDowngrade", store.isAllowDowngrade()));
+            if (!newer && !force && !(downgradeAllowed && cmp < 0)) {
                 ret.put("available", false);
                 ret.put("reason", cmp < 0 ? "DOWNGRADE_BLOCKED" : "UP_TO_DATE");
                 call.resolve(ret);
@@ -561,21 +564,33 @@ public class LiveUpdatePlugin extends Plugin {
         for (int i = 0; i < length; i++) {
             String partA = i < a.length ? a[i] : "";
             String partB = i < b.length ? b[i] : "";
+            boolean numericA = partA.matches("\\d+");
+            boolean numericB = partB.matches("\\d+");
+            // 缺段按 0 补齐：`1.2` == `1.2.0`、`1.0.0` < `1.0.0.1`
+            if (partA.isEmpty() && numericB) {
+                partA = "0";
+                numericA = true;
+            }
+            if (partB.isEmpty() && numericA) {
+                partB = "0";
+                numericB = true;
+            }
             if (partA.equals(partB)) {
                 continue;
             }
-            boolean numericA = partA.matches("\\d+");
-            boolean numericB = partB.matches("\\d+");
             if (numericA && numericB) {
                 long valueA = Long.parseLong(partA);
                 long valueB = Long.parseLong(partB);
                 if (valueA != valueB) {
                     return Long.compare(valueA, valueB);
                 }
+            } else if (partA.isEmpty() || partB.isEmpty()) {
+                // 缺段 vs 字母段：缺段是正式版，更新（1.0.0 > 1.0.0-beta）
+                return partA.isEmpty() ? 1 : -1;
+            } else if (numericA != numericB) {
+                // 同一位置：数字段比字母段"新"（1.0.0.1 > 1.0.0.1-rc）
+                return numericA ? 1 : -1;
             } else {
-                // 数字段比字母段"新"（1.0.0 > 1.0.0-beta）
-                if (numericA) return 1;
-                if (numericB) return -1;
                 int result = partA.compareTo(partB);
                 if (result != 0) {
                     return result;

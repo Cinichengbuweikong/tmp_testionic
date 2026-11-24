@@ -228,6 +228,76 @@ if (results.storage === 'unsupported') {
   选择界面（本插件不提供，属业务层）；
 - **`request()` 期间不要并发调用另一个 `request()`**（iOS 弹窗会排队/互相打断）。
 
+## 使用例
+
+```vue
+<section class="card">
+  <h2>Permissions（权限检查 / 申请）</h2>
+  <div class="actions">
+    <button @click="permissionsCheck">检查常用权限</button>
+    <button @click="permissionsRequest">申请通知权限</button>
+    <button @click="permissionsRequestCamera">申请相机权限</button>
+    <button @click="permissionsSupported">支持列表</button>
+    <button @click="permissionsOpenSettings">打开应用设置</button>
+  </div>
+  <p class="hint">
+    check() 只读状态、不弹窗；request() 会弹系统授权框（iOS 一次只能弹一个，串行执行）。
+    iOS 记得在 Info.plist 里写好 usage description，否则系统会直接崩溃。
+  </p>
+</section>
+
+<script>
+import { Permissions } from 'capacitor-permissions';
+
+async permissionsCheck() {
+  try {
+    const res = await Permissions.check({
+      permissions: ['camera', 'microphone', 'location', 'notifications', 'photos', 'contacts'],
+    });
+    this.print('权限检查', res);
+  } catch (err) {
+    this.error('Permissions.check', err);
+  }
+},
+
+async permissionsRequest() {
+  try {
+    const res = await Permissions.request({ permissions: ['notifications'] });
+    this.print('申请通知权限', res);
+  } catch (err) {
+    this.error('Permissions.request(notifications)', err);
+  }
+},
+
+async permissionsRequestCamera() {
+  try {
+    const res = await Permissions.request({ permissions: ['camera'] });
+    this.print('申请相机权限', res);
+  } catch (err) {
+    this.error('Permissions.request(camera)', err);
+  }
+},
+
+async permissionsSupported() {
+  try {
+    const res = await Permissions.getSupported();
+    this.print('支持的权限', res);
+  } catch (err) {
+    this.error('Permissions.getSupported', err);
+  }
+},
+
+async permissionsOpenSettings() {
+  try {
+    const res = await Permissions.openAppSettings();
+    this.print('打开设置页', res);
+  } catch (err) {
+    this.error('Permissions.openAppSettings', err);
+  }
+},
+</script>
+```
+
 ## 宿主配置
 
 ### Android

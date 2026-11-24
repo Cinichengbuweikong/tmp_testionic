@@ -258,7 +258,9 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
             let cmp = compareVersions(version, current)
-            if !(cmp > 0 || (cmp == 0 && version != current)) && !force {
+            // 允许降级时，比当前旧的版本也当作"可安装"（默认拒绝，防降级攻击）
+            let downgradeAllowed = call.getBool("allowDowngrade") ?? defaults.bool(forKey: Keys.allowDowngrade)
+            if !(cmp > 0 || (cmp == 0 && version != current)) && !force && !(downgradeAllowed && cmp < 0) {
                 result["available"] = false
                 result["reason"] = cmp < 0 ? "DOWNGRADE_BLOCKED" : "UP_TO_DATE"
                 call.resolve(result)
@@ -687,20 +689,37 @@ public class LiveUpdatePlugin: CAPPlugin, CAPBridgedPlugin {
         return key.isValidSignature(signature, for: data)
     }
 
-    /// 语义化版本比较：数字段按数值比，`1.0.0` > `1.0.0-beta`。
+    /// 语义化版本比较：数字段按数值比、字母段按字典序，
+    /// 段数不同时：多出的数字段更新（1.0.0 < 1.0.0.1），多出的字母段是预发布（1.0.0 > 1.0.0-beta）。
+    /// 与 Android 侧 `LiveUpdatePlugin.compareVersions` 保持完全一致的规则。
     private func compareVersions(_ left: String, _ right: String) -> Int {
         let a = left.components(separatedBy: CharacterSet(charactersIn: ".-+"))
         let b = right.components(separatedBy: CharacterSet(charactersIn: ".-+"))
         let length = max(a.count, b.count)
         for index in 0..<length {
-            let partA = index < a.count ? a[index] : ""
-            let partB = index < b.count ? b[index] : ""
+            var partA = index < a.count ? a[index] : ""
+            var partB = index < b.count ? b[index] : ""
+            var numberA = Int(partA)
+            var numberB = Int(partB)
+            // 缺段按 0 补齐：`1.2` == `1.2.0`、`1.0.0` < `1.0.0.1`
+            if partA.isEmpty, numberB != nil {
+                partA = "0"
+                numberA = 0
+            }
+            if partB.isEmpty, numberA != nil {
+                partB = "0"
+                numberB = 0
+            }
             if partA == partB { continue }
-            if let numberA = Int(partA), let numberB = Int(partB) {
-                if numberA != numberB { return numberA < numberB ? -1 : 1 }
+            if let nA = numberA, let nB = numberB {
+                if nA != nB { return nA < nB ? -1 : 1 }
+            } else if partA.isEmpty || partB.isEmpty {
+                // 缺段 vs 字母段：缺段是正式版，更新（1.0.0 > 1.0.0-beta）
+                return partA.isEmpty ? 1 : -1
+            } else if (numberA != nil) != (numberB != nil) {
+                // 同一位置：数字段比字母段"新"
+                return numberA != nil ? 1 : -1
             } else {
-                if Int(partA) != nil { return 1 }
-                if Int(partB) != nil { return -1 }
                 let result = partA.compare(partB)
                 if result != .orderedSame { return result == .orderedAscending ? -1 : 1 }
             }

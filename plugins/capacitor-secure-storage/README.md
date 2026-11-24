@@ -255,6 +255,8 @@ Android 的 SharedPreferences 是**整文件重写**，存大对象会拖慢每�
 </section>
 
 <script>
+import { SecureStorage } from 'capacitor-secure-storage';
+
 async secureSet() {
   try {
     const res = await SecureStorage.set({ key: 'demo.token', value: `token-${Date.now()}` });

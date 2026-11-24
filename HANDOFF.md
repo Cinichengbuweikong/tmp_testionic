@@ -5,6 +5,41 @@
 > 关于 Capacitor 官方/内置能力的调研结论。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
+> ## 🆕 2026-11-24 22:40 文档答疑轮（live-update 语义 / 版本比较 / 通知渠道）
+>
+> 用户提了 4 个文档问题，**在回答过程中发现 2 个真 bug，一并修了**：
+>
+> 1. **live-update 的语义化版本比较有 bug**（README 原来写「`1.0.0 > 1.0.0-beta`」，但实现是反的）。
+>    原实现按 `.`/`-`/`+` 切段后，对「一侧段数少」的情况直接走字符串比较 → `1.2.0` vs `1.2.0-beta`
+>    时 `""` < `"beta"`，于是**预发布版被当成更新版本**（正式版用户会被"升级"到 beta）。
+>    新规则（Android `LiveUpdatePlugin.compareVersions` / iOS 同名方法，两端逻辑一致）：
+>    - 数字段按数值比、字母段按字典序、同位置数字段 > 字母段；
+>    - **缺段按 `0` 补** → `1.2 == 1.2.0`、`1.0.0 < 1.0.0.1`；
+>    - 缺段 vs **字母段** → 缺段是正式版，更新 → `1.0.0 > 1.0.0-beta`（修复点）；
+>    - 已知取舍（README 已写）：`1.0.0-1` 被当成补丁段（比 `1.0.0` 新）、区分大小写、别加 `v` 前缀。
+>    **验证**：用 JBR 21 `javac` 把同一份算法抽出来跑 18 组用例，全部通过（含上面所有边界）。
+> 2. **`configure({ allowDowngrade })` 之前只存不用**（`checkForUpdate` 从来没读它，
+>    README 却承诺"允许降级"）。现在 `checkForUpdate` 读 `call.allowDowngrade`（可临时覆盖配置），
+>    `true` 且远端更旧时视为可安装。**真机实测**（本地 dev server 故意发 `0.9.0`，当前 `1.0`）：
+>    默认 → `available:false, reason:DOWNGRADE_BLOCKED`；`allowDowngrade:true` → `available:true`；
+>    `force:true` → `available:true`。
+>
+> 文档补充（4 处，都在用户要求的位置）：
+> - live-update：**查询参数表**（`appId`/`platform`/`channel`/`version` 的来源、示例、后端用法、
+>   为什么不能放 token、灰度别靠客户端随机数）；
+> - live-update：**`size` 单位 = bytes**，并顺带给 `bytes`（安装结果 / updates[] / downloadProgress）
+>   都标了单位；强调 `size` 不参与校验（校验看 `sha256`）；
+> - live-update：**「版本比较规则与示例」** 13 行对照表 + 3 条已知取舍；
+>   同时把 `available` 判定（更新/相等但字符串不同/降级/空版本）写清楚；
+> - keepalive：**「`channelId` 是什么」**（Android 通知渠道：用户可见的分组开关、同 id 复用、
+>   换 id 会新建、重要性创建后 App 改不了、`channelName` 只用于展示、建议加 app 前缀）。
+>
+> ⚠️ 用户本轮手动往 4 个 README 里都加了「使用例(前端)」Vue 片段（约 275 行）。
+> **改 README 前先 `git diff` 看用户改动，只做插入/局部替换，不要整篇重写。**
+>
+> 本轮验证：`build:plugins` / `audit:plugins` / `verify:ios` 通过；真机 autotest **ok:true**；
+> 降级行为真机验证（见上）；设备已恢复为普通构建（`#/`，无 OTA）。
+
 > ## 🆕 2026-11-24 21:15 插件打磨轮（权限模板化 / keepalive iOS 默认值 / 文档补全）
 >
 > **HEAD**：`138f5e7`（feat）→ 本轮结束时会再补一个 HANDOFF 提交。

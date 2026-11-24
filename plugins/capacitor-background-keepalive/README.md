@@ -104,9 +104,39 @@ await BackgroundKeepalive.stop();
 | `text?` | `string` | `'点击返回应用'` | 通知正文 |
 | `subText?` | `string` | — | 副标题（小字） |
 | `smallIcon?` | `string` | App 图标 | drawable/mipmap 资源名 |
-| `channelId?` | `string` | `'capacitor_keepalive'` | 通知渠道 id |
-| `channelName?` | `string` | `'后台运行'` | 渠道名（渠道重要性固定 `IMPORTANCE_LOW`，静音、不弹横幅） |
+| `channelId?` | `string` | `'capacitor_keepalive'` | 通知渠道（channel）id，见下方「`channelId` 是什么」 |
+| `channelName?` | `string` | `'后台运行'` | 渠道名（显示在系统设置里；渠道重要性固定 `IMPORTANCE_LOW`，静音、不弹横幅） |
 | `dismissible?` | `boolean` | `false` | `false` = `ongoing` 不可划掉 |
+
+#### `channelId` 是什么（Android 通知渠道）
+
+Android 8.0（API 26）起，**每条通知都必须属于一个"通知渠道"（NotificationChannel）**，
+渠道是系统设置里给用户看的"分门别类开关"的单位：
+
+- 用户在「设置 → 应用 → 通知」里看到的是**按渠道分组**的列表，可以单独把某个渠道
+  关掉、调重要性、关声音/震动/角标；
+- 同一个 `channelId` = **同一个渠道**：插件复用已存在的渠道（名称/描述可更新，
+  但**重要性创建后 App 改不了**，只有用户能改）；
+- 换一个 `channelId` = **新建一个渠道**，旧的会留在系统设置里（用户会看到两个），
+  所以**不要**每次启动换 id。
+
+本插件的用法：
+
+| 场景 | 怎么传 |
+| --- | --- |
+| 只要一个"后台运行"通知（最常见） | 不传，用默认 `capacitor_keepalive` / `后台运行` |
+| 想把"保活通知"和 App 的其他通知分开（让用户能单独静音其中一个） | 传自己的 id，例如 `channelId: 'myapp.keepalive', channelName: '后台同步'` |
+| 同一 App 有多种后台任务（下载 / 同步 / 播放） | 每种一个 id，用户可分别控制；但**同一个用途要固定同一个 id** |
+
+注意：
+
+- `channelId` 建议加 App 前缀（如 `com.example.keepalive`），避免与其他插件/库的渠道撞名；
+- 渠道**重要性固定 `IMPORTANCE_LOW`**（插件写死的）：不响铃、不震动、不弹横幅，
+  适合"常驻但别打扰用户"的前台服务通知；想让它更显眼要改插件代码，而且在 Android 上
+  App 也不能把已创建渠道的重要性**调高**（只能用户自己改）；
+- `channelName` 只在**首次创建**时生效（之后可以更新名称，但用户看惯的名字变化容易困惑），
+  所以**不要用它做动态文案** —— 动态内容请用 `notification.title/text`；
+- 卸载重装后渠道会被清掉重建；覆盖安装（升级）会保留用户对渠道的自定义设置。
 
 返回 `KeepaliveStatus`：
 
@@ -248,6 +278,101 @@ const expired = await BackgroundKeepalive.addListener('keepaliveExpired', (e) =>
 
 > Android 不会派发 `keepaliveExpired`：前台服务没有"到期"概念。`dataSync` 的 6 小时超时
 > 由系统直接停服务，插件会派发 `keepaliveChanged`（`running:false` + `note`）。
+
+## 使用例
+
+```vue
+<section class="card">
+  <h2>BackgroundKeepalive（后台保活）</h2>
+  <div class="actions">
+    <button @click="keepaliveStart">启动保活</button>
+    <button @click="keepaliveStop">停止保活</button>
+    <button @click="keepaliveStatus">读取状态</button>
+    <button @click="keepaliveCapabilities">能力矩阵</button>
+    <button @click="keepaliveBattery">电池优化豁免</button>
+    <button @click="keepaliveWatchExpired">监听到期事件</button>
+  </div>
+  <p class="hint">
+    Android 用前台服务 + 常驻通知（唯一被系统承认的方式）；iOS 默认 backgroundTask
+    （安全、无商店风险），audio / location 需显式指定并自担审核风险，详见能力矩阵。
+    iOS 后台时间用完会触发 keepaliveExpired（挂起期间产生的会在回到前台时补发）。
+  </p>
+</section>
+
+<script>
+import { BackgroundKeepalive } from 'capacitor-background-keepalive';
+
+async keepaliveStart() {
+  try {
+    const res = await BackgroundKeepalive.start({
+      mode: 'auto',
+      notification: {
+        title: '后台保活运行中',
+        text: '点按返回应用',
+        subText: '由 capacitor-background-keepalive 提供',
+      },
+    });
+    this.print('启动保活', res);
+  } catch (err) {
+    this.error('BackgroundKeepalive.start', err);
+  }
+},
+
+async keepaliveStop() {
+  try {
+    const res = await BackgroundKeepalive.stop();
+    this.print('停止保活', res);
+  } catch (err) {
+    this.error('BackgroundKeepalive.stop', err);
+  }
+},
+
+async keepaliveStatus() {
+  try {
+    const res = await BackgroundKeepalive.isRunning();
+    this.print('保活状态', res);
+  } catch (err) {
+    this.error('BackgroundKeepalive.isRunning', err);
+  }
+},
+
+async keepaliveCapabilities() {
+  try {
+    const res = await BackgroundKeepalive.getCapabilities();
+    this.print('保活能力矩阵', res);
+  } catch (err) {
+    this.error('BackgroundKeepalive.getCapabilities', err);
+  }
+},
+
+async keepaliveBattery() {
+  try {
+    const [ignored, requested] = await Promise.all([
+      BackgroundKeepalive.isBatteryOptimizationIgnored(),
+      BackgroundKeepalive.requestBatteryOptimizationExemption(),
+    ]);
+    this.print('电池优化豁免', { ignored, requested });
+  } catch (err) {
+    this.error('batteryOptimization', err);
+  }
+},
+
+async keepaliveWatchExpired() {
+  try {
+    // iOS backgroundTask 到期事件；挂起期间产生的会在回到前台时补发（deliveredAfterResume:true）
+    const handle = await BackgroundKeepalive.addListener('keepaliveExpired', (event) => {
+      this.print('后台任务到期事件', event);
+    });
+    this.print('已监听 keepaliveExpired', {
+      note: 'iOS：让 App 进后台待 30 秒以上（或等系统挂起）再回前台看这里；Android 不会触发该事件。',
+    });
+    this.keepaliveExpiredHandle = handle;
+  } catch (err) {
+    this.error('addListener(keepaliveExpired)', err);
+  }
+},
+</script>
+```
 
 ## Android 细节
 
