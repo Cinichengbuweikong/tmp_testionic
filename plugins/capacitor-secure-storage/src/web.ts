@@ -48,22 +48,32 @@ function openDb(): Promise<IDBDatabase> {
 
 async function idbGet<T>(key: string): Promise<T | undefined> {
   const db = await openDb();
-  return new Promise<T | undefined>((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, 'readonly');
-    const req = tx.objectStore(DB_STORE).get(key);
-    req.onsuccess = () => resolve(req.result as T | undefined);
-    req.onerror = () => reject(req.error ?? new Error('indexedDB get failed'));
-  }).finally(() => db.close());
+  try {
+    return await new Promise<T | undefined>((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const req = tx.objectStore(DB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result as T | undefined);
+      req.onerror = () => reject(req.error ?? new Error('indexedDB get failed'));
+    });
+  } finally {
+    // 用 try/finally 而不是 Promise.prototype.finally：后者是 ES2018，
+    // 而本插件 tsconfig 的 lib/target 是 es2017（从零构建会报 TS2550）。
+    db.close();
+  }
 }
 
 async function idbPut(key: string, value: unknown): Promise<void> {
   const db = await openDb();
-  return new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, 'readwrite');
-    tx.objectStore(DB_STORE).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('indexedDB put failed'));
-  }).finally(() => db.close());
+  try {
+    return await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('indexedDB put failed'));
+    });
+  } finally {
+    db.close();
+  }
 }
 
 async function getKey(): Promise<CryptoKey> {

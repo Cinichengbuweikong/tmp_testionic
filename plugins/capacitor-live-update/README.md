@@ -24,9 +24,16 @@
 ## 安装
 
 ```bash
-npm install file:../plugins/capacitor-live-update
+# 1) 插件目录里先构建（dist/ 是 tsc 产物、不入库，必须现场生成）
+cd plugins/capacitor-live-update && npm install && npm run build
+
+# 2) 回到项目根，用 file: 方式安装并同步原生工程
+npm install ./plugins/capacitor-live-update   # 或 "file:plugins/capacitor-live-update"
 npx cap sync
 ```
+
+> ⚠️ 直接 `npm install file:...` 而不先 `npm run build`，宿主会解析不到入口
+> （`package.json` 的 `main` 指向 `dist/esm/index.js`）。
 
 ## 后端协议（最小实现）
 
