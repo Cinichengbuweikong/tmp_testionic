@@ -5,6 +5,59 @@
 > 关于 Capacitor 官方/内置能力的调研结论。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
+> ## 🆕 2026-11-25 00:30 Android 16 模拟器验证轮（新系统兼容性 + 概览文档）
+>
+> 在 **Pixel_6 / Android 16（API 36）** 模拟器上完整跑了一遍四个插件，并新增 4 份 `INTRO.md`。
+>
+> ### 新系统上发现并修掉的 bug（1 个）
+>
+> - **`isBiometryAvailable()` / `getInfo().biometry.enrolled` 在 API 36 上误报 `enrolled:true`**：
+>   模拟器没有录入指纹时 `canAuthenticate()` 返回 `NONE_ENROLLED(11)`，旧判断
+>   `status != NO_HARDWARE && status != HW_UNAVAILABLE` 得到 true → 出现
+>   **"available:false 但 enrolled:true"** 的矛盾状态（UI 会误以为用户只是暂时不可用）。
+>   iOS 侧同样问题：`authError == biometryNotAvailable`（无硬件/模拟器没开 Face ID）也被算作已录入。
+>   修：Android 只在 `OK / HW_UNAVAILABLE / SECURITY_UPDATE_REQUIRED` 时为 true；
+>   iOS 把 `biometryNotEnrolled` **和** `biometryNotAvailable` 都判 false。两端 `getInfo` 同步修。
+>   实测（API 36）：`{ available:false, type:'none', enrolled:false, reason:'NONE_ENROLLED' }` ✅
+>
+> ### API 36 上的实际行为（都已实测）
+>
+> - **autotest `ok:true`**；`npm run verify:android` 双设备（真机 + 模拟器）**PASS**。
+> - **permissions**：`storage` → `unsupported`（33+ 设计如此）；`photos`/`notifications`/`location` → `prompt`；
+>   `getSupported().supported` 为 11（storage 被排除）。
+>   用 `pm grant` 只给 `ACCESS_COARSE_LOCATION` 后：`location → limited`、`locationCoarse → granted` ✅
+> - **keepalive**：Android 16 上 `specialUse` 前台服务正常；**授予 `POST_NOTIFICATIONS` 后
+>   `notificationVisible:true`**（未授予时 false，符合文档）；起停正常。
+> - **live-update**：端到端跑通 —— 安装 51 文件 / 1.19MB → reload 到 `9.9.9`（`pending:true`）→
+>   `notifyAppReady` → **冷启动仍是 9.9.9** → `rollback()` 回 `1.0`。
+> - **secure-storage**：AES-256-GCM 正常；`requireBiometric` 在未录入设备上被 `BIOMETRY_NOT_ENROLLED` 拒绝。
+>
+> ### 额外验证：START_STICKY 恢复（`adb root` + `kill -9`）
+>
+> 模拟器可 `adb root`，于是直接 `kill -9` 掉 App 进程来验证上一轮的修复：
+> `dumpsys activity services` 里 `KeepaliveService` **被系统重建**（`startRequested=true`、
+> `isForeground=true`、`types=0x40000000`），通知标题 `sticky-test` 从持久化配置**恢复成功**
+> （修复前这里会 `stopSelf()`，服务/通知都不会回来）。**这是本轮最有价值的一次回归验证。**
+>
+> ### 模拟器使用的坑（写给自己）
+>
+> - 软件渲染（`-gpu swiftshader_indirect`）下 **`com.android.systemui` 频繁 ANR**；
+>   `uiautomator dump` / 点击系统权限弹窗**不可靠** → 权限相关验证优先用
+>   `adb shell pm grant/revoke`，UI 弹窗验证放真机做。
+> - ANR 卡住时：`adb shell input keyevent 4` + `adb shell am force-stop com.android.systemui`
+>   （它会自己重启），必要时 force-stop App 重新拉起。
+> - autotest 构建启动后会自己跑一遍并用 `stop()` 结束 keepalive，**别和 autotest 抢时序**
+>   （本轮就出现过"刚 start 就被 autotest 的 stop 关掉"的假失败）。
+>
+> ### 文档
+>
+> - 四份 README 各加了「与其他插件一起使用（注意事项）」表（上一轮）；
+>   本轮再补两条**只能文档化**的限制：`secure-storage` 的 iOS「先删后加」可能丢旧值、
+>   `keepalive` 的「重建时机由系统决定 / iOS 进程被终止时事件不会补发」。
+> - 新增 **4 份 `INTRO.md`**（各插件概览：定位、平台差异、核心 API、典型场景、坑、实测），
+>   可直接拿去当插件介绍用。
+> - 版本：secure-storage **0.2.1**（enrolled 修复）。
+
 > ## 🆕 2026-11-24 23:20 测试视角自查轮（13 个 bug 修复 + 跨插件注意事项）
 >
 > 用户要求"以测试视角重读四个插件、找 bug 并修，同时考虑与其它插件共用的问题"。

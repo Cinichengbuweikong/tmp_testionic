@@ -288,7 +288,11 @@ public class SecureStoragePlugin: CAPPlugin, CAPBridgedPlugin {
         var authError: NSError?
         let available = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError)
         let type = available ? biometryTypeName(context.biometryType) : "none"
-        let enrolled = available || authError?.code != LAError.biometryNotEnrolled.rawValue
+        // "有没有录入" ≠ "设备有没有硬件"：biometryNotAvailable（无硬件/模拟器没开 Face ID）
+        // 与 biometryNotEnrolled（没录入）都必须报 enrolled:false，避免"已录入但不可用"的矛盾状态。
+        let notEnrolled = authError?.code == LAError.biometryNotEnrolled.rawValue
+            || authError?.code == LAError.biometryNotAvailable.rawValue
+        let enrolled = available || !notEnrolled
         var result: [String: Any] = [
             "available": available,
             "type": type,
@@ -332,6 +336,8 @@ public class SecureStoragePlugin: CAPPlugin, CAPBridgedPlugin {
         var authError: NSError?
         let available = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError)
         let type = available ? biometryTypeName(context.biometryType) : "none"
+        let notEnrolled = authError?.code == LAError.biometryNotEnrolled.rawValue
+            || authError?.code == LAError.biometryNotAvailable.rawValue
         call.resolve([
             "platform": "ios",
             "backend": "Keychain (kSecClassGenericPassword)",
@@ -339,7 +345,7 @@ public class SecureStoragePlugin: CAPPlugin, CAPBridgedPlugin {
             "biometry": [
                 "available": available,
                 "type": type,
-                "enrolled": available || authError?.code != LAError.biometryNotEnrolled.rawValue
+                "enrolled": available || !notEnrolled
             ]
         ])
     }

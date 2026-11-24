@@ -350,8 +350,11 @@ public class SecureStoragePlugin extends Plugin {
         }
         int status = BiometricGate.canAuthenticate(getContext());
         boolean available = status == BiometricGate.STATUS_OK;
-        boolean enrolled = status != BiometricGate.STATUS_ERROR_NO_HARDWARE
-                && status != BiometricGate.STATUS_ERROR_HW_UNAVAILABLE;
+        // “有没有录入” ≠ “设备有没有硬件”：NONE_ENROLLED 时必须报 enrolled:false，
+        // 否则 UI 会出现"已录入但不可用"的矛盾状态（API 36 模拟器实测踩到）。
+        boolean enrolled = status == BiometricGate.STATUS_OK
+                || status == BiometricGate.STATUS_ERROR_HW_UNAVAILABLE
+                || status == BiometricGate.STATUS_ERROR_SECURITY_UPDATE_REQUIRED;
         ret.put("available", available);
         ret.put("type", available ? BiometricGate.biometryType() : "none");
         ret.put("enrolled", enrolled);
@@ -415,8 +418,9 @@ public class SecureStoragePlugin extends Plugin {
             int status = BiometricGate.canAuthenticate(getContext());
             bio.put("available", status == BiometricGate.STATUS_OK);
             bio.put("type", status == BiometricGate.STATUS_OK ? BiometricGate.biometryType() : "none");
-            bio.put("enrolled", status != BiometricGate.STATUS_ERROR_NO_HARDWARE
-                    && status != BiometricGate.STATUS_ERROR_HW_UNAVAILABLE);
+            bio.put("enrolled", status == BiometricGate.STATUS_OK
+                    || status == BiometricGate.STATUS_ERROR_HW_UNAVAILABLE
+                    || status == BiometricGate.STATUS_ERROR_SECURITY_UPDATE_REQUIRED);
         } else {
             bio.put("available", false);
             bio.put("type", "none");

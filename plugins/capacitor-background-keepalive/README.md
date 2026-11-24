@@ -490,3 +490,20 @@ Safari 的进程挂起），WebSocket 也可能被断开。`start()` 会返回 `
   前台服务插件（如果有）会各自显示通知，用户可能看到两条常驻通知。
 - iOS 的 `backgroundTask` 与其它插件的后台任务（例如 `URLSession` 后台传输）**共享** iOS 给的
   后台时间，实际能拖多久会互相影响；`keepaliveExpired` 早到属于正常。
+
+---
+
+## ⚠️ 已知限制（只能文档化，代码无法消除）
+
+1. **Android 前台服务被系统杀掉后"会不会被重建、什么时候重建"完全由系统决定**：
+   `START_STICKY` 只是"允许重建"的意愿声明，不是保证。插件能做的是
+   **把上次的启动配置持久化，重建时（`onStartCommand(intent == null)`）原样恢复**；
+   但以下情况不会重建：用户"强行停止"App、用户在设置里限制后台、部分 ROM 的省电策略、
+   服务被 `stopSelf()`（用户点了通知上的"停止"）。
+   → 不要把"保活"当作关键业务的唯一保障；关键任务要用 WorkManager/推送/服务端补偿。
+2. **iOS 的 `keepaliveExpired` 在进程被系统直接终止时不会补发**：
+   `expirationHandler` 只是"即将挂起"的通知，如果之后进程被终止（内存压力），
+   缓存的事件再没有机会投递。所以它是"事后记录"，不是可靠的告警通道；
+   需要必达的通知请用本地通知（`UNUserNotificationCenter`）或服务端推送。
+3. **iOS `backgroundTask` 的实际时长不保证**：Apple 只承诺"有限时间"（经验约 30 秒），
+   续期也不保证成功；`backgroundTimeRemaining` 只能当参考值。
