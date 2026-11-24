@@ -281,10 +281,12 @@
         <button @click="keepaliveStatus">读取状态</button>
         <button @click="keepaliveCapabilities">能力矩阵</button>
         <button @click="keepaliveBattery">电池优化豁免</button>
+        <button @click="keepaliveWatchExpired">监听到期事件</button>
       </div>
       <p class="hint">
-        Android 用前台服务 + 常驻通知（唯一被系统承认的方式）；iOS 没有等价能力，
-        只有 audio / location / backgroundTask 三种「尽力而为」模式，详见能力矩阵。
+        Android 用前台服务 + 常驻通知（唯一被系统承认的方式）；iOS 默认 backgroundTask
+        （安全、无商店风险），audio / location 需显式指定并自担审核风险，详见能力矩阵。
+        iOS 后台时间用完会触发 keepaliveExpired（挂起期间产生的会在回到前台时补发）。
       </p>
     </section>
 
@@ -365,6 +367,7 @@ export default {
       dataChannelInfo: null,
       foregroundStateHandle: null,
       backButtonHandle: null,
+      keepaliveExpiredHandle: null,
       backButtonEvents: 0,
       backButtonEnabled: false,
       urlPreview: '',
@@ -1402,6 +1405,13 @@ export default {
           const stopped = await BackgroundKeepalive.stop();
           await new Promise((resolve) => setTimeout(resolve, 300));
           const afterStop = await BackgroundKeepalive.isRunning();
+
+          // keepaliveExpired 监听器：这里只验证"能注册/能移除"（真正到期需要长时间后台，
+          // 自动化里没法可靠触发；补发语义见 README）。
+          const expiredHandle = await BackgroundKeepalive.addListener('keepaliveExpired', () => {});
+          const expiredHandleOk = !!expiredHandle && typeof expiredHandle.remove === 'function';
+          if (expiredHandleOk) await expiredHandle.remove();
+
           results.keepalive = {
             platform: capabilities.platform,
             continuous: capabilities.continuous,
@@ -1410,13 +1420,23 @@ export default {
             running,
             stopped,
             afterStop,
+            expiredHandleOk,
           };
           const expectedStart = Capacitor.getPlatform() === 'web' ? false : true;
+          // iOS 默认模式已改为 backgroundTask（安全、无商店风险）；Android 是前台服务
+          const expectedMode = Capacitor.getPlatform() === 'ios'
+            ? 'background-task'
+            : Capacitor.getPlatform() === 'android'
+              ? 'foreground-service'
+              : 'none';
           const kOk = capabilities.modes.length > 0
             && started.running === expectedStart
+            && started.mode === expectedMode
             && running.running === expectedStart
+            && running.mode === expectedMode
             && stopped.running === false
-            && afterStop.running === false;
+            && afterStop.running === false
+            && expiredHandleOk;
           if (!kOk) {
             results.ok = false;
             results.reason = `background-keepalive 失败: ${JSON.stringify(results.keepalive)}`;
@@ -1691,6 +1711,21 @@ export default {
         this.print('电池优化豁免', { ignored, requested });
       } catch (err) {
         this.error('batteryOptimization', err);
+      }
+    },
+
+    async keepaliveWatchExpired() {
+      try {
+        // iOS backgroundTask 到期事件；挂起期间产生的会在回到前台时补发（deliveredAfterResume:true）
+        const handle = await BackgroundKeepalive.addListener('keepaliveExpired', (event) => {
+          this.print('后台任务到期事件', event);
+        });
+        this.print('已监听 keepaliveExpired', {
+          note: 'iOS：让 App 进后台待 30 秒以上（或等系统挂起）再回前台看这里；Android 不会触发该事件。',
+        });
+        this.keepaliveExpiredHandle = handle;
+      } catch (err) {
+        this.error('addListener(keepaliveExpired)', err);
       }
     },
 

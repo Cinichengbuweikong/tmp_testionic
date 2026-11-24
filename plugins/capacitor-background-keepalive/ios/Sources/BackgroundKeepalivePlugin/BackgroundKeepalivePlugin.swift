@@ -49,10 +49,42 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
     private var audioVolume: Float = 1.0
     private var distanceFilter: Double = 10
     private var lastNote: String?
+    /** 后台任务到期事件的缓冲：挂起期间 JS 执行不了，回到前台时补发一次。 */
+    private var pendingExpirationEvent: [String: Any]?
+    private var foregroundObserver: NSObjectProtocol?
+    private var backgroundObserver: NSObjectProtocol?
 
     // MARK: - 生命周期
 
+    override public func load() {
+        let center = NotificationCenter.default
+        foregroundObserver = center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // 挂起期间 expirationHandler 里发的事件 JS 执行不到，这里补发
+            self?.flushPendingExpiration()
+        }
+        backgroundObserver = center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] in
+            guard let self = self, self.activeMode == .backgroundTask else { return }
+            // beginBackgroundTask 的计时是从「进入后台」开始的，这里重新申请一次
+            self.beginBackgroundTask()
+            self.notifyStatus()
+        }
+    }
+
     deinit {
+        if let observer = foregroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = backgroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         stopEverything()
     }
 
@@ -65,7 +97,9 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
 
         switch requested {
         case "auto":
-            startAuto(call)
+            // iOS 上的默认策略：backgroundTask（安全、无商店风险）。
+            // 想长期后台运行必须**显式**传 audio / location，并自己承担审核/耗电后果。
+            startBackgroundTask(call)
         case "audio":
             startAudio(call)
         case "location":
@@ -73,8 +107,8 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
         case "backgroundTask", "background-task":
             startBackgroundTask(call)
         case "specialUse", "mediaPlayback", "dataSync":
-            // 这些是 Android 的模式名；iOS 上按 auto 处理，方便跨平台代码复用
-            startAuto(call)
+            // 这些是 Android 的模式名；iOS 上按默认策略处理，方便跨平台代码复用
+            startBackgroundTask(call)
         default:
             call.reject("UNSUPPORTED_MODE: iOS 只支持 auto / audio / location / backgroundTask", "UNSUPPORTED_MODE")
         }
@@ -99,6 +133,14 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func getCapabilities(_ call: CAPPluginCall) {
         var modes: [[String: Any]] = []
         modes.append([
+            "mode": "backgroundTask",
+            "supported": true,
+            "requires": [],
+            "effect": "默认模式：每次 beginBackgroundTask 只能延长约 30 秒，可续期但系统仍会挂起 App；"
+                + "到期时会派发 keepaliveExpired 事件（挂起期间产生的会在回到前台时补发）",
+            "recommended": true
+        ])
+        modes.append([
             "mode": "audio",
             "supported": true,
             "requires": [
@@ -106,7 +148,7 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
                 "（可选）AVAudioSession 允许与其他音频共存"
             ],
             "effect": "后台持续运行（唯一能长期保活的方式）；非音频类 App 有 App Store 拒审风险",
-            "recommended": hasBackgroundMode("audio")
+            "recommended": false
         ])
         modes.append([
             "mode": "location",
@@ -118,13 +160,6 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
             ],
             "effect": "靠持续定位保持运行；只适合导航/运动类 App，耗电明显",
             "recommended": false
-        ])
-        modes.append([
-            "mode": "backgroundTask",
-            "supported": true,
-            "requires": [],
-            "effect": "每次 beginBackgroundTask 只能延长约 30 秒，可续期但系统仍会挂起 App",
-            "recommended": !hasBackgroundMode("audio")
         ])
         call.resolve([
             "platform": "ios",
@@ -147,16 +182,6 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     // MARK: - 模式实现
-
-    private func startAuto(_ call: CAPPluginCall) {
-        if hasBackgroundMode("audio") {
-            startAudio(call)
-        } else {
-            startBackgroundTask(call)
-            lastNote = "宿主 Info.plist 没有 UIBackgroundModes: audio，已退化为 backgroundTask（只能延长约 30 秒）。"
-            call.resolve(statusObject())
-        }
-    }
 
     private func startAudio(_ call: CAPPluginCall) {
         guard hasBackgroundMode("audio") else {
@@ -245,6 +270,7 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
         endBackgroundTask()
         activeMode = .none
         lastNote = nil
+        pendingExpirationEvent = nil
     }
 
     private func stopAudio() {
@@ -261,24 +287,63 @@ public class BackgroundKeepalivePlugin: CAPPlugin, CAPBridgedPlugin {
         locationManager = nil
     }
 
-    // MARK: - 后台任务续期
+    // MARK: - 后台任务续期 / 到期事件
 
     private func beginBackgroundTask() {
         endBackgroundTask()
         bgTask = UIApplication.shared.beginBackgroundTask(withName: "capacitor-background-keepalive") { [weak self] in
             guard let self = self, self.activeMode == .backgroundTask else { return }
-            // 到期：系统即将挂起 App。这里再申请一次（尽力而为，不保证成功）。
-            let note = "上一次后台任务已到期，已重新申请（iOS 不保证长期有效）。"
-            DispatchQueue.main.async {
-                self.lastNote = note
-                self.beginBackgroundTask()
-                self.notifyStatus()
-            }
+            self.handleBackgroundTaskExpiration()
         }
         if bgTask == .invalid {
             activeMode = .none
             lastNote = "beginBackgroundTask 申请失败：App 可能已经在后台，或系统拒绝了请求。"
         }
+    }
+
+    /**
+     * `expirationHandler` 触发时（后台时间用完、系统即将挂起 App）：
+     *
+     * 1. **尽力**立刻 `notifyListeners("keepaliveExpired")`：`.invalid` 之外的调用会被排进
+     *    WKWebView 的 JS 队列，但此刻 App 即将被挂起，JS **通常不会马上执行**；
+     * 2. 把事件**缓存**下来，等 `didBecomeActive` 时补发一次（`deliveredAfterResume: true`），
+     *    这样用户回到前台后 JS 一定能收到，而不是"发了但永远看不到"；
+     * 3. 再申请一次后台任务（可续期，但 iOS 不保证）。
+     *
+     * 注意：`expirationHandler` 可能在任意线程，UI/桥操作统一回主线程。
+     */
+    private func handleBackgroundTaskExpiration() {
+        let now = Date().timeIntervalSince1970 * 1000
+        var payload: [String: Any] = [
+            "expiredAt": now,
+            "deliveredAt": NSNull(),
+            "deliveredAfterResume": false,
+            "mode": "background-task",
+            "backgroundTimeRemaining": UIApplication.shared.backgroundTimeRemaining,
+            "reason": "background-task-expired",
+            "note": "后台任务到期：iOS 即将挂起 App。这条事件可能要到 App 回到前台才真正执行。"
+        ]
+        DispatchQueue.main.async {
+            payload["backgroundTimeRemaining"] = 0
+            self.pendingExpirationEvent = payload
+            // ① 尽力立刻派发（多半会被挂起推迟）
+            self.notifyListeners("keepaliveExpired", data: payload)
+            // ② 续期 + 更新状态
+            self.lastNote = "后台任务已到期，已重新申请（iOS 不保证长期有效）；"
+                + "keepaliveExpired 事件已记录，回到前台时会补发一次。"
+            self.beginBackgroundTask()
+            self.notifyStatus()
+        }
+    }
+
+    /** 回到前台时把挂起期间产生的到期事件补发一次（每个事件只补一次）。 */
+    private func flushPendingExpiration() {
+        guard var payload = pendingExpirationEvent else { return }
+        pendingExpirationEvent = nil
+        payload["deliveredAfterResume"] = true
+        payload["deliveredAt"] = Date().timeIntervalSince1970 * 1000
+        payload["note"] = "这是挂起期间产生的 keepaliveExpired 事件，App 回到前台后才真正执行到 JS。"
+        notifyListeners("keepaliveExpired", data: payload)
     }
 
     private func endBackgroundTask() {
