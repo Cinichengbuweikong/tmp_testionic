@@ -1,9 +1,87 @@
 # 项目上下文存档（HANDOFF）
 
-> **用途**：这份文件保存了截至 2026-11-22 本对话中掌握的所有关键信息——本机环境、项目结构、
+> **用途**：这份文件保存了截至 2026-11-24 本对话中掌握的所有关键信息——本机环境、项目结构、
 > 已完成的 18 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑，以及 2026-11-21~22
 > 关于 Capacitor 官方/内置能力的调研结论。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
+
+> ## 🆕 2026-11-24 21:15 插件打磨轮（权限模板化 / keepalive iOS 默认值 / 文档补全）
+>
+> **HEAD**：`138f5e7`（feat）→ 本轮结束时会再补一个 HANDOFF 提交。
+> ⚠️ **用户手动改过三个 README，不要覆盖**：
+> 1. `capacitor-live-update/README.md`：Android 一节里完整的 `network_security_config.xml` 代码块；
+> 2. `capacitor-permissions/README.md`：映射表前一行「注: unsupported 即本平台不支持应用申请此权限」；
+> 3. `capacitor-secure-storage/README.md`：`## 使用例` 整段 Vue 片段（约 100 行）。
+> 改动 README 时请用「读取 → 增补」而不是整篇重写（本轮已保留）。
+>
+> ### 1. 权限插件 → 插件模板
+>
+> - **Android**：`PermissionsPlugin.java` 里的 4 个 switch（effectiveAlias / autoState /
+>   permissionStringFor / getSupported）合并成一张 `DEFINITIONS` 表（`PermissionDef` +
+>   `AliasResolver`）。加权限 = 表里加一行 + `@Permission` 注解（编译期，绕不开）+ Manifest。
+> - **iOS**：`PermissionsPlugin.swift` 改成 `static let descriptors: [PermissionDescriptor]`，
+>   `check/request` 都传 plugin 实例（避免闭包强引用 self）。加权限 = 一条 descriptor +
+>   一对 `xxxState()/requestXxx()` 小方法。
+> - **TS**：`PermissionId` 末尾加 `| (string & {})`，允许传自定义 id（未实现时返回 `unsupported`）。
+> - **新增 `plugins/capacitor-permissions/TEMPLATE.md`**：逐文件职责、加/删/改名/细分状态的步骤、
+>   验证方式、9 条坑与检查清单。README 顶部加了「这是插件模板」的提示与链接。
+> - 行为保持不变：`check` 只读、`request` 串行（iOS）、`getSupported` 顺序 = 注册表顺序。
+>
+> ### 2. keepalive：iOS 默认改 backgroundTask + 新事件
+>
+> - iOS `mode: 'auto'` 现在**直接走 `backgroundTask`**（不再嗅探 `UIBackgroundModes: audio`），
+>   `getCapabilities()` 里 `backgroundTask.recommended = true`、`audio.recommended = false`。
+>   `audio`/`location` 必须**显式**指定。
+> - **新增 `keepaliveExpired` 事件**（iOS `backgroundTask` 专用）：payload
+>   `{ expiredAt, deliveredAt, deliveredAfterResume, mode, backgroundTimeRemaining, reason, note }`。
+> - 实现：`expirationHandler` 里**尽力**立刻 `notifyListeners`，同时把 payload 缓存到
+>   `pendingExpirationEvent`；`UIApplication.didBecomeActiveNotification` 时 `flushPendingExpiration()`
+>   补发一次（`deliveredAfterResume:true`、`deliveredAt` 为真正送达时间）。另外在
+>   `didEnterBackgroundNotification` 时重新 `beginBackgroundTask`（它的计时从进后台开始）。
+> - **回答用户的疑问**：`expirationHandler` 里**可以**调 `notifyListeners`，但此刻 App 正在被冻结，
+>   JS 通常**不会立即执行**；如果进程随后被系统直接终止，这段 JS 永远不执行。
+>   所以做成「立即投递 + 缓存 + 回前台补发」，README「iOS 细节」里有专门一节解释。
+>
+> ### 3. 文档补全（四份 README）
+>
+> - **live-update README**（本轮重写，已保留用户改动）新增：
+>   - `## API 详解`：10 个方法 + `syncUpdate()` 辅助函数的参数/返回字段表与错误码表；
+>   - `## 安全设计：做了哪些措施、为什么、防什么`：18 条措施表（措施/为什么/防什么）、
+>     「为什么签文件字节而不是 manifest」「为什么有签名还要 SHA-256」「密钥管理与轮换」
+>     「这套设计不解决什么」「商店政策」；
+>   - `## 应用端如何成功接收一次热更新（端到端时序）`：阶段 0~4、每阶段"你要保证什么"、
+>     失败模式对照表、推荐自测顺序；
+>   - `## 实测记录` 保留并更新；
+>   - **附录 A/B**：`scripts/dev-ota-server.py` 与 `scripts/make-live-update-fixture.py`
+>     的完整源码（带详细注释）。两个脚本本身的注释也补全了。
+>     README 里的代码块与仓库文件**逐字一致**（用脚本比对过）。
+> - **permissions README**：4 个 API 的完整字段表、`getSupported()` 的 `PermissionInfo` 字段、
+>   状态含义 + 下一步建议、使用模式、平台差异、实测（新增真机授权弹窗实测）。
+> - **secure-storage README**：8 个 API 的完整字段表（含 `title/reason/cancelText` 的平台差异）、
+>   `## 数据存在哪里（排查用）`（SharedPreferences 名、Keystore 别名、Keychain service、
+>   UserDefaults 索引、Web localStorage 前缀）、容量建议。
+> - **keepalive README**：9 个 API/事件的完整字段表、`KeepaliveStatus` 全字段、
+>   `KeepaliveExpiredEvent` 语义、`getCapabilities()` 结构、iOS 默认值变更说明。
+>
+> ### 本轮验证
+>
+> - `npm run build:plugins` / `audit:plugins`（18 插件 0 问题）/ `verify:ios` 全部通过；
+> - 真机 `32e93a6d`（Android 10 / MIUI 12）：autotest **ok:true**
+>   （permissions 注册表重构后 7 项状态正常、`getSupported()` 12 项/10 supported、
+>   `request(notifications)` 在 API 29 直接 granted、keepalive 起停 + `keepaliveExpired` 监听器可注册/移除、
+>   live-update 离线验签 4 文件）；
+> - `npm run verify:android` → **PASS**；
+> - iOS CI：push `138f5e7` 触发 run `45402057815`（**失败**：keepalive Swift 的
+>   `NotificationCenter` 观察者闭包写成 `{ [weak self] in }`，Swift 报
+>   "contextual type for closure argument list expects 1 argument, which cannot be implicitly ignored"
+>   → 改成 `{ [weak self] _ in }`）；修复 push `aaafc7e` 后 run `45403046356` **全绿**
+>   （Build / 模拟器 autotest 全 success，说明权限注册表重构与 keepalive 的 `override load()` 都能编译运行）。
+>
+> ### 注意 / 遗留
+>
+> - 本轮没有模拟器（`emulator-5554` 未启动），Android 只在真机验证；
+> - `keepaliveExpired` 的**真实到期**只能在 iOS 真机/长时间后台触发，CI 只验证监听器注册与默认模式；
+> - permissions 的 `request()` 弹窗路径依赖系统 UI，autotest 只 check；真机手动验证过（拒绝 → `prompt-with-rationale`）。
 
 > ## 🆕 2026-11-22 15:10 新增 4 个插件（安全存储 / 后台保活 / 热更新 / 权限）
 >

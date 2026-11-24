@@ -129,7 +129,21 @@ export interface PermissionInfo {
   id: PermissionId;
   /** 当前平台/系统版本是否支持申请 */
   supported: boolean;
-  /** 需要的宿主配置：Android 权限名 / iOS Info.plist key；空数组表示不需要 */
+  /**
+   * **需要的宿主配置**：指"插件之外、必须由你自己的 App 工程配置"的东西，纯字符串清单，
+   * 插件无法代劳（Capacitor 插件改不了宿主的 Info.plist / AndroidManifest）。
+   *
+   * - Android：`android.permission.XXX` —— 必须出现在**合并后的 AndroidManifest** 里，
+   *   `requestPermissions` 才有效（插件自带的 manifest 会合并进宿主；被 `tools:node="remove"`
+   *   移除或按模板新增权限时，需要在宿主 manifest 里声明）；
+   * - iOS：`Info.plist: XXXUsageDescription` —— 缺这个 key 时调用系统 API 会**直接崩溃**
+   *   （不是返回 denied），必须写进 `ios/App/App/Info.plist`；
+   * - 空数组 `[]`：不需要配置（如 iOS 通知），或该平台没有这个权限概念（如 iOS 的 `storage`，
+   *   此时 `supported` 为 `false`）。
+   *
+   * 注意：它只覆盖"**申请权限**所必需"的配置，不包含权限通过后业务还需要的东西
+   * （例如后台定位还需要 `UIBackgroundModes: location`）——那类信息在 `note` 里提示。
+   */
   requires: string[];
   /** 平台差异说明（例如"Android 13 以下不需要通知权限"） */
   note?: string;

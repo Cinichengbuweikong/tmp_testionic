@@ -143,13 +143,54 @@ if (results.camera === 'denied') {
 | --- | --- | --- |
 | `id` | `PermissionId` | 权限 id |
 | `supported` | `boolean` | 当前平台/系统版本是否支持申请（例如 Android 12 上的 `notifications` 为 `false`） |
-| `requires` | `string[]` | 需要的宿主配置：Android 权限名 / iOS Info.plist key；空数组 = 不需要 |
+| `requires` | `string[]` | 需要的**宿主配置**（插件之外、必须由你自己的 App 工程配的东西）；空数组 = 不需要（详见下节） |
 | `note?` | `string` | 平台差异说明 |
 
 ```ts
 const { platform, permissions } = await Permissions.getSupported();
 const needCamera = permissions.find((p) => p.id === 'camera');
 ```
+
+#### `requires` 到底是什么意思
+
+它是一份**"上线前还要去宿主工程补什么"的检查清单**（纯字符串，给人/给 AI 看，插件自己没法替你配）。
+所谓"宿主"（host）指**你自己的 Capacitor App 工程**（`android/`、`ios/` 目录），而不是插件本身。
+
+为什么必须由宿主配置：
+
+| 项的形态 | 例子 | 为什么插件干不了 |
+| --- | --- | --- |
+| **Android 权限名**（`android.permission.*`） | `android.permission.CAMERA` | 权限必须出现在**合并后的 AndroidManifest** 里，`requestPermissions` 才会生效。插件的 `AndroidManifest.xml` 会自动合并进宿主，但如果你用 `tools:node="remove"` 移除了它、或按 [TEMPLATE.md](./TEMPLATE.md) 新增了一个权限，就得在**宿主**的 `android/app/src/main/AndroidManifest.xml` 里声明 |
+| **iOS Info.plist key**（`Info.plist: KEY`） | `Info.plist: NSCameraUsageDescription` | Capacitor 插件**无法**修改宿主 Info.plist；调用系统 API 时若缺这个 key，iOS 会**直接崩溃**（不是返回 `denied`），所以只能由你在 `ios/App/App/Info.plist` 里补 |
+| **空数组**（`[]`） | iOS 的 `notifications` | 两种情况：① 该平台这个权限**不需要**任何配置；② 该平台**根本没有**这个权限概念（如 iOS 的 `storage`，`supported` 会是 `false`） |
+
+举几个实际读法：
+
+```ts
+const { permissions } = await Permissions.getSupported();
+
+// iOS：相机需要 Info.plist 的 NSCameraUsageDescription
+// → 值形如 ["Info.plist: NSCameraUsageDescription"]
+const iosCamera = permissions.find((p) => p.id === 'camera');
+
+// Android：相机需要 android.permission.CAMERA
+// → 值形如 ["android.permission.CAMERA"]
+const androidCamera = permissions.find((p) => p.id === 'camera');
+
+// iOS 通知：不需要任何 Info.plist key → []
+const iosNotifications = permissions.find((p) => p.id === 'notifications');
+
+// iOS 存储：平台没有这个概念 → [] 且 supported === false
+const iosStorage = permissions.find((p) => p.id === 'storage');
+```
+
+**常见用法**：在 App 的"诊断/设置"页把 `requires` 原样列出来，或者在自己的构建校验脚本里断言
+"iOS 的 Info.plist 至少包含 `permissions.filter(p => p.supported).flatMap(p => p.requires)` 里的所有 key"，
+避免上线后才发现少写了一个 usage description。
+
+> 注意：`requires` 只描述**申请权限所必需**的宿主配置，不包含"权限通过后业务还需要的东西"
+> （例如后台定位还需要 `UIBackgroundModes: location`、蓝牙后台还需要对应的 background mode）。
+> 那些属于业务配置，见各 id 的 `note` 与系统文档。
 
 ### `openAppSettings(): Promise<{ opened: boolean }>`
 
@@ -220,7 +261,13 @@ if (results.storage === 'unsupported') {
 <key>NSSpeechRecognitionUsageDescription</key><string>用于语音识别</string>
 ```
 
-`getSupported().permissions[].requires` 会列出每个 id 需要的 key，便于自查。
+`getSupported().permissions[].requires` 会列出每个 id 需要的 key，便于自查
+（这个字段到底指什么、为什么必须由宿主配，见上文
+[`getSupported()` 里的 `requires` 说明](#requires-到底是什么意思)）。
+
+> 一句话总结：**Android 的 `<uses-permission>` 和 iOS 的 `Info.plist` usage description
+> 都必须在"你的 App 工程"里存在**。插件自带的 manifest 能合并 Android 权限，
+> 但 iOS 的 plist 只能你自己写；少了不是返回 `denied`，而是**崩溃**。
 
 ## 行为细节
 

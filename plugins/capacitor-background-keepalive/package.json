@@ -1,6 +1,6 @@
 {
   "name": "capacitor-background-keepalive",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capacitor 后台保活插件：Android 前台服务+常驻通知；iOS 提供 audio/location/backgroundTask 三种尽力模式。",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",
