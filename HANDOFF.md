@@ -5,6 +5,26 @@
 > 关于 Capacitor 官方/内置能力的调研结论。
 > **用法**：开新对话后，第一句让我「读一下根目录的 HANDOFF.md」，即可快速重建上下文继续工作。
 
+> ## 🆕 2026-11-25 21:20 CI 假失败复盘（runner 容量，不是代码）
+>
+> 昨晚（11-24 23:46）`5f04656` 的 iOS run **45429422859** 失败，原因**与代码无关**：
+> `build-ios` job 的 **`steps count = 0`**，注解是
+> `The job was not acquired by Runner of type hosted even after multiple attempts`，
+> 15 分钟后 `conclusion=cancelled` —— macOS runner 池子没抢到。
+> （当晚 `8a29e6f` 的 run 45426100152 还是绿的，说明代码没问题。）
+>
+> **处理方式**（无 GitHub token 时）：`rerun` API 需要认证（实测 401），所以用
+> `git commit --allow-empty -m "ci: 重新触发..."` + push 重新排队。
+> 也可以让人在网页点 "Re-run all jobs"。
+>
+> 重跑结果：run **45620445957 全绿**（Build local plugins / Build app / 模拟器 autotest 全 success），
+> 同时验证了**清理后的插件目录在 CI 的 `npm ci` 路径下能正常构建**（这正是清理轮担心的点）。
+>
+> 经验：遇到 "job was not acquired" 这类失败，**先看 steps 是不是 0**，
+> 是 0 就是调度问题，不要动代码；换时间点重跑即可。
+> 另外 CI 里 `Build local plugins` 会对每个插件跑 `npm ci && npm run build`，
+> 所以**插件目录不要提交 `node_modules`/`dist`**，但 `package-lock.json` 必须保留。
+
 > ## 🆕 2026-11-25 00:30 Android 16 模拟器验证轮（新系统兼容性 + 概览文档）
 >
 > 在 **Pixel_6 / Android 16（API 36）** 模拟器上完整跑了一遍四个插件，并新增 4 份 `INTRO.md`。
