@@ -1636,7 +1636,7 @@ export default {
               exec: { result: pythonOut.result, stdout: pythonOut.stdout, stderr: pythonOut.stderr },
               editor: { initial: editorValue, after: editorAfter },
             };
-          }, 180000);
+          }, 120000);
           results.python = await pythonWithTimeout;
           const pythonOk =
             results.python.exec.stdout.includes('python-autotest') &&

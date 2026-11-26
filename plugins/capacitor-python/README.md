@@ -192,6 +192,39 @@ await Python.installWheels(s.sessionId, ['python-wheels/numpy-2.4.6-cp314-cp314-
 限制：只能装 **纯 Python** 或 **Pyodide 已编译**（`pyemscripten_2026_0` ABI）的轮子。
 `psycopg2`、`opencv-python` 这类没有 pyodide 轮子的包装不上（需要自己用 Pyodide 工具链编译）。
 
+### 自定义 pip 源（在 JS 里指定）
+
+micropip 支持 **PEP 503 simple index**，插件把它暴露成两个可配置项：
+
+```ts
+// 1) 会话级：这个会话之后所有 installPackages 都走这个源
+const s = await Python.createSession({
+  pipIndexUrls: ['https://pypi.tuna.tsinghua.edu.cn/simple'],
+});
+
+// 2) 单次安装覆盖
+await Python.installPackages(s.sessionId, ['requests'], {
+  indexUrls: ['https://mirrors.aliyun.com/pypi/simple'],
+});
+
+// 3) 多个源（按顺序尝试）
+await Python.installPackages(s.sessionId, ['six'], {
+  indexUrls: ['https://my-company.example/pypi/simple', 'https://pypi.org/simple'],
+});
+```
+
+要点：
+
+- **必须是 simple index**（HTML 列表，`/simple/` 那种），不是 JSON API；
+- WebView 里 micropip 用 `fetch` 取包，所以镜像/私有源必须返回
+  `Access-Control-Allow-Origin`（自建 `devpi` / `bandersnatch` / nginx 反代时记得加）；
+- 也可以放**本地目录**：把 server 起在同一台机器的局域网地址上，或干脆用
+  `installWheels(['python-wheels/xxx.whl'])` 完全离线安装；
+- Pyodide 自己的包（numpy 等预编译轮子）走的是 `packageBaseUrl`（默认 Pyodide CDN），
+  和 pip 源是两套：`loadPyodide({ packageBaseUrl })` 可由 `createSession` 的 `runtimeUrl`/内部默认控制，
+  需要完全离线时把对应的 `.whl` 放进 `public/python-wheels/` 再用 `installWheels`。
+
+
 ## 代码编辑器（框架无关）
 
 `capacitor-python/editor` 基于 CodeMirror 6（打包 ~140KB gzip），不依赖 Vue/React：
