@@ -38,6 +38,10 @@ jobs:
       - name: Build local plugins
         run: npm run build:plugins
 
+      # capacitor-python 的运行时（Pyodide 13MB）不入库，构建前必须下载到 public/python-runtime/
+      - name: Fetch Python runtime (Pyodide)
+        run: node plugins/capacitor-python/scripts/fetch-python-runtime.mjs
+
       # VITE_AUTOTEST=1：App 启动后自动跳到插件测试页并把用例跑完
       - name: Build web assets (autotest build)
         env:

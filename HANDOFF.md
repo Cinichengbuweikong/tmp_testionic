@@ -1,5 +1,61 @@
 # 项目上下文存档（HANDOFF）
 
+> ## 🆕 2026-11-26 新插件：`capacitor-python`（第 19 个插件）
+>
+> 需求：App 内集成 Python 解释器 —— 崩溃不影响主程序、实时 stdin/stdout/stderr、多份代码并发、
+> pip 包、框架无关的代码编辑器、可升级 Python 版本，平台 Android + iOS。
+>
+> ### 结论：Pyodide（CPython 3.14 → WebAssembly）+ 每会话一个 Web Worker
+>
+> 调研/取舍全文见 **`docs/python-plugin-research.md`**。核心理由：**需求 1 在 iOS 上只有 Worker 能做到**
+> （Apple 禁止 fork/exec/子进程，原生嵌入 CPython 一旦段错误就是整个 App 崩，CPython 官方文档明确写了
+> "An iOS app cannot use any form of subprocessing…"）。Android 原生（Chaquopy 17.2，MIT）可行但要做
+> `:python` 进程 + AIDL，约 3~5 周；iOS 原生（Python-Apple-support xcframework）也要 3~5 周且无隔离。
+>
+> ### 实现
+>
+> - 插件目录：`plugins/capacitor-python/`（TS 引擎 + Android/iOS 原生壳 + `runtime/worker.mjs` + 编辑器）
+> - 运行时：`scripts/fetch-python-runtime.mjs` 下载 Pyodide 到 `public/python-runtime/<version>/`
+>   （**13MB，不入库**，`.gitignore` 已加；iOS workflow 里新增了 fetch 步骤）
+> - 会话：`Python.createSession()` → 独立 Worker；`exec/run/writeStdin/installPackages/installWheels/
+>   restartSession/terminateSession`；事件 `sessionOutput/sessionState/sessionDone/sessionError`
+> - stdout/stderr：Pyodide **Writer** 接口（`write(buffer)`）逐字节回传（用 batched 会吞掉
+>   `print(end="")` 和 `input()` 的提示符）
+> - 编辑器：CodeMirror 6（`capacitor-python/editor`，esbuild 打成 440KB / ~140KB gzip），
+>   `initEditor/destroyEditor/getEditorValue/setEditorValue/insertEditorText/focusEditor/
+>   setEditorReadOnly/setEditorTheme/onEditorChange/undo/redo`，Python 高亮 + 自动缩进 + 内置函数补全
+> - pip：micropip；**核心 wasm 走本地**，包走 Pyodide CDN（`loadPyodide({ packageBaseUrl })`）；
+>   `installPackages(pkgs, { indexUrls })` / `createSession({ pipIndexUrls })` 可指向自建 simple index（需 CORS）
+>
+> ### 踩过的坑（都已修）
+>
+> 1. **worker 的 `emit('fatal', {...describePythonError(err)})` 把事件 `type` 覆盖成 `'Error'`** →
+>    主线程永远收不到 fatal/error，`createSession` 与 Python 异常都会**永久挂起**。改成 `errorType` 字段。
+> 2. `createSession` 在 worker 加载失败时不 reject → 加 `createReject` + 150s 加载超时 + 把
+>    `Unexpected token` 映射成 `UNSUPPORTED_WEBVIEW`。
+> 3. Android 10 真机 WebView 是 **Chrome/87**，Pyodide 314 要求 ≥90 → 真机按预期报
+>    `UNSUPPORTED_WEBVIEW`（autotest 里用 `checkPythonSupport()` 跳过而不是判失败）。
+> 4. `pip install` 一开始报 `No module named 'micropip'`：micropip 不在 core 里，要 `loadPackage('micropip')`；
+>    且**包的 CDN 基址**要用 `packageBaseUrl` 指过去，否则会去本地 404。
+> 5. audit/verify 脚本原来取 `definitions.ts` 的**第一个** interface → 对多接口插件数错方法数；
+>    已改成优先匹配 `*Plugin`。
+> 6. PowerShell 的 `Get-Content -Raw` + `Set-Content` 会把 UTF-8 文件写成乱码（模板字符串反引号被替换），
+>    以后改这些文件一律用 write/edit 工具。
+>
+> ### 验证
+>
+> - **Android 16 模拟器**：autotest `ok:true`，python 段 `pyodide 314.0.8 / CPython 3.14.2`、
+>   `exec('1+2')=3`、stdout `python-autotest\n3.14.2\n`、编辑器 init/get/set/destroy 全通过；
+>   另外单独验证了：多会话隔离（NameError）、死循环 `exec(..., 3000)` 只杀该会话、`pip install six` 成功、
+>   `raise ValueError` 正常 reject 且会话可继续用。
+> - **Android 10 真机（WebView 87）**：`UNSUPPORTED_WEBVIEW` + 明确升级提示，不崩溃不挂起。
+> - **iOS**：等 GitHub Actions 模拟器结果（Pyodide 在 WKWebView 的 module worker 里跑）。
+>
+> ### 已知限制（README 有完整列表）
+>
+> stdin 默认 `queued`（Capacitor 拿不到 SharedArrayBuffer，没有真阻塞的 `input()`）；
+> 不能装任意 C 扩展；`ssl` 是桩；WebView 版本要求；内存 50MB/会话；后台会被挂起。
+
 > **用途**：这份文件保存了截至 2026-11-24 本对话中掌握的所有关键信息——本机环境、项目结构、
 > 已完成的 18 个自定义 Capacitor 插件、插件开发手册、验证体系、踩过的坑，以及 2026-11-21~22
 > 关于 Capacitor 官方/内置能力的调研结论。

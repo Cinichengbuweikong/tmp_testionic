@@ -1,0 +1,68 @@
+{
+  "name": "capacitor-python",
+  "version": "0.1.0",
+  "description": "Capacitor Python 插件：在 App 内运行 CPython（Pyodide/WebAssembly），每个会话独立 Worker 隔离，实时 stdin/stdout/stderr，支持多会话、pip 包与框架无关的 Python 代码编辑器。",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "default": "./dist/esm/index.js"
+    },
+    "./editor": {
+      "types": "./dist/esm/editor/index.d.ts",
+      "import": "./dist/editor/index.js",
+      "default": "./dist/editor/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "runtime/",
+    "scripts/",
+    "dist/"
+  ],
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "python",
+    "pyodide",
+    "webassembly",
+    "interpreter",
+    "editor"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc && node scripts/build-editor.mjs",
+    "fetch-runtime": "node scripts/fetch-python-runtime.mjs",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.4",
+    "@codemirror/commands": "^6.8.1",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.11.3",
+    "@codemirror/search": "^6.5.11",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "@codemirror/view": "^6.44.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

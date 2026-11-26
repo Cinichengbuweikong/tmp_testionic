@@ -47,6 +47,9 @@ project(':capacitor-native-statusbar').projectDir = new File('../plugins/capacit
 include ':capacitor-permissions'
 project(':capacitor-permissions').projectDir = new File('../plugins/capacitor-permissions/android')
 
+include ':capacitor-python'
+project(':capacitor-python').projectDir = new File('../plugins/capacitor-python/android')
+
 include ':capacitor-secure-storage'
 project(':capacitor-secure-storage').projectDir = new File('../plugins/capacitor-secure-storage/android')
 

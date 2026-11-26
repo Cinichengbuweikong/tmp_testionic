@@ -87,7 +87,11 @@ for (const entry of entries) {
     }
   }
   const definitions = await read(path.join(dir, 'src', 'definitions.ts'));
-  const iface = definitions.match(/export interface \w+\s*\{([\s\S]*?)\n\}/);
+  // 优先找 `XxxPlugin` 接口：definitions.ts 里可能还有别的类型接口（如 PythonRuntimeInfo），
+  // 直接取"第一个 interface"会数错。没有 `*Plugin` 接口的插件退回旧行为。
+  const iface =
+    definitions.match(/export interface \w+Plugin\s*\{([\s\S]*?)\n\}/) ??
+    definitions.match(/export interface \w+\s*\{([\s\S]*?)\n\}/);
   // 方法签名可能跨多行（参数对象、返回对象换行），所以按"行首是方法名 + 左括号"来数，
   // 与 verify-ios.mjs 用同一种解析方式，避免两个脚本对同一份代码给出不同结论。
   const tsSigs = iface ? [...iface[1].matchAll(/^\s+(\w+)\s*\(/gm)].map((m) => m[1]) : [];

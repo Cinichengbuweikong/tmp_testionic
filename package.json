@@ -10,7 +10,8 @@
     "android:sync": "cap sync android",
     "android:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-android.ps1",
     "verify:android": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-android.ps1",
-    "verify:ios": "node scripts/verify-ios.mjs"
+    "verify:ios": "node scripts/verify-ios.mjs",
+    "python:runtime": "node plugins/capacitor-python/scripts/fetch-python-runtime.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",
@@ -31,6 +32,7 @@
     "capacitor-native-rotation": "file:plugins/capacitor-native-rotation",
     "capacitor-native-statusbar": "file:plugins/capacitor-native-statusbar",
     "capacitor-permissions": "file:plugins/capacitor-permissions",
+    "capacitor-python": "file:plugins/capacitor-python",
     "capacitor-secure-storage": "file:plugins/capacitor-secure-storage",
     "capacitor-set-force-dark": "file:plugins/capacitor-set-force-dark",
     "capacitor-system-info": "file:plugins/capacitor-system-info",

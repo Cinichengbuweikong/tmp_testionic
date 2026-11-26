@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      Python 解释器本身不需要任何权限。
+      如果宿主希望 pip 联网安装包，需要它自己的 INTERNET 权限（Capacitor 默认已有）。
+    -->
+</manifest>

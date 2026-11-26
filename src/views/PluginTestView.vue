@@ -310,6 +310,21 @@
     </section>
 
     <section class="card">
+      <h2>Python（CPython 3.14 / WebAssembly）</h2>
+      <div class="actions">
+        <button @click="pythonInit">初始化运行时</button>
+        <button @click="pythonRun">运行代码</button>
+        <button @click="pythonSessions">会话列表</button>
+        <button @click="pythonEditorTest">编辑器自检</button>
+      </div>
+      <div id="python-editor" class="python-editor"></div>
+      <p class="hint">
+        每个会话是独立 Worker（Python 崩溃/死循环不影响 App）；stdout/stderr 实时推送。
+        首次加载需要编译约 9MB 的 wasm，模拟器/真机上约 5~10 秒。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>配色样例（用来看 forceDark 是否把颜色搞坏）</h2>
       <div class="swatches">
         <div class="swatch" style="background: #f44336">#F44336</div>
@@ -353,7 +368,20 @@ import { SecureStorage } from 'capacitor-secure-storage';
 import { Permissions } from 'capacitor-permissions';
 import { BackgroundKeepalive } from 'capacitor-background-keepalive';
 import { LiveUpdate } from 'capacitor-live-update';
+import { Python, PythonNative, checkPythonSupport } from 'capacitor-python';
+import { destroyEditor, getEditorValue, initEditor } from 'capacitor-python/editor';
 import { LIVE_UPDATE_FIXTURE } from '../plugin-test-fixtures';
+
+/**
+ * 给异步步骤加超时，避免 autotest 在某个 await 上永久挂住
+ * （CI 的 job 有 45 分钟上限，挂住会白跑一轮）。
+ */
+function withTimeout(promiseFn, ms) {
+  return Promise.race([
+    Promise.resolve().then(promiseFn),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`AUTOTEST_TIMEOUT: ${ms}ms`)), ms)),
+  ]);
+}
 
 export default {
   data() {
@@ -370,6 +398,8 @@ export default {
       keepaliveExpiredHandle: null,
       backButtonEvents: 0,
       backButtonEnabled: false,
+      pythonSession: null,
+      pythonCode: 'import sys\n\nprint("hello from", sys.version.split()[0])\nfor i in range(3):\n    print("count", i)\n\n1 + 2',
       urlPreview: '',
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
@@ -385,6 +415,9 @@ export default {
   async mounted() {
     await this.loadDeviceInfo();
 
+    // 调试/自动化入口：CDP 里可以直接驱动 Python 运行时与编辑器
+    window.__py = { Python, PythonNative, initEditor, getEditorValue, destroyEditor };
+
     if (this.$route.query.autotest) {
       await this.runAutotest();
     }
@@ -399,12 +432,60 @@ export default {
       this.print(`${label} 失败`, { message: String((err && err.message) || err) });
     },
 
+    // ---------- Python（CPython/WASM） ----------
+
+    async pythonInit() {
+      try {
+        const info = await Python.initialize();
+        this.print('Python 运行时', info);
+      } catch (err) {
+        this.error('Python 初始化', err);
+      }
+    },
+
+    async pythonRun() {
+      try {
+        if (!Python.info) await Python.initialize();
+        if (!this.pythonSession) {
+          this.pythonSession = await Python.createSession({ name: 'demo' });
+        }
+        const out = await Python.exec(this.pythonSession.sessionId, this.pythonCode);
+        this.print('Python 执行结果', out);
+      } catch (err) {
+        this.error('Python 执行', err);
+      }
+    },
+
+    async pythonSessions() {
+      try {
+        const info = await PythonNative.getInfo();
+        this.print('Python 会话', { native: info, sessions: Python.listSessions() });
+      } catch (err) {
+        this.error('Python 会话列表', err);
+      }
+    },
+
+    async pythonEditorTest() {
+      try {
+        const handle = initEditor('#python-editor', { value: this.pythonCode, theme: 'light', height: '180px' });
+        const value = handle.getValue();
+        handle.insert('\n# inserted by test');
+        const after = getEditorValue('#python-editor');
+        destroyEditor('#python-editor');
+        this.print('编辑器自检', { length: value.length, inserted: after.includes('inserted by test'), destroyed: true });
+      } catch (err) {
+        this.error('编辑器自检', err);
+      }
+    },
+
     /**
      * 自动化验证：CI（iOS 模拟器 / Android）里跑，把结果同时写到页面和 console。
      * console 那一行会被 Capacitor 转发到原生日志，CI 直接 grep。
      */
     async runAutotest() {
       const results = { platform: this.platform };
+      window.__autotestStage = 'start';
+      window.__autotestResults = results;
       try {
         results.echo = await NativeBasics.echo({ value: 'autotest' });
         await NativeBasics.showToast({ text: 'autotest toast', duration: 'short' });
@@ -1524,6 +1605,55 @@ export default {
       }
 
       window.__pluginTestResult = results;
+      window.__autotestStage = 'python';
+      // ---- Python（CPython/WASM）：运行时加载 + 会话执行 + 编辑器 ----
+      try {
+        const support = await checkPythonSupport();
+        if (!support.supported) {
+          // 旧 WebView（如 Chrome/87）本来就跑不了 Pyodide：跳过而不是判失败
+          results.python = { skipped: true, reason: support.reason };
+        } else {
+          const pythonWithTimeout = withTimeout(async () => {
+            const pythonInfo = await Python.initialize();
+            const pythonSession = await Python.createSession({ name: 'autotest' });
+            const pythonOut = await Python.exec(
+              pythonSession.sessionId,
+              'import sys\nprint("python-autotest")\nprint(sys.version.split()[0])\n1 + 2',
+            );
+            const editor = initEditor('#python-editor', { value: 'print("hi")' });
+            const editorValue = editor.getValue();
+            editor.setValue('x = 1');
+            const editorAfter = getEditorValue('#python-editor');
+            destroyEditor('#python-editor');
+            await Python.terminateSession(pythonSession.sessionId);
+            return {
+              runtime: {
+                engine: pythonInfo.engine,
+                pyodideVersion: pythonInfo.pyodideVersion,
+                pythonVersion: pythonInfo.pythonVersion,
+              },
+              session: { state: pythonSession.state, stdinMode: pythonSession.stdinMode },
+              exec: { result: pythonOut.result, stdout: pythonOut.stdout, stderr: pythonOut.stderr },
+              editor: { initial: editorValue, after: editorAfter },
+            };
+          }, 180000);
+          results.python = await pythonWithTimeout;
+          const pythonOk =
+            results.python.exec.stdout.includes('python-autotest') &&
+            results.python.exec.result === '3' &&
+            results.python.editor.initial === 'print("hi")' &&
+            results.python.editor.after === 'x = 1';
+          if (!pythonOk) {
+            results.ok = false;
+            results.reason = `python 校验失败: ${JSON.stringify(results.python)}`;
+          }
+        }
+      } catch (err) {
+        results.ok = false;
+        results.pythonError = String((err && err.message) || err);
+      }
+
+      window.__autotestStage = 'done';
       this.print('AUTOTEST 结果', results);
       console.log(`PLUGIN_AUTOTEST_RESULT ${JSON.stringify(results)}`);
     },
@@ -3036,6 +3166,14 @@ export default {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 0.5rem;
+}
+
+.python-editor {
+  margin: 0.5rem 0;
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  border-radius: 8px;
+  overflow: hidden;
+  text-align: left;
 }
 
 .swatch {

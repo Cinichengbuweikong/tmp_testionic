@@ -24,6 +24,7 @@ dependencies {
     implementation project(':capacitor-native-rotation')
     implementation project(':capacitor-native-statusbar')
     implementation project(':capacitor-permissions')
+    implementation project(':capacitor-python')
     implementation project(':capacitor-secure-storage')
     implementation project(':capacitor-set-force-dark')
     implementation project(':capacitor-system-info')

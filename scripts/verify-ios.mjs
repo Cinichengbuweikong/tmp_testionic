@@ -106,7 +106,11 @@ for (const entry of entries) {
   // addListener / removeListener 是 Capacitor 桥内置的，不需要出现在 pluginMethods 里
   const BUILTIN_METHODS = new Set(['addListener', 'removeListener', 'removeAllListeners']);
   const definitionsTs = await read(path.join(dir, 'src', 'definitions.ts'));
-  const interfaceBody = definitionsTs.split(/export interface \w+\s*\{/)[1]?.split('\n}')[0] ?? '';
+  // 优先解析 `XxxPlugin` 接口（definitions.ts 里可能还有 PythonRuntimeInfo 这类非插件接口）
+  const pluginIfaceMatch = definitionsTs.match(/export interface \w+Plugin\s*\{([\s\S]*?)\n\}/);
+  const interfaceBody = pluginIfaceMatch
+    ? pluginIfaceMatch[1]
+    : (definitionsTs.split(/export interface \w+\s*\{/)[1]?.split('\n}')[0] ?? '');
   const tsMethods = [...interfaceBody.matchAll(/^\s+(\w+)\s*\(/gm)]
     .map((m) => m[1])
     .filter((m) => !BUILTIN_METHODS.has(m));
