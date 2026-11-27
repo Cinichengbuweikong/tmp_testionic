@@ -204,6 +204,28 @@ await session.terminate();
 | `options.runtimeUrl` | `string` | 否 | Web 专用：本会话的运行时覆盖 |
 | `options.outputBatchMs` | `number` | 否 | 输出批量间隔（默认 0 = 立即推送） |
 
+
+**`options.packages` 的示例**（三个平台差异很大）：
+
+```ts
+// Web：包名（micropip 在线安装；纯 Python 或 Pyodide 已编译的轮子）
+await Python.createSession({ packages: ['numpy', 'pandas', 'requests'] });
+
+// Android：纯 Python wheel 的 URL（下载 → 解压到 files/python-packages → sys.path）
+await Python.createSession({
+  packages: ['https://cdn.jsdelivr.net/pyodide/v314.0.8/full/six-1.17.0-py2.py3-none-any.whl'],
+});
+
+// Android：本地 wheel 路径（先由 native-files 等放进 App 私有目录）
+await Python.createSession({
+  packages: ['/data/user/0/com.myapp.testionic/files/wheels/six-1.17.0-py2.py3-none-any.whl'],
+});
+
+// iOS：**不能**在创建时装包（会抛 IOS_EXTENSIONS_UNAVAILABLE，缺 zlib）。
+// 纯 Python 包写进 plugins/capacitor-python/ios/requirements.txt，构建期嵌入；
+// C 扩展包见「iOS C 扩展（numpy）」章节。
+```
+
 返回 **`PythonSessionHandle`**（见 3.2）。
 
 #### 其它方法
@@ -230,6 +252,41 @@ await session.terminate();
 | `result` | `string \| null` | 最后一个表达式求值的 `repr`（无返回值时 `null`） |
 | `stdout` | `string` | 本次执行期间的 stdout 聚合 |
 | `stderr` | `string` | 本次执行期间的 stderr 聚合 |
+
+
+#### 安装示例（`installPackages` / `installWheels`）
+
+```ts
+const s = await Python.createSession();
+
+// ---- Android：纯 Python wheel（URL 或本地路径）----
+await s.installWheels(['https://example.com/wheels/six-1.17.0-py2.py3-none-any.whl']);
+await s.installPackages(['https://example.com/wheels/requests-2.34.2-py3-none-any.whl']);
+await s.installWheels(['/data/user/0/com.myapp.testionic/files/wheels/urllib3-2.8.0-py3-none-any.whl']);
+// 装完直接 import（不需要重启会话）
+await s.exec('import six; six.__version__');
+
+// ---- Web：包名（micropip）----
+await s.installPackages(['requests']);
+await s.installPackages(['numpy', 'pandas']);
+// Web：自定义源（PEP 503 simple index，需要 CORS）
+await s.installPackages(['six'], { indexUrls: ['https://mirror.example/simple'] });
+// Web：离线 wheel（放在 public/python-wheels/ 下）
+await s.installWheels(['python-wheels/numpy-2.4.6-cp314-cp314-pyodide_2026_0_wasm32.whl']);
+
+// ---- iOS：两者都会抛错 ----
+try {
+  await s.installWheels(['python-wheels/six-1.17.0-py2.py3-none-any.whl']);
+} catch (error) {
+  // IOS_EXTENSIONS_UNAVAILABLE: iOS 原生引擎暂不支持安装 wheel（需要 lib-dynload 的 zlib）
+}
+```
+
+| 平台 | `installPackages([...])` 接受什么 | `installWheels([...])` 接受什么 |
+| --- | --- | --- |
+| Android | 纯 Python wheel 的 URL / 本地绝对路径（传包名会报 `NATIVE_PIP_UNSUPPORTED`） | 同左 |
+| iOS | 不支持（抛 `IOS_EXTENSIONS_UNAVAILABLE`） | 不支持（同上） |
+| Web | 包名（micropip）或 wheel URL | wheel 的 URL/相对路径 |
 
 ### 3.2 `PythonSessionHandle`（`createSession` 的返回值）
 
@@ -395,27 +452,87 @@ node plugins/capacitor-python/scripts/fetch-python-ios-runtime.mjs
 
 **（B）C 扩展包（numpy 等）：需要宿主 App 的 Run Script**
 
-iOS 要求可执行代码在 `Frameworks/` 且已签名，所以 `.so` 必须转成 `.framework` 再 codesign。
-**普通开发者可以签名**（就是你自己 Apple 开发者身份，免费账号也能给真机调试签）：
+先回答几个最容易迷路的问题：
 
-1. 拿到 **iOS arm64 wheel**（PyPI 一般没有，需交叉编译）：
-   - BeeWare **Briefcase**：`briefcase build iOS` 生成 `app_packages`（numpy 有支持）；
-   - **cibuildwheel** 新版（macOS 上 `--platform ios`）；
-   - 或 mobile-forge / conda-forge 的 iOS 配方。
-2. 把带 `.so` 的包放进 App 的 `app_packages/` 目录；
-3. App target → Build Phases → **New Run Script Phase**（放在 "Copy Bundle Resources" 之后、
-   "Embed Frameworks" 之前）：
+| 疑问 | 答案 |
+| --- | --- |
+| `plugins/capacitor-python/ios/Python.xcframework` 在哪？为什么看不到？ | **仓库里没有，要先生成**：跑 `node plugins/capacitor-python/scripts/fetch-python-ios-runtime.mjs` 之后才会出现在 `plugins/capacitor-python/ios/Python.xcframework/`（已被 `.gitignore` 忽略）。里面的 `build/utils.sh` 是 BeeWare 官方脚本，随 xcframework 一起下载，不是本仓库的文件。 |
+| `app_packages/` 要自己新建吗？ | **要**。它是你放"要打进 App 的 C 扩展包"的目录，建议建在 `ios/App/app_packages/`（和 `App.xcodeproj` 同级）。空目录也可以，脚本会跳过。 |
+| App target 在哪看？ | 用 Xcode 打开 **`ios/App/App.xcodeproj`**（本项目用 SPM，没有 `.xcworkspace`）→ 左侧 `TARGETS` → `App`。 |
+| Build Settings 在哪设？ | 同一个 Xcode 窗口：选中 `App` target → `Build Settings` → 搜 `ENABLE_USER_SCRIPT_SANDBOXING` 改 `NO`；`IPHONEOS_DEPLOYMENT_TARGET` 改 `15.0`。 |
+| `PYTHONPATH` 在哪设？ | **不用自己设**。插件启动时会把 `App.app/python/lib/python3.X`、`site-packages`、`App.app/app_packages` 拼成 `PYTHONPATH` 传给 CPython（`PythonEngineIOS.swift`）。检测到 `App.app/python` 时优先用它，否则退回 SPM 资源里的纯 Python stdlib。 |
 
-```sh
-source "$SRCROOT/../plugins/capacitor-python/ios/Python.xcframework/build/utils.sh"
-install_python "$SRCROOT/../plugins/capacitor-python/ios/Python.xcframework" app app_packages
+**第一步：用 Briefcase 交叉编译出 numpy 的 iOS arm64 轮子**
+
+PyPI 上没有 iOS 轮子（`pip install numpy` 只会得到 macOS 版本）。用 BeeWare 官方工具：
+
+```bash
+# 0) 需要 macOS + Xcode；Python 3.11（要和插件里的 CPython 版本一致）
+python3 -m pip install briefcase
+
+# 1) 建一个临时 Briefcase 工程
+briefcase new -Q "app_name=wheelbuilder" -Q "formal_name=WheelBuilder" \
+  -Q "bundle=com.example" -Q "project_name=wheelbuilder" \
+  -Q "author=you" -Q "author_email=you@example.com" \
+  -Q "url=https://example.com" -Q "license=MIT" \
+  -Q "gui_framework=None" -Q "test_framework=None" \
+  -Q "build_system=setuptools" -Q "sources=src" -Q "python_version=3.11"
+cd wheelbuilder
+
+# 2) 在 pyproject.toml 的 [tool.briefcase] 下加依赖
+#    requires = ["numpy==2.2.6"]
+
+# 3) 生成 iOS 工程并构建（这一步会交叉编译 numpy 及其 C 扩展）
+briefcase create iOS
+briefcase build iOS
+
+# 4) 产物：numpy 的纯 Python 部分 + .so
+ls build/wheelbuilder/ios/xcode/app_packages
 ```
 
-4. Build Settings：`ENABLE_USER_SCRIPT_SANDBOXING = NO`、`IPHONEOS_DEPLOYMENT_TARGET = 15.0`；
-5. 让 `PYTHONPATH` 包含 `app_packages`（`install_python` 会处理；否则在初始化后用 Python 追加 `sys.path`）。
+把 `build/<app>/ios/xcode/app_packages/` **整个目录**复制到 `ios/App/app_packages/`。
 
-> 结论：**签名不是门槛，拿 wheel 才是**。App Store 允许内嵌解释器和第三方库，
-> 但不要用它下发"改变 App 功能"的代码（2.5.2）。
+> 关键：Briefcase 用的 Python 版本必须和插件一致（当前是 **3.11**），否则 `.so` 的 ABI 对不上
+> （`cp311-cp311-iphoneos`）。
+> 替代方案：mobile-forge / conda-forge 的 iOS 配方；或自己用 Xcode clang 交叉编译
+> （`CC="xcrun -sdk iphoneos clang -arch arm64"` + `_PYTHON_HOST_PLATFORM=iphoneos`）。
+
+**第二步：加 Run Script（只做一次，之后一直有效）**
+
+Xcode → `App` target → `Build Phases` → `+` → `New Run Script Phase`，
+拖到 **`Copy Bundle Resources` 之后、`Embed Frameworks` 之前**，脚本填：
+
+```sh
+set -e
+# 注意：SRCROOT = ios/App，插件在仓库根的 plugins/ 下 → 往上两级
+PLUGIN_DIR="$SRCROOT/../../plugins/capacitor-python"
+XCFRAMEWORK="$PLUGIN_DIR/ios/Python.xcframework"
+if [ ! -d "$XCFRAMEWORK" ]; then
+  echo "error: 先运行 node plugins/capacitor-python/scripts/fetch-python-ios-runtime.mjs" >&2
+  exit 1
+fi
+source "$XCFRAMEWORK/build/utils.sh"
+# 参数：xcframework、app 目录（可空）、app_packages 目录（放 C 扩展）
+install_python "$XCFRAMEWORK" "$SRCROOT/app" "$SRCROOT/app_packages"
+```
+
+它会把 `app_packages` 里的每个 `.so` 转成 `Frameworks/<模块名>.framework`，并用
+`$EXPANDED_CODE_SIGN_IDENTITY` 签名（就是给 App 签名的那个身份），同时把 stdlib 拷到 `App.app/python`。
+
+**第三步：Build Settings**
+
+- `ENABLE_USER_SCRIPT_SANDBOXING = NO`（否则脚本不能写 App bundle；CPython 官方也要求）；
+- `IPHONEOS_DEPLOYMENT_TARGET = 15.0`。
+
+**第四步：验证**
+
+```ts
+const s = await Python.createSession();
+await s.exec('import numpy; (numpy.__version__, int(numpy.arange(3).sum()))');
+```
+
+> 结论：**签名不是门槛**（普通开发者账号即可；模拟器未签名构建可跳过），**拿 iOS 轮子才是**。
+> App Store 允许内嵌解释器和第三方库，但不要用它下发"改变 App 功能"的代码（2.5.2）。
 
 ### Web
 

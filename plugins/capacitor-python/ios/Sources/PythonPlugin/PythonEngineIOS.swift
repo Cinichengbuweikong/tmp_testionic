@@ -64,19 +64,36 @@ public final class PythonEngineIOS {
         if started {
             return version
         }
-        guard let resourceURL = Bundle.module.resourceURL?.appendingPathComponent("python", isDirectory: true) else {
+        // 优先用宿主 Run Script（BeeWare install_python）生成的 App.app/python：
+        // 它包含 lib-dynload（C 扩展）和 app_packages；没有时退回 SPM 资源里裁剪过的纯 Python stdlib。
+        let fileManager = FileManager.default
+        let bundlePython = Bundle.main.bundleURL.appendingPathComponent("python", isDirectory: true)
+        let modulePython = Bundle.module.resourceURL?.appendingPathComponent("python", isDirectory: true)
+        let resourceURL: URL
+        if fileManager.fileExists(atPath: bundlePython.appendingPathComponent("lib").path) {
+            resourceURL = bundlePython
+        } else if let modulePython, fileManager.fileExists(atPath: modulePython.path) {
+            resourceURL = modulePython
+        } else {
             throw NSError(domain: "capacitor-python", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "PYTHON_RESOURCES_MISSING: 找不到 SPM 资源 python/（先跑 fetch-python-ios-runtime.mjs）"
+                NSLocalizedDescriptionKey: "PYTHON_RESOURCES_MISSING: 找不到 App.app/python 或 SPM 资源 python/（先跑 fetch-python-ios-runtime.mjs）"
             ])
         }
         // 版本目录从 fetch 脚本生成的 PythonRuntime.json 读（升级 Python 只改脚本的 RELEASES 表）
         let series = Self.series(from: resourceURL)
         let stdlib = resourceURL.appendingPathComponent("lib/python\(series)", isDirectory: true).path
-        guard FileManager.default.fileExists(atPath: stdlib) else {
+        guard fileManager.fileExists(atPath: stdlib) else {
             throw NSError(domain: "capacitor-python", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "PYTHON_STDLIB_MISSING: \(stdlib)"
             ])
         }
+        // sys.path：stdlib + site-packages + （可选）App.app/app_packages（C 扩展/C 轮子放在这里）
+        var searchPaths = [stdlib, stdlib + "/site-packages"]
+        let appPackages = Bundle.main.bundleURL.appendingPathComponent("app_packages", isDirectory: true)
+        if fileManager.fileExists(atPath: appPackages.path) {
+            searchPaths.append(appPackages.path)
+        }
+        let searchPath = searchPaths.filter { fileManager.fileExists(atPath: $0) }.joined(separator: ":")
         let runtimeURL = resourceURL.appendingPathComponent("capython/runtime.py")
         let runtimeSource: String
         do {
@@ -91,9 +108,9 @@ public final class PythonEngineIOS {
         cp_set_input(pythonReadBridge)
 
         let status: Int32 = resourceURL.path.withCString { home in
-            stdlib.withCString { std in
+            searchPath.withCString { path in
                 runtimeSource.withCString { src in
-                    cp_init(home, std, src)
+                    cp_init(home, path, src)
                 }
             }
         }

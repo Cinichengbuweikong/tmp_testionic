@@ -124,6 +124,13 @@ class PythonFacade {
    * ```
    */
   async createSession(options: PythonCreateSessionOptions = {}): Promise<PythonSessionHandle> {
+    if (this.isNative && Capacitor.getPlatform() === 'ios' && (options.packages?.length ?? 0) > 0) {
+      throw new Error(
+        'IOS_EXTENSIONS_UNAVAILABLE: iOS 原生引擎暂不支持创建会话时安装包（缺 zlib）。' +
+          '纯 Python 包请写进 plugins/capacitor-python/ios/requirements.txt 在构建期嵌入；' +
+          'C 扩展请用宿主 Run Script（见 README「iOS C 扩展」）。',
+      );
+    }
     const info = this.isNative
       ? ((await this.nativeCreateSession(options)) as unknown as PythonSessionInfo)
       : await this.web.createSession(options);
