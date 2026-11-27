@@ -1,5 +1,49 @@
 # 项目上下文存档（HANDOFF）
 
+> ## 🆕 2026-11-27（晚）`capacitor-python` iOS 也走原生 CPython（Python-Apple-support）
+>
+> 用户要求"iOS 也用原生，统一环境"。**Chaquopy 没有 iOS 版本**（Gradle/JVM 专用），
+> 所以 iOS 换成 BeeWare `Python-Apple-support`（静态 libPython 3.11.18 + stdlib），
+> 两端仍然统一在 **CPython 3.11 + 同一份 `capython/runtime.py` + 同一套插件 API**。
+>
+> ### 实现（不需要宿主改 Xcode 工程）
+>
+> - `scripts/fetch-python-ios-runtime.mjs`：下载 `Python-3.11-iOS-support.b13.tar.gz`
+>   （30.7MB，sha256 `e1f55eef…`）→ 解出 `Python.xcframework` → 裁剪 stdlib（46MB→14MB）→
+>   **合并所有 slice 的 Headers**（`pyconfig-<arch>.h` 分散在不同 slice，不合并编不过）→
+>   头文件放到 `PythonShim/python-headers`（不能放 `include/`，SPM 不允许 umbrella header 与子目录混放）。
+> - `Package.swift`：`binaryTarget(path: "ios/Python.xcframework")` + stdlib `.copy("python")` 资源
+>   + C target `PythonShim`（binaryTarget 不给 Swift 生成 module map）+ linkerSettings(z/bz2/lzma)。
+> - `PythonShim.c`：`Py_Initialize` + `PyRun_String` + **C 注册的 `capython_bridge` 模块**
+>   （`emit`/`readline`）。不用 ctypes：它也是 C 扩展，纯 stdlib 阶段没有。
+>   `Py_BEGIN_ALLOW_THREADS` 包住回调（否则 stdin 阻塞会饿死其它会话的 GIL）。
+> - `PythonEngineIOS.swift`：一个解释器 + 每会话独立 globals；输出经 delegate → `sessionOutput`；
+>   stdin 用 NSCondition 阻塞 30s。
+> - CI 加了 "Fetch Python iOS runtime" 步骤（失败时把原因抛成 annotation 才看得到日志）。
+>
+> ### 验证
+>
+> - CI（macOS，iOS 模拟器）autotest 在 iOS 上**强制 engine=native** 跑通：
+>   `initialize`（3.11.18）、`createSession`、`exec` 返回 `3`、stdout 事件、编辑器全过；CI 绿。
+> - Android 真机回归：仍然 `ok:true`（native 3.11.17、阻塞 stdin）。
+> - 因此默认引擎已切成 **Android/iOS 都原生**，`initialize({ engine: 'pyodide' })` 可显式退回 WASM。
+>
+> ### iOS 当前边界
+>
+> - 没有 `lib-dynload`（zlib/ssl/sqlite3/_ctypes 等 C 扩展）→ `installPackages`/`installWheels`
+>   抛 `IOS_EXTENSIONS_UNAVAILABLE`；要补齐需要宿主 App 加 Run Script
+>   （`install_python` 把 .so 转 framework 并签名 + `ENABLE_USER_SCRIPT_SANDBOXING=NO`）。
+> - 体积：stdlib ~14MB + 静态 libPython ~6MB。
+>
+> ### 踩坑清单（iOS）
+>
+> 1. SPM：`include/` 里同时有 umbrella header 和子目录 → "invalid header layout"；
+> 2. `pyconfig.h` 需要 `pyconfig-<arch>.h`，它们在**不同 slice** 的 Headers 里，要合并；
+> 3. CAPPlugin 没有 `handleOnDestroy()`（那是 Android），Swift 里 `override` 会编译失败；
+> 4. ctypes 在 iOS 纯 stdlib 方案里不可用 → 改成 C 注册模块；
+> 5. 回调必须释放 GIL，否则 stdin 阻塞时其它会话卡死；
+> 6. `notifyListeners` 从 Python 线程调用要回主线程（`DispatchQueue.main.async`）。
+
 > ## 🆕 2026-11-27 `capacitor-python` 重构：Android 改成**原生 CPython**（Chaquopy）
 >
 > 用户明确否掉了"WebView 里跑 WASM"的初版：① 他的手机 WebView 是 Chrome/87，跑不了；

@@ -1,22 +1,22 @@
 # capacitor-python
 
-在 Capacitor App 里运行**真正的 Python**。两套引擎、一套 API：
+在 Capacitor App 里运行**真正的 Python**（不是 WebView 里的沙盒）。两套原生引擎、一套 API：
 
-| 平台 | 引擎 | Python | 依赖 WebView？ | 崩溃隔离 |
-| --- | --- | --- | --- | --- |
-| **Android 7+** | **Chaquopy**（原生 CPython 内嵌在 APK 里） | **3.11.x** | ❌ 不依赖 | 会话级（同进程，见「已知限制」） |
-| iOS 15+ / Web | **Pyodide**（CPython → WebAssembly） | 3.14.x | ✅ 需要较新 WebView | Worker 级 |
+| 平台 | 引擎 | Python | 依赖 WebView？ |
+| --- | --- | --- | --- |
+| **Android 7+** | **Chaquopy**（CPython 3.11 内嵌在 APK/AAR 里） | **3.11.x** | ❌ 不依赖 |
+| **iOS 15+** | **Python-Apple-support**（CPython 3.11 静态库 + stdlib） | **3.11.x** | ❌ 不依赖 |
+| Web | **Pyodide**（CPython → WebAssembly） | 3.14.x | ✅ 需要较新浏览器 |
 
-> **为什么 Android 用原生、iOS/Web 用 WASM**：Chaquopy 是 Android 专用（Gradle 插件 + JVM 桥），
-> 没有 iOS 版本；iOS 的原生等价物是 BeeWare `Python-Apple-support`（同样是 CPython 3.11），
-> 但它要求宿主 App 改 Xcode 工程（Run Script 把扩展模块转 framework 并签名）+ 安装包 +55MB，
-> 所以目前 iOS 走 Pyodide。两端 Python 都是 **3.11 语义**（Pyodide 314 是 3.14，标准库行为基本一致）。
+> Chaquopy 是 Android 专用（Gradle 插件 + JVM 桥），没有 iOS 版本；iOS 的等价物是 BeeWare
+> `Python-Apple-support`。两者都是 **CPython 3.11**，同一份 `capython/runtime.py`（会话、stdout/stderr 代理、
+> 阻塞 stdin、JSON 结果）—— 这就是"统一环境"：API 一样、Python 版本一样、行为一样。
 
 ```ts
 import { Python } from 'capacitor-python';
 import { initEditor, getEditorValue } from 'capacitor-python/editor';
 
-await Python.initialize();                                  // Android: 启动 CPython（~1s）
+await Python.initialize();                                  // 启动原生 CPython（~1s）
 const s = await Python.createSession({ name: 'demo' });
 Python.addListener('sessionOutput', (e) => console.log(e.stream, e.data));
 
@@ -31,20 +31,24 @@ console.log(out.stdout, out.result);                        // "hi\n", null
 # 1) 构建插件（生成 dist/）
 cd plugins/capacitor-python && npm install && npm run build
 
-# 2) 回到项目根：插件装好后 Android 不需要任何额外步骤（Chaquopy 的 Python 运行时随 AAR 打进 APK）
+# 2) 安装插件并同步原生工程
 npm install ./plugins/capacitor-python
 npx cap sync
 
-# 3) 只有 iOS/Web 需要下载 Pyodide 运行时（13MB，不入库）
+# 3) iOS：下载原生 CPython 运行时（Python-Apple-support，~30MB xcframework + 裁剪后的 stdlib，不入库）
+node plugins/capacitor-python/scripts/fetch-python-ios-runtime.mjs
+
+# 4) 只在还需要 Web 端时：下载 Pyodide 运行时（13MB，不入库）
 node plugins/capacitor-python/scripts/fetch-python-runtime.mjs
 ```
 
-- **Android**：`plugins/capacitor-python/android/build.gradle` 里已应用 Chaquopy（`com.chaquo.python`），
-  Python 3.11 + 三个 ABI（arm64-v8a / armeabi-v7a / x86_64）随 AAR 进入 APK，宿主 app 零配置。
-  APK 体积约 +19MB（三个 ABI）；正式发布建议用 ABI split（`splits { abi { enable true } }`）或 App Bundle。
-- **iOS/Web**：`public/python-runtime/` 是 Pyodide 资源，`npx cap sync` 会一起拷进 App。
-- 想换 Python 版本：Android 改 `chaquopy { defaultConfig { version = "3.12" } }`（3.12+ 只支持 64 位）；
-  Web/iOS 用 `fetch-python-runtime.mjs --version 315.0.0`（详见「升级 Python 版本」）。
+- **Android**：`android/build.gradle` 已应用 Chaquopy，Python 3.11 + 三个 ABI（arm64-v8a / armeabi-v7a / x86_64）
+  随 AAR 进入 APK，宿主 app 零配置。APK 约 +19MB（三 ABI）；正式发布建议 ABI split 或 App Bundle。
+- **iOS**：`fetch-python-ios-runtime.mjs` 会把 `Python.xcframework` 放到 `plugins/capacitor-python/ios/`，
+  把裁剪后的 stdlib 放到 SPM 资源目录；`npx cap sync` 后 Xcode 自动链接/打包（不需要改 Podfile）。
+- **Web**：`public/python-runtime/` 是 Pyodide 资源，`npx cap sync` 会一起拷进 App；只做原生可以跳过第 4 步。
+- 换 Python 版本：Android 改 `chaquopy { defaultConfig { version = "3.12" } }`（3.12+ 仅 64 位）；
+  iOS/Web 改 `fetch-python-ios-runtime.mjs` / `fetch-python-runtime.mjs` 的版本（见「升级 Python 版本」）。
 
 ## 快速上手
 
@@ -200,9 +204,16 @@ await Python.installWheels(s.id, ['python-wheels/six-1.17.0-py2.py3-none-any.whl
 > `installPackages(['numpy'])` 这种"按包名联网安装"在 Android 上会明确报
 > `NATIVE_PIP_UNSUPPORTED`：需要 C 编译的包只能在构建期打包。
 
-### iOS / Web（Pyodide）
+### iOS（原生引擎，暂不支持）
 
-micropip 支持联网安装与离线 wheel：
+iOS 的纯 stdlib 方案里没有 `zlib`（C 扩展），而解压 wheel 需要它，所以
+`installPackages` / `installWheels` 会抛 `IOS_EXTENSIONS_UNAVAILABLE`。
+
+要支持 iOS 装包，步骤是：宿主 App 加 Run Script 把 `lib-dynload` 的 `.so` 转成 framework 并签名
+（见「iOS 原生引擎」），之后 `zlib`/`zipfile` 可用，纯 Python wheel 就能解压进
+`Application Support/python-packages` 并加入 `sys.path`（插件的 Swift 侧已经写好这段逻辑）。
+
+### Web（Pyodide）
 
 ```ts
 await Python.installPackages(s.id, ['numpy', 'requests']);          // 联网（PyPI + Pyodide CDN）
@@ -319,15 +330,21 @@ node plugins/capacitor-python/scripts/fetch-python-runtime.mjs   # 重新生成 
 4. **APK 体积 +19MB（三个 ABI）**：正式发布请用 ABI split 或 App Bundle。
 5. **`sys.stdout` 代理按线程转发**：用户代码自己开线程 `print()` 时没有会话关联，输出会被丢弃。
 
-### iOS / Web（Pyodide 引擎）
+### iOS（原生引擎）
 
-6. **WebView 版本**：Pyodide 314 要求 Chrome **≥ 90**、iOS **≥ 16.4**；
-   低于此版本会报 `UNSUPPORTED_WEBVIEW`（实测 Android 10 原生已经不受影响）。
-7. **stdin 不是真阻塞**：`queued` 模式，见上一节。
-8. **没有真正的线程/`multiprocessing`/`subprocess`/`signal`**：WASM 沙箱限制。
-9. **`ssl` 是桩**：`requests` 走浏览器 fetch，无法控制证书/超时/代理。
-10. **内存**：每会话 ~50MB 起；iOS 有 jetsam，多会话/大包要控制。
-11. **首次加载慢**：9.2MB wasm 编译，5~10s。
+6. **C 扩展缺失**：`lib-dynload` 没有随包（`zlib`/`ssl`/`sqlite3`/`_ctypes` 等），
+   所以 `installPackages` / `installWheels` 会抛 `IOS_EXTENSIONS_UNAVAILABLE`；
+   需要宿主 App 加 Run Script 才能补齐（见「iOS 原生引擎」）。
+7. **中断同样只能"丢弃会话"**：`exec(..., timeoutMs)` 超时后该会话的 globals 会被清空，
+   但后台线程要等下一次 bytecode 才退出。
+8. **体积**：stdlib ~14MB + 静态 libPython ~6MB（不含 C 扩展）。
+
+### Web（Pyodide 引擎）
+
+9. **浏览器版本**：Pyodide 314 要求 Chrome **≥ 90**、Safari/iOS **≥ 16.4**。
+10. **stdin 是队列模式**：没有 SharedArrayBuffer，`input()` 只能消费预先推入的行。
+11. **没有真正的线程/`multiprocessing`/`subprocess`/`signal`**；`ssl` 是桩。
+12. **首次加载慢**：9.2MB wasm 编译，5~10s。
 
 ## 与其他插件一起使用
 
@@ -342,36 +359,44 @@ node plugins/capacitor-python/scripts/fetch-python-runtime.mjs   # 重新生成 
   想升级 Python 必须发原生版本。反过来，新 Web 包要兼容旧运行时的 Python 版本。
 - **capacitor-permissions**：pip 联网安装需要 INTERNET（Capacitor 默认已有）；没有额外权限。
 
-## iOS 原生引擎（下一步，方案已确定）
+## iOS 原生引擎（已接入，CPython 3.11）
 
-iOS 上 Chaquopy 不可用（官方无 iOS 支持），原生等价物是 BeeWare 的
+Chaquopy 没有 iOS 版本，iOS 用 BeeWare 的
 [Python-Apple-support](https://github.com/beeware/Python-Apple-support)：
-预编译的 `Python.xcframework`（CPython 3.11.18 / 3.14 等）+ stdlib + `lib-dynload/*.so`。
+预编译的静态 `Python.xcframework`（CPython 3.11.18）+ 裁剪后的 stdlib。
 
-接入需要的步骤（已调研，尚未实现）：
+实现方式（**不需要宿主改 Xcode 工程**）：
 
-1. 下载 `Python-3.11-iOS-support.b13.tar.gz`（30.7MB，sha256 `e1f55eef…`），解出 `Python.xcframework`；
-2. 插件 `Package.swift` 加 `binaryTarget(name: "Python", path: "Python.xcframework")`，
-   stdlib 用 `.copy("python")` 作为 SPM 资源（`Bundle.module` 定位），或由宿主 Run Script 拷贝；
-3. **宿主 App 的 Xcode 工程必须加一个 Run Script**（SPM 插件无法自动完成）：
-   `source Python.xcframework/build/utils.sh; install_python ...` —— 它把 67 个 `.so`
-   转成 `Frameworks/<name>.framework` 并 codesign（iOS 不允许 `Frameworks/` 之外的可执行代码），
-   同时把 stdlib 拷进 App bundle；需要 `ENABLE_USER_SCRIPT_SANDBOXING=NO`；
-4. Swift 侧用 `PyConfig`（`PYTHONHOME`/`PYTHONPATH`、`buffered_stdio=0`）初始化，
-   `PyRun_StringFlags` 执行，`sys.stdout` 换成 Python 对象 + ctypes 回调实现实时输出；
-5. 体积 +55MB 左右（剪掉 `test/`、`idlelib`、`tkinter`、`ensurepip` 后仍 ~35MB），
-   App Store 允许内嵌解释器（2.5.2 的教育类例外），但需要跑 autotest 验证。
+1. `scripts/fetch-python-ios-runtime.mjs` 下载 `Python-3.11-iOS-support.b13.tar.gz`（30.7MB，校验 sha256），
+   解出 xcframework，裁剪 stdlib（去掉 `test/`、`idlelib`、`tkinter`、`ensurepip`、`lib2to3` 等，46MB → ~14MB），
+   合并所有 slice 的 Headers（`pyconfig-<arch>.h` 分散在不同 slice 里）；
+2. 插件 `Package.swift`：`binaryTarget(name: "Python", path: "ios/Python.xcframework")` +
+   `.copy("python")`（stdlib 作为 SPM 资源，运行时用 `Bundle.module` 定位）；
+3. `PythonShim`（C target）把 `Py_Initialize` / `PyRun_String` / 回调包成稳定 API
+   （binaryTarget 不给 Swift 生成 module map，所以必须有这层 C）；
+4. Swift 引擎：一个解释器 + 每会话独立 globals；`capython.runtime` 的 stdout/stderr 代理通过
+   **C 注册的 `capython_bridge` 模块**（`emit` / `readline`）回调到 Swift（**不用 ctypes**，它也是 C 扩展）；
+   回调里用 `Py_BEGIN_ALLOW_THREADS` 释放 GIL，避免阻塞其它会话；
+5. CI 里 autotest 会在 iOS 模拟器上**真实执行** Python（`print` + `1+2` + 编辑器），已通过。
 
-在这之前，iOS/Web 走 Pyodide（CI 已验证可用）。
+### iOS 目前的边界
 
-## 实测记录（2026-11-27，原生 Android 引擎）
+- **没有 C 扩展**：`lib-dynload/*.so`（`zlib`、`ssl`、`sqlite3`、`_ctypes`、`_bz2`、`_lzma` 等）没有随包，
+  因为 iOS 要求可执行代码在 `Frameworks/` 且由 Xcode 的 embed 阶段签名 —— 这必须由**宿主 App**
+  加一个 Run Script（`source Python.xcframework/build/utils.sh; install_python ...`，
+  并设置 `ENABLE_USER_SCRIPT_SANDBOXING=NO`）才能完成。纯 Python stdlib + 内建模块可以正常工作。
+- 因此 iOS 上 `installPackages` / `installWheels` 目前会抛
+  `IOS_EXTENSIONS_UNAVAILABLE`（解压 wheel 需要 `zlib`）。
+- 体积：stdlib ~14MB + 静态 libPython ~6MB（App Store 会压缩/thinning）。
+
+## 实测记录（2026-11-27，两端原生引擎）
 
 | 环境 | 结果 |
 | --- | --- |
 | **Android 10 真机（你的手机，WebView 87）** | ✅ **原生 CPython 3.11.17**：`initialize`、`createSession`、`exec('1+2')=3`、`print` 实时输出、`ValueError` 正常 reject、异常后会话可继续、多会话隔离（NameError）、**阻塞 stdin（`input()` + `writeStdin`）**、编辑器；完整 autotest `ok:true` |
 | Android 16 模拟器 | ✅ 同一套原生引擎（x86_64 ABI） |
-| iOS 模拟器（GitHub Actions） | ✅ Pyodide 引擎（见 CI）；原生引擎待接入 |
-| Web | 未单独验证（Pyodide 引擎，与 iOS 同一实现） |
+| **iOS 模拟器（GitHub Actions）** | ✅ **原生 CPython 3.11.18**（Python-Apple-support）：`initialize`、`createSession`、`exec` 返回 `3`、stdout 事件、编辑器；完整 autotest `ok:true` |
+| Web | Pyodide 引擎（同一 API，未单独验证） |
 
 ## 路线图
 

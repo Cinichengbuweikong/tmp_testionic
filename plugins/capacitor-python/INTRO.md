@@ -1,23 +1,23 @@
 # capacitor-python · 插件概览
 
-**一句话**：在 Capacitor App 里跑真正的 Python —— Android 用**原生 CPython 3.11**（Chaquopy），
-iOS/Web 用 **Pyodide（CPython 3.14 → WebAssembly）**；同一套 API：多会话、实时 stdout/stderr、
-阻塞 stdin、包安装、框架无关的 Python 编辑器。
+**一句话**：在 Capacitor App 里跑真正的 Python —— Android 用 **Chaquopy**、iOS 用 **Python-Apple-support**，
+两端都是**原生 CPython 3.11**（不依赖 WebView）；Web 用 Pyodide。同一套 API：多会话、
+实时 stdout/stderr、阻塞 stdin、框架无关的 Python 编辑器。
 
 ## 平台矩阵
 
 | | Android 7+ | iOS 15+ | Web |
 | --- | --- | --- | --- |
-| 引擎 | **原生 CPython 3.11**（Chaquopy） | Pyodide（WASM） | Pyodide（WASM） |
-| 依赖 WebView | ❌ 不依赖 | ✅ 需要 iOS 16.4+ | ✅ 需要 Chrome 90+ |
-| 多会话 | ✅ 独立 globals + 线程 | ✅ 独立 Worker | ✅ 独立 Worker |
+| 引擎 | **Chaquopy（原生 CPython 3.11）** | **Python-Apple-support（原生 CPython 3.11）** | Pyodide（WASM） |
+| 依赖 WebView | ❌ | ❌ | ✅ 需要 Chrome 90+ |
+| 多会话 | ✅ 独立 globals + 线程 | ✅ 独立 globals + 线程 | ✅ 独立 Worker |
 | 实时 stdout/stderr | ✅ | ✅ | ✅ |
-| 阻塞 `input()` | ✅ | ⚠️ 队列模式 | ⚠️ 队列模式 |
-| C 扩展包 | ✅ 构建期 pip 打包 | ⚠️ 仅 Pyodide 轮子 | ⚠️ 仅 Pyodide 轮子 |
-| 体积 | +19MB（3 ABI） | 0 | 0（13MB 资源） |
+| 阻塞 `input()` | ✅ | ✅ | ⚠️ 队列模式 |
+| C 扩展包 | ✅ 构建期 pip 打包 | ⚠️ 待宿主 Run Script（zlib/ssl/sqlite3 等） | ⚠️ 仅 Pyodide 轮子 |
+| 体积 | +19MB（3 ABI） | +20MB（stdlib + libPython） | 0（13MB 资源） |
 
-> Chaquopy 只有 Android 版；iOS 原生等价物是 BeeWare `Python-Apple-support`，
-> 但需要宿主动 Xcode 工程 + 体积 +55MB，所以暂未接入（README 有完整方案）。
+> Chaquopy 只有 Android 版；iOS 用 BeeWare 的 `Python-Apple-support`（同样是 CPython 3.11），
+> 已经接入并通过 CI 的 iOS 模拟器 autotest。
 
 ## 核心 API
 
@@ -48,14 +48,14 @@ getEditorValue / setEditorValue / insertEditorText / focusEditor / setEditorRead
 
 ## 必须知道的坑
 
-1. **Android 没有进程级隔离**：Python 段错误会带走 App；普通异常/死循环不影响其它会话；
+1. **原生引擎没有进程级隔离**：Python 段错误会带走 App；普通异常/死循环不影响其它会话；
 2. **中断是协作式的**：超时会清空该会话，但线程要下一条 bytecode 才退出；
-3. **C 扩展只能构建期打包**（Chaquopy `pip { install }`），运行时只能装纯 Python wheel；
+3. **C 扩展**：Android 构建期打包（Chaquopy `pip { install }`）；iOS 目前没有 `lib-dynload`（需宿主 Run Script）；
 4. **APK +19MB**（arm64 + arm32 + x86_64），正式发布建议 ABI split；
-5. **iOS/Web 需要较新 WebView**（Chrome 90+/iOS 16.4+），Android 原生不受影响。
+5. **只有 Web 需要较新浏览器**（Chrome 90+）；Android/iOS 原生不受 WebView 版本影响。
 
 ## 实测
 
-Android 10 真机（WebView 87，正是 Pyodide 跑不动的环境）：原生 CPython 3.11.17，
-`initialize/createSession/exec`、实时输出、异常、多会话隔离、阻塞 stdin、编辑器、完整 autotest 全通过。
-Android 16 模拟器同样通过；iOS 走 Pyodide，CI 全绿。
+Android 10 真机（WebView 87，Pyodide 跑不动的环境）：原生 CPython 3.11.17，全部用例通过。
+iOS 模拟器（GitHub Actions）：原生 CPython 3.11.18，`exec` 返回 3、stdout 事件、编辑器，autotest 全绿。
+Android 16 模拟器同样通过。

@@ -310,7 +310,7 @@
     </section>
 
     <section class="card">
-      <h2>Python（Android 原生 CPython 3.11 / Web+Ios 走 Pyodide）</h2>
+      <h2>Python（Android/iOS 原生 CPython 3.11；Web 走 Pyodide）</h2>
       <div class="actions">
         <button @click="pythonInit">初始化运行时</button>
         <button @click="pythonRun">运行代码</button>
@@ -320,7 +320,7 @@
       <div id="python-editor" class="python-editor"></div>
       <p class="hint">
         每个会话是独立 Worker（Python 崩溃/死循环不影响 App）；stdout/stderr 实时推送。
-        Android 走原生解释器（Chaquopy，不依赖 WebView，首次启动 ~1s）；iOS/Web 走 Pyodide（需要编译约 9MB wasm，5~10s）。
+        Android 用 Chaquopy、iOS 用 Python-Apple-support（都不依赖 WebView，首次启动 ~1s）；只有 Web 需要 Pyodide（编译约 9MB wasm）。
       </p>
     </section>
 

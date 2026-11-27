@@ -40,11 +40,14 @@ public class PythonPlugin: CAPPlugin, CAPBridgedPlugin, PythonEngineDelegate {
     // MARK: - 输出事件
 
     public func pythonDidEmit(sessionId: String, stream: String, text: String) {
-        notifyListeners("sessionOutput", data: [
-            "sessionId": sessionId,
-            "stream": stream,
-            "data": text
-        ])
+        // 回调来自 Python 线程；Capacitor 的 notifyListeners 需要在主线程触发 JS 事件
+        DispatchQueue.main.async {
+            self.notifyListeners("sessionOutput", data: [
+                "sessionId": sessionId,
+                "stream": stream,
+                "data": text
+            ])
+        }
     }
 
     // MARK: - 基础信息

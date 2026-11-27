@@ -67,14 +67,14 @@ class PythonFacade {
   /**
    * 是否使用原生引擎。
    *
-   * 默认：**Android = 原生**（Chaquopy CPython，3.11，不依赖 WebView）。
-   * iOS 原生 CPython（Python-Apple-support）已经接入（`Python.initialize({ engine: 'native' })`
-   * 可强制使用）；等 iOS 端 autotest 稳定后再把默认切过去。详见 README。
+   * 默认：**Android / iOS = 原生**（Android = Chaquopy CPython 3.11；iOS = Python-Apple-support 3.11）。
+   * 两者都不依赖 WebView；`initialize({ engine: 'pyodide' })` 可以显式退回 WASM（仅 iOS/Web 有意义）。
    */
   get isNative(): boolean {
     if (this.forcedEngine === 'native') return true;
     if (this.forcedEngine === 'pyodide') return false;
-    return Capacitor.getPlatform() === 'android';
+    const platform = Capacitor.getPlatform();
+    return platform === 'android' || platform === 'ios';
   }
 
   /** 当前引擎信息（initialize 之后才有）。 */
@@ -157,6 +157,13 @@ class PythonFacade {
     options: PythonInstallOptions = {},
   ): Promise<PythonInstallResult> {
     if (this.isNative) {
+      if (Capacitor.getPlatform() === 'ios') {
+        // zipfile 依赖 zlib（C 扩展）；iOS 纯 stdlib 阶段没有 lib-dynload
+        throw new Error(
+          'IOS_EXTENSIONS_UNAVAILABLE: iOS 原生引擎目前不含 C 扩展（zlib/ssl/sqlite3 等），' +
+            '因此无法解压 wheel。请用宿主 App 的 Run Script 接入 lib-dynload（见 README「iOS 原生引擎」）。',
+        );
+      }
       return (await PythonNative.installPackages({
         sessionId,
         packages,
@@ -168,6 +175,9 @@ class PythonFacade {
   /** 从 URL 安装 wheel（原生与 web 都支持）。 */
   async installWheels(sessionId: string, urls: string[]): Promise<PythonInstallResult> {
     if (this.isNative) {
+      if (Capacitor.getPlatform() === 'ios') {
+        throw new Error('IOS_EXTENSIONS_UNAVAILABLE: iOS 原生引擎暂不支持安装 wheel（需要 lib-dynload 的 zlib）');
+      }
       return (await PythonNative.installPackages({
         sessionId,
         packages: urls,
@@ -376,7 +386,7 @@ export async function checkPythonSupport(): Promise<{
   info?: PythonNativeInfo;
   reason?: string;
 }> {
-  if (Capacitor.getPlatform() === 'android') {
+  if (Capacitor.getPlatform() === 'android' || Capacitor.getPlatform() === 'ios') {
     try {
       const info = await PythonNative.getInfo();
       return { supported: info.supported !== false, info };
