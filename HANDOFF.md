@@ -1,5 +1,31 @@
 # 项目上下文存档（HANDOFF）
 
+> ## 🆕 2026-11-27（深夜 2）autotest 与实验台的隔离 + 权限残留
+>
+> 用户在真机上玩实验台后发现"残留输入输出"，并且 autotest 变成 `ok:false`。
+> 排查结论与修复：
+>
+> 1. **`ok:false` 的真正原因**：之前调试时 `pm clear com.myapp.testionic` 把
+>    `MANAGE_EXTERNAL_STORAGE`（native-files 的"所有文件访问"）也清掉了 →
+>    native-files 往 `/storage/emulated/0/Documents` 写文件报 `EACCES` → 该用例判失败。
+>    → 改成：`EACCES / Permission denied / MANAGE_EXTERNAL_STORAGE` 时记
+>    `results.fileUrl = 'skipped: 需要 MANAGE_EXTERNAL_STORAGE'`，不判失败。
+> 2. **编辑器被互相覆盖**：autotest 原来复用 `#python-editor`，会把用户实验台里的代码
+>    替换成 `print("hi")` 并在结束时 destroy 掉。
+>    → 新增隐藏元素 `#python-editor-autotest`，autotest 与"编辑器自检"按钮都只操作它。
+>    另外原来 `getEditorValue/destroyEditor` 的替换**替换到了错误的位置**（第一次出现的
+>    `pythonEditorTest` 里），导致 autotest 读到的是实验台内容 → `python 校验失败`；
+>    已修正为两边都用隐藏编辑器。
+> 3. **残留会话**：实验台离开页面时没终止 Python 会话。
+>    → `beforeDestroy` 里 `void this.pySession.terminate()` + `dispose()`。
+> 4. **autotest 干净起点**：开头清理 `Python.terminateAll()` / `BackgroundKeepalive.stop()` /
+>    `SecureStorage.clear()`（都 try/catch，不影响断言）。
+> 5. 实验台加"清空输出"按钮（`pyClear`）。
+>
+> 验证（Android 真机）：autotest `ok:true`（`fileUrl: skipped`、python 段 `editor.after = "x = 1"`），
+> 之后实验台仍能完整跑 `input()` → 输入 Bob → `0 hello, Bob…` → `[结果] 3` → 停止。
+> 教训：**测试页要假设"上一次运行/手工操作会留下状态"**，要么清理，要么让断言对状态容错。
+
 > ## 🆕 2026-11-27（深夜）`capacitor-python`：会话句柄 API + 真机实验台 + README 重写
 >
 > 用户验收时提了 6 点：① 解释文档里"崩溃"的语义；② 实时 stdio 是否做到；③ 多会话并发；
