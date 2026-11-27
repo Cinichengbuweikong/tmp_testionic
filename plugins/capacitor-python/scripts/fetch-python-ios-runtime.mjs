@@ -111,11 +111,10 @@ try {
   // 3) 头文件（C shim 需要 Python.h；SPM 的 binaryTarget 不暴露头文件）
   const headersSource = join(extracted, 'ios-arm64', 'Python.framework', 'Headers');
   if (!(await exists(headersSource))) throw new Error('找不到 Python.framework/Headers');
+  // Headers 里除了 Python.h 还有 cpython/ 子目录，必须整目录递归复制
   if (await exists(headersTarget)) await rm(headersTarget, { recursive: true, force: true });
-  await mkdir(headersTarget, { recursive: true });
-  for (const file of await readdir(headersSource)) {
-    await cp(join(headersSource, file), join(headersTarget, file));
-  }
+  await mkdir(dirname(headersTarget), { recursive: true });
+  await cp(headersSource, headersTarget, { recursive: true });
   console.log('[python-ios] headers copied');
 
   // 4) 元信息（CI/文档用）
