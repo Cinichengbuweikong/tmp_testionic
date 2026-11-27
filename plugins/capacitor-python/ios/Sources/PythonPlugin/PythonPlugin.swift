@@ -36,9 +36,6 @@ public class PythonPlugin: CAPPlugin, CAPBridgedPlugin, PythonEngineDelegate {
         engine.delegate = self
     }
 
-    override public func handleOnDestroy() {
-        engine.terminateAll()
-    }
 
     // MARK: - 输出事件
 
