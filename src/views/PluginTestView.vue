@@ -1630,23 +1630,33 @@ export default {
             const editorAfter = getEditorValue('#python-editor');
             destroyEditor('#python-editor');
             await Python.terminateSession(pythonSession.sessionId);
+            // iOS：验证"构建期嵌入的 pip 包"能否 import（ios/requirements.txt 里是 six）
+            let packages = null;
+            if (Capacitor.getPlatform() === 'ios') {
+              const six = await Python.exec(pythonSession.sessionId, 'import six\nsix.__version__');
+              packages = { six: six.result };
+            }
             return {
               runtime: {
                 engine: pythonInfo.engine,
                 pyodideVersion: pythonInfo.pyodideVersion,
                 pythonVersion: pythonInfo.pythonVersion,
               },
+              packages,
               session: { state: pythonSession.state, stdinMode: pythonSession.stdinMode },
               exec: { result: pythonOut.result, stdout: pythonOut.stdout, stderr: pythonOut.stderr },
               editor: { initial: editorValue, after: editorAfter },
             };
           }, 120000);
           results.python = await pythonWithTimeout;
+          const pythonPackagesOk =
+            !results.python.packages || String(results.python.packages.six).includes('1.17.0');
           const pythonOk =
             results.python.exec.stdout.includes('python-autotest') &&
             results.python.exec.result === '3' &&
             results.python.editor.initial === 'print("hi")' &&
-            results.python.editor.after === 'x = 1';
+            results.python.editor.after === 'x = 1' &&
+            pythonPackagesOk;
           if (!pythonOk) {
             results.ok = false;
             results.reason = `python 校验失败: ${JSON.stringify(results.python)}`;

@@ -201,17 +201,33 @@ await Python.installPackages(s.id, ['https://example.com/wheels/six-1.17.0-py2.p
 await Python.installWheels(s.id, ['python-wheels/six-1.17.0-py2.py3-none-any.whl']);
 ```
 
+> 实测：构建期 `pip { install 'requests' }` → APK 里 `import requests` 成功（清数据后仍可用）；
+> 运行时 `installWheels([...six-1.17.0...whl])` → `six 1.17.0` 成功。
 > `installPackages(['numpy'])` 这种"按包名联网安装"在 Android 上会明确报
 > `NATIVE_PIP_UNSUPPORTED`：需要 C 编译的包只能在构建期打包。
 
-### iOS（原生引擎，暂不支持）
+### iOS（原生引擎）
 
-iOS 的纯 stdlib 方案里没有 `zlib`（C 扩展），而解压 wheel 需要它，所以
-`installPackages` / `installWheels` 会抛 `IOS_EXTENSIONS_UNAVAILABLE`。
+**构建期嵌入纯 Python 包：支持**（这就是"打包时把 pip 包放进 app bundle"）：
 
-要支持 iOS 装包，步骤是：宿主 App 加 Run Script 把 `lib-dynload` 的 `.so` 转成 framework 并签名
-（见「iOS 原生引擎」），之后 `zlib`/`zipfile` 可用，纯 Python wheel 就能解压进
-`Application Support/python-packages` 并加入 `sys.path`（插件的 Swift 侧已经写好这段逻辑）。
+```bash
+# plugins/capacitor-python/ios/requirements.txt
+six==1.17.0
+
+# 构建前跑一次（CI 的 "Fetch Python iOS runtime" 步骤会做）
+node plugins/capacitor-python/scripts/fetch-python-ios-runtime.mjs
+```
+
+脚本会用构建机的 `python3 -m pip install --target <stdlib>/site-packages --only-binary=:all:`
+安装，然后**扫描并拒绝任何 `.so`/`.dylib`**（C 扩展在 iOS 上必须签名成 framework，
+见「iOS 原生引擎」）。装好的包随 SPM 资源进入 App，`import six` 直接可用
+（autotest 里已断言 `six.__version__ == 1.17.0`）。
+
+**运行时装 wheel：暂不支持** —— 纯 stdlib 里没有 `zlib`，解压 wheel 需要它，
+所以 `installPackages` / `installWheels` 会抛 `IOS_EXTENSIONS_UNAVAILABLE`。
+补齐需要宿主 Run Script 接入 `lib-dynload`（之后 `zlib`/`zipfile` 可用，Swift 侧解压逻辑已写好）。
+
+**C 扩展包（numpy 等）：需要宿主 Run Script**（把 `.so` 转 framework + 签名）。
 
 ### Web（Pyodide）
 

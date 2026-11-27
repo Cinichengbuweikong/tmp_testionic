@@ -7,6 +7,6 @@ android/local.properties
 
 # iOS 原生 CPython 运行时（由 scripts/fetch-python-ios-runtime.mjs 生成，约 30MB + 14MB，不入库）
 ios/Python.xcframework
-ios/PythonRuntime.json
+ios/Sources/PythonPlugin/python/PythonRuntime.json
 ios/Sources/PythonPlugin/python/lib
 ios/Sources/PythonShim/python-headers

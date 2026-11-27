@@ -126,7 +126,7 @@ try {
   // 4) 元信息（CI/文档用）
   const stdlibSize = await dirSize(stdlibTarget);
   await writeFile(
-    join(iosDir, 'PythonRuntime.json'),
+    join(iosDir, 'Sources', 'PythonPlugin', 'python', 'PythonRuntime.json'),
     JSON.stringify(
       {
         engine: 'python-apple-support',
@@ -143,6 +143,46 @@ try {
     'utf8',
   );
   console.log(`[python-ios] done: stdlib ${(stdlibSize / 1024 / 1024).toFixed(1)} MB`);
+
+  // 5) 构建期嵌入纯 Python 包（ios/requirements.txt）—— 这就是 iOS 的"打包时嵌入 pip 包"
+  await installRequirements(stdlibTarget);
+
+  async function installRequirements(stdlibDir) {
+    const requirements = join(iosDir, 'requirements.txt');
+    if (!(await exists(requirements))) {
+      console.log('[python-ios] no ios/requirements.txt, skip packages');
+      return;
+    }
+    const sitePackages = join(stdlibDir, 'site-packages');
+    await mkdir(sitePackages, { recursive: true });
+    console.log('[python-ios] installing ios/requirements.txt (pure-python only)…');
+    execFileSync('python3', [
+      '-m', 'pip', 'install',
+      '--target', sitePackages,
+      '--only-binary=:all:',
+      '--no-compile',
+      '--disable-pip-version-check',
+      '-r', requirements,
+    ], { stdio: 'inherit' });
+
+    // 拒绝 C 扩展：iOS 需要签名 framework，这些包必须在宿主 Run Script 阶段处理
+    const offenders = [];
+    async function scan(dir) {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) await scan(path);
+        else if (entry.name.endsWith('.so') || entry.name.endsWith('.dylib')) offenders.push(path);
+      }
+    }
+    await scan(sitePackages);
+    if (offenders.length > 0) {
+      throw new Error(
+        'REQUIREMENTS_HAVE_C_EXTENSIONS: 这些文件是原生扩展，iOS 需要由宿主 Run Script 转 framework 并签名：\n' +
+          offenders.map((file) => `  - ${file}`).join('\n'),
+      );
+    }
+    console.log('[python-ios] packages installed (pure python)');
+  }
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

@@ -26,7 +26,11 @@ chaquopy {
         // 选 3.11 而不是 3.13：Chaquopy 从 3.12 起只支持 64 位 ABI，而 Android 7 时代
         // 还有大量 armeabi-v7a 设备。3.11 是"能覆盖 32 位 + 足够新"的折中。
         version = '3.11'
-        // buildPython 只在 pip install 时需要，先不配
+        // 构建期 pip（C 扩展包也只能这样装）。需要本机有同版本 Python（3.11）：
+        //   buildPython '/usr/bin/python3.11'      // Windows: 'C:\\Python311\\python.exe'
+        //   pip { install 'requests' }             // 纯 Python
+        //   pip { install 'numpy' }                // 需要 chaquo.com/pypi 的 Android wheel
+        // 运行时可以用 installWheels() 装纯 Python wheel（已验证 six 1.17.0）。
     }
 }
 

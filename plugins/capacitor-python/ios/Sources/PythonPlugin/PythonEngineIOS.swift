@@ -69,7 +69,9 @@ public final class PythonEngineIOS {
                 NSLocalizedDescriptionKey: "PYTHON_RESOURCES_MISSING: 找不到 SPM 资源 python/（先跑 fetch-python-ios-runtime.mjs）"
             ])
         }
-        let stdlib = resourceURL.appendingPathComponent("lib/python\(Self.series)", isDirectory: true).path
+        // 版本目录从 fetch 脚本生成的 PythonRuntime.json 读（升级 Python 只改脚本的 RELEASES 表）
+        let series = Self.series(from: resourceURL)
+        let stdlib = resourceURL.appendingPathComponent("lib/python\(series)", isDirectory: true).path
         guard FileManager.default.fileExists(atPath: stdlib) else {
             throw NSError(domain: "capacitor-python", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "PYTHON_STDLIB_MISSING: \(stdlib)"
@@ -118,9 +120,16 @@ public final class PythonEngineIOS {
         return version
     }
 
-    private static var series: String {
-        // 由 fetch 脚本写入的 PythonRuntime.json 决定；这里保持简单（3.11）
-        "3.11"
+    /// 从资源里的 PythonRuntime.json 读取 Python 版本系列（如 "3.11"），读不到时退回 "3.11"。
+    private static func series(from resourceURL: URL) -> String {
+        let metaURL = resourceURL.appendingPathComponent("PythonRuntime.json")
+        guard let data = try? Data(contentsOf: metaURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let series = object["series"] as? String,
+              !series.isEmpty else {
+            return "3.11"
+        }
+        return series
     }
 
     // MARK: - 会话
