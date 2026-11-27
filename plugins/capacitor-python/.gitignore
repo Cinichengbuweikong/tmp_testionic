@@ -9,4 +9,4 @@ android/local.properties
 ios/Python.xcframework
 ios/PythonRuntime.json
 ios/Sources/PythonPlugin/python/lib
-ios/Sources/PythonShim/include/python
+ios/Sources/PythonShim/python-headers

@@ -27,7 +27,7 @@ let package = Package(
             name: "PythonShim",
             path: "ios/Sources/PythonShim",
             cSettings: [
-                .headerSearchPath("include/python")
+                .headerSearchPath("python-headers")
             ]
         ),
         .target(

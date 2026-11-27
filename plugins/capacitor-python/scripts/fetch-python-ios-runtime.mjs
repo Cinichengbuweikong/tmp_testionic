@@ -51,7 +51,7 @@ const pluginDir = resolve(scriptDir, '..');
 const iosDir = join(pluginDir, 'ios');
 const xcframeworkDir = join(iosDir, 'Python.xcframework');
 const stdlibTarget = join(iosDir, 'Sources', 'PythonPlugin', 'python', 'lib', `python${info.series}`);
-const headersTarget = join(iosDir, 'Sources', 'PythonShim', 'include', 'python');
+const headersTarget = join(iosDir, 'Sources', 'PythonShim', 'python-headers');
 
 const PRUNE = ['test', 'idlelib', 'tkinter', 'turtle.py', 'turtledemo', 'ensurepip', 'lib2to3', 'pydoc_data'];
 
