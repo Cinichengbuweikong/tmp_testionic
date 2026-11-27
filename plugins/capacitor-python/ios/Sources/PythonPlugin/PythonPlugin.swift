@@ -8,8 +8,8 @@ import UIKit
  * ## 当前状态（分步实现的第一步）
  *
  * iOS 上**原生 CPython 尚未接入**：Chaquopy 没有 iOS 版本，iOS 的原生等价物是
- * BeeWare 的 `Python-Apple-support`（CPython 3.11 静态库 + stdlib + `lib-dynload/*.so`），
- * 它需要一个**宿主 App 的 Run Script** 把 67 个 `.so` 转成 `Frameworks/*.framework` 并签名
+ * BeeWare 的 `Python-Apple-support`（CPython 3.11 静态库 + stdlib + `lib-dynload` 下的 .so 文件），
+ * 它需要一个**宿主 App 的 Run Script** 把 67 个 `.so` 转成 `Frameworks` 下的 framework 并签名
  * （iOS 不允许 `Frameworks/` 之外的可执行代码），还会让安装包 +55MB —— 属于工程级改动。
  *
  * 因此目前 iOS 走 **Pyodide 引擎**（CPython 3.14 → WebAssembly，跑在 WKWebView 的 module worker 里，
