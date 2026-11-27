@@ -109,13 +109,19 @@ try {
   console.log(`[python-ios] stdlib pruned -> ${stdlibTarget}`);
 
   // 3) 头文件（C shim 需要 Python.h；SPM 的 binaryTarget 不暴露头文件）
-  const headersSource = join(extracted, 'ios-arm64', 'Python.framework', 'Headers');
-  if (!(await exists(headersSource))) throw new Error('找不到 Python.framework/Headers');
-  // Headers 里除了 Python.h 还有 cpython/ 子目录，必须整目录递归复制
+  // 注意：pyconfig.h 会 #include "pyconfig-<arch>.h"，这些 per-arch 头文件分散在不同 slice 的
+  // Headers 里，必须把所有 slice 的 Headers **合并**到一个目录，否则 C shim 编译失败。
   if (await exists(headersTarget)) await rm(headersTarget, { recursive: true, force: true });
-  await mkdir(dirname(headersTarget), { recursive: true });
-  await cp(headersSource, headersTarget, { recursive: true });
-  console.log('[python-ios] headers copied');
+  await mkdir(headersTarget, { recursive: true });
+  let headerSlices = 0;
+  for (const entry of await readdir(extracted)) {
+    const sliceHeaders = join(extracted, entry, 'Python.framework', 'Headers');
+    if (!(await exists(sliceHeaders))) continue;
+    await cp(sliceHeaders, headersTarget, { recursive: true, force: true });
+    headerSlices += 1;
+  }
+  if (headerSlices === 0) throw new Error('找不到任何 Python.framework/Headers');
+  console.log(`[python-ios] headers merged from ${headerSlices} slice(s)`);
 
   // 4) 元信息（CI/文档用）
   const stdlibSize = await dirSize(stdlibTarget);
