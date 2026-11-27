@@ -62,16 +62,18 @@ class PythonFacade {
   private readonly current = new Map<string, PendingExecution>();
   private nativeAttached = false;
   private info: PythonRuntimeInfo | null = null;
+  private forcedEngine: 'auto' | 'native' | 'pyodide' = 'auto';
 
   /**
    * 是否使用原生引擎。
    *
-   * 目前：**Android = 原生**（Chaquopy CPython，3.11，不依赖 WebView）。
-   * iOS 原生 CPython（Python-Apple-support）需要宿主 App 在 Xcode 里加一个 Run Script
-   * 把扩展模块转成 framework 并签名，且会让安装包 +55MB —— 属于宿主工程级改动，
-   * 所以 iOS 暂时继续走 Web 引擎（Pyodide，CI 已验证可用）。详见 README。
+   * 默认：**Android = 原生**（Chaquopy CPython，3.11，不依赖 WebView）。
+   * iOS 原生 CPython（Python-Apple-support）已经接入（`Python.initialize({ engine: 'native' })`
+   * 可强制使用）；等 iOS 端 autotest 稳定后再把默认切过去。详见 README。
    */
   get isNative(): boolean {
+    if (this.forcedEngine === 'native') return true;
+    if (this.forcedEngine === 'pyodide') return false;
     return Capacitor.getPlatform() === 'android';
   }
 
@@ -81,7 +83,10 @@ class PythonFacade {
   }
 
   /** 启动/解析运行时；幂等。 */
-  async initialize(options: { runtimeUrl?: string; version?: string; verify?: boolean } = {}): Promise<PythonRuntimeInfo> {
+  async initialize(
+    options: { runtimeUrl?: string; version?: string; verify?: boolean; engine?: 'auto' | 'native' | 'pyodide' } = {},
+  ): Promise<PythonRuntimeInfo> {
+    this.forcedEngine = options.engine ?? 'auto';
     if (this.isNative) {
       const result = await PythonNative.initialize();
       this.info = {

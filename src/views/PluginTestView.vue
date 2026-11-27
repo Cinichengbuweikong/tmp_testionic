@@ -1614,7 +1614,11 @@ export default {
           results.python = { skipped: true, reason: support.reason };
         } else {
           const pythonWithTimeout = withTimeout(async () => {
-            const pythonInfo = await Python.initialize();
+            // iOS 上强制走原生引擎（Python-Apple-support），用来验证它是否真的能跑；
+            // Android 默认就是原生，Web 默认 Pyodide。
+            const pythonInfo = await Python.initialize(
+              Capacitor.getPlatform() === 'ios' ? { engine: 'native' } : {},
+            );
             const pythonSession = await Python.createSession({ name: 'autotest' });
             const pythonOut = await Python.exec(
               pythonSession.sessionId,
