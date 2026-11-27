@@ -120,6 +120,60 @@ export interface PythonSessionInfo {
   pythonVersion?: string;
 }
 
+/**
+ * 会话句柄：`Python.createSession()` 的返回值。
+ *
+ * 除了保留原有的 `sessionId` / `name` / `state` 字段，还提供流式输出与 stdin 写入，
+ * 这样不需要自己按 `sessionId` 过滤全局事件：
+ *
+ * ```ts
+ * const s = await Python.createSession({ name: 'demo' });
+ * s.onStdout((text) => append(text));
+ * s.onStderr((text) => appendError(text));
+ * await s.exec('name = input("Name? ")');
+ * s.writeStdin('Alice');     // Android/iOS 上会唤醒阻塞的 input()
+ * ```
+ */
+export interface PythonSessionHandle {
+  /** 会话 id（与全局事件里的 sessionId 一致）。 */
+  readonly sessionId: string;
+  /** 名字（创建时传入）。 */
+  readonly name: string;
+  /** 创建时间戳（ms）。 */
+  readonly createdAt: number;
+  /** 当前状态（会随 `onState` 更新）。 */
+  readonly state: PythonSessionState;
+  /** stdin 模式（原生为 `blocking`，Web 为 `queued`）。 */
+  readonly stdinMode: PythonStdinMode;
+  /** 解释器版本（会话 ready 之后才有）。 */
+  readonly pythonVersion?: string;
+
+  /** 合并的 stdout+stderr 流；事件里带 `stream` 字段。 */
+  onOutput(listener: (event: PythonOutputEvent) => void): { remove: () => void };
+  /** 只监听 stdout。 */
+  onStdout(listener: (text: string) => void): { remove: () => void };
+  /** 只监听 stderr。 */
+  onStderr(listener: (text: string) => void): { remove: () => void };
+  /** 监听状态变化（running/idle/terminated/error…）。 */
+  onState(listener: (event: PythonStateEvent) => void): { remove: () => void };
+
+  /** 写一行到 stdin（自动补换行；原生上会让 `input()` 返回）。 */
+  writeStdin(data: string): Promise<void>;
+  /** 执行并等待（返回本次 `result/stdout/stderr`）。 */
+  exec(code: string, timeoutMs?: number): Promise<PythonExecResult>;
+  /** 触发执行并立即返回；输出通过 `onOutput/onStdout/onStderr` 实时拿。 */
+  run(code: string): PythonRunResult;
+  /** 安装包（Android 仅纯 Python wheel；Web micropip；iOS 抛错）。 */
+  installPackages(packages: string[], options?: PythonInstallOptions): Promise<PythonInstallResult>;
+  /** 按 URL 安装 wheel。 */
+  installWheels(urls: string[]): Promise<PythonInstallResult>;
+  /** 终止会话（释放解释器里的 globals）。 */
+  terminate(): Promise<void>;
+  /** 重启会话（终止并重建，返回新的句柄）。 */
+  restart(): Promise<PythonSessionHandle>;
+  /** 只取消本地监听，不终止会话。 */
+  dispose(): void;
+}
 /** 输出事件（stdout/stderr 实时流）。 */
 export interface PythonOutputEvent {
   sessionId: string;

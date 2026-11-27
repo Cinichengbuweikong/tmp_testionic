@@ -1,5 +1,45 @@
 # 项目上下文存档（HANDOFF）
 
+> ## 🆕 2026-11-27（深夜）`capacitor-python`：会话句柄 API + 真机实验台 + README 重写
+>
+> 用户验收时提了 6 点：① 解释文档里"崩溃"的语义；② 实时 stdio 是否做到；③ 多会话并发；
+> ④ pip 包（尤其 iOS 构建期嵌入 C 扩展）；⑤ 编辑器；⑥ 版本升级。并要求：
+> 把回答补进 README、详细写 API 字段、**重设 addListener 为会话句柄**、补三平台 pip 示例、
+> 写维护/升级章节、**真机上做一个能编辑+运行+流式 stdin/stdout 的编辑器**。
+>
+> ### 代码改动
+>
+> - **`Python.createSession()` 返回 `PythonSessionHandle`**（`src/index.ts` 的
+>   `PythonSessionHandleImpl` + `definitions.ts` 的接口）：
+>   `onStdout/onStderr/onOutput/onState`、`writeStdin`、`exec/run`、`installPackages/installWheels`、
+>   `terminate/restart/dispose`；同时保留 `sessionId/name/state/stdinMode/pythonVersion` 字段，
+>   旧的 `Python.exec(sessionId, ...)` 用法仍然可用。
+> - 测试页新增 **Python 实验台**：CodeMirror 编辑器 + 运行/停止/重启 + stdin 输入框 + 流式输出 `<pre>`；
+>   `Mod-Enter` 运行；`beforeDestroy` 清理监听与编辑器。
+> - 真机实测（Android 10）：运行示例脚本 → 实时出现 `你叫什么？ ` → 输入 `Bob` → `0 hello, Bob…`
+>   → `[结果] 3` → 停止后状态变"已停止"。
+>
+> ### README 重写（按要求）
+>
+> 新增/重写了：**能力边界（六个问题逐条回答）**、**API 详解（每个方法的入参字段 + 返回字段表）**、
+> **PythonSessionHandle 全字段**、**stdin 两种模式**、**多会话/并发/状态（附 sleep 1010ms 实测）**、
+> **pip 三个平台 ×（普通包/C 扩展包）完整示例**、**维护与升级 Python 版本（文件地图/步骤/回滚/坑）**、
+> **iOS C 扩展（numpy）接入指南**（Briefcase/cibuildwheel 拿 iOS wheel + Run Script + 签名说明）。
+>
+> 关键结论（写进 README 了）：
+> - "崩溃"要分两种：**Python 未捕获异常 → 隔离**；**段错误/原生崩溃 → App 退出**（同进程，没法隔离）；
+> - iOS C 扩展**签名不是门槛**（普通开发者账号即可，`install_python` 用 `$EXPANDED_CODE_SIGN_IDENTITY`），
+>   **拿 iOS arm64 wheel 才是门槛**（PyPI 一般没有，要 Briefcase/cibuildwheel 交叉编译）；
+> - **iOS 构建期嵌入纯 Python 包已支持**（`ios/requirements.txt` + pip --target + 拒绝 .so），
+>   CI autotest 断言 `six 1.17.0`；
+> - Android 构建期 `pip { install 'requests' }` 已验证（清数据后仍可 import），运行时装纯 Python wheel 也验证了。
+>
+> ### 踩坑
+>
+> - 会话句柄的 `terminate()` 最初没翻本地状态 → 调用方读到的 `state` 停在 `idle`；现在先置
+>   `terminated` 并通知监听者，再销毁。
+> - PowerShell 写 README 时 `\n` 变成字面量；改用 Node 脚本修。
+
 > ## 🆕 2026-11-27（晚）`capacitor-python` iOS 也走原生 CPython（Python-Apple-support）
 >
 > 用户要求"iOS 也用原生，统一环境"。**Chaquopy 没有 iOS 版本**（Gradle/JVM 专用），

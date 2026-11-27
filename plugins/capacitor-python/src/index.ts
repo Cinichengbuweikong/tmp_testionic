@@ -32,7 +32,10 @@ import type {
   PythonPlugin,
   PythonRunResult,
   PythonRuntimeInfo,
+  PythonSessionHandle,
   PythonSessionInfo,
+  PythonSessionState,
+  PythonStdinMode,
   PythonStateEvent,
 } from './definitions';
 import { PythonRuntime as PyodideRuntime } from './engine/runtime';
@@ -60,6 +63,7 @@ class PythonFacade {
   private readonly web = new PyodideRuntime();
   private readonly nativeListeners = new Map<string, Set<Listener<any>>>();
   private readonly current = new Map<string, PendingExecution>();
+  private readonly handles = new Map<string, PythonSessionHandle>();
   private nativeAttached = false;
   private info: PythonRuntimeInfo | null = null;
   private forcedEngine: 'auto' | 'native' | 'pyodide' = 'auto';
@@ -106,13 +110,37 @@ class PythonFacade {
     return PythonNative.getInfo();
   }
 
-  /** 创建会话（原生：独立 globals + 阻塞 stdin；Web：独立 Worker）。 */
-  async createSession(options: PythonCreateSessionOptions = {}): Promise<PythonSessionInfo> {
-    if (this.isNative) {
-      this.attachNativeEvents();
-      return (await PythonNative.createSession(options)) as unknown as PythonSessionInfo;
-    }
-    return this.web.createSession(options);
+  /**
+   * 创建会话（原生：独立 globals + 阻塞 stdin；Web：独立 Worker）。
+   *
+   * 返回的 `PythonSessionHandle` 同时保留了老字段（`sessionId` 等），并额外提供
+   * **流式输出 + 写 stdin + 执行** 的方法：
+   * ```ts
+   * const s = await Python.createSession();
+   * s.onStdout((text) => console.log(text));      // 实时
+   * s.onStderr((text) => console.error(text));
+   * s.writeStdin('Alice');                         // Android/iOS 上 input() 会真阻塞
+   * await s.exec('name = input("Name? ")');
+   * ```
+   */
+  async createSession(options: PythonCreateSessionOptions = {}): Promise<PythonSessionHandle> {
+    const info = this.isNative
+      ? ((await this.nativeCreateSession(options)) as unknown as PythonSessionInfo)
+      : await this.web.createSession(options);
+    const handle = new PythonSessionHandleImpl(this, info);
+    this.handles.set(info.sessionId, handle);
+    return handle;
+  }
+
+  /** @internal 供会话句柄回调 */
+  releaseHandle(sessionId: string): void {
+    this.handles.delete(sessionId);
+  }
+
+  /** @internal 供会话句柄调用。 */
+  private async nativeCreateSession(options: PythonCreateSessionOptions): Promise<PythonSessionInfo> {
+    this.attachNativeEvents();
+    return (await PythonNative.createSession(options)) as unknown as PythonSessionInfo;
   }
 
   async listSessions(): Promise<PythonSessionInfo[]> {
@@ -195,6 +223,7 @@ class PythonFacade {
 
   async terminateSession(sessionId: string): Promise<void> {
     this.current.delete(sessionId);
+    this.handles.delete(sessionId);
     if (this.isNative) {
       await PythonNative.terminateSession({ sessionId });
       return;
@@ -364,6 +393,135 @@ class PythonFacade {
   }
 }
 
+/**
+ * 会话句柄：`Python.createSession()` 的返回值。
+ *
+ * 这是"面向对象"的会话 API —— 不需要再自己按 sessionId 过滤事件：
+ * ```ts
+ * const s = await Python.createSession({ name: 'demo' });
+ * s.onStdout((text) => append(text));
+ * s.onStderr((text) => appendError(text));
+ * await s.exec('print("hi")');
+ * s.writeStdin('Alice');            // input() 会读到这里
+ * await s.terminate();
+ * ```
+ */
+class PythonSessionHandleImpl implements PythonSessionHandle {
+  private readonly info: PythonSessionInfo;
+  private readonly outputListeners = new Set<(event: PythonOutputEvent) => void>();
+  private readonly stateListeners = new Set<(event: PythonStateEvent) => void>();
+  private offOutput: () => void = () => undefined;
+  private offState: () => void = () => undefined;
+
+  constructor(private readonly facade: PythonFacade, info: PythonSessionInfo) {
+    this.info = { ...info };
+    const output = facade.addListener('sessionOutput', (event) => {
+      if (event.sessionId !== this.info.sessionId) return;
+      for (const listener of this.outputListeners) listener(event);
+    });
+    this.offOutput = () => output.remove();
+    const state = facade.addListener('sessionState', (event) => {
+      if (event.sessionId !== this.info.sessionId) return;
+      this.info.state = event.state;
+      for (const listener of this.stateListeners) listener(event);
+    });
+    this.offState = () => state.remove();
+  }
+
+  get sessionId(): string {
+    return this.info.sessionId;
+  }
+
+  get name(): string {
+    return this.info.name;
+  }
+
+  get createdAt(): number {
+    return this.info.createdAt;
+  }
+
+  get state(): PythonSessionState {
+    return this.info.state;
+  }
+
+  get stdinMode(): PythonStdinMode {
+    return this.info.stdinMode;
+  }
+
+  get pythonVersion(): string | undefined {
+    return this.info.pythonVersion;
+  }
+
+  /** 合并的 stdout+stderr 流（事件里带 `stream` 字段）。 */
+  onOutput(listener: (event: PythonOutputEvent) => void): { remove: () => void } {
+    this.outputListeners.add(listener);
+    return { remove: () => this.outputListeners.delete(listener) };
+  }
+
+  onStdout(listener: (text: string) => void): { remove: () => void } {
+    return this.onOutput((event) => {
+      if (event.stream === 'stdout') listener(event.data);
+    });
+  }
+
+  onStderr(listener: (text: string) => void): { remove: () => void } {
+    return this.onOutput((event) => {
+      if (event.stream === 'stderr') listener(event.data);
+    });
+  }
+
+  onState(listener: (event: PythonStateEvent) => void): { remove: () => void } {
+    this.stateListeners.add(listener);
+    return { remove: () => this.stateListeners.delete(listener) };
+  }
+
+  writeStdin(data: string): Promise<void> {
+    return this.facade.writeStdin(this.info.sessionId, data);
+  }
+
+  exec(code: string, timeoutMs?: number): Promise<PythonExecResult> {
+    return this.facade.exec(this.info.sessionId, code, timeoutMs);
+  }
+
+  run(code: string): PythonRunResult {
+    return this.facade.run(this.info.sessionId, code);
+  }
+
+  installPackages(packages: string[], options?: PythonInstallOptions): Promise<PythonInstallResult> {
+    return this.facade.installPackages(this.info.sessionId, packages, options);
+  }
+
+  installWheels(urls: string[]): Promise<PythonInstallResult> {
+    return this.facade.installWheels(this.info.sessionId, urls);
+  }
+
+  async terminate(): Promise<void> {
+    // 本地先翻状态并通知，再销毁监听（否则调用方读到的 state 会停留在 idle）
+    this.info.state = 'terminated';
+    for (const listener of this.stateListeners) {
+      listener({ sessionId: this.info.sessionId, state: 'terminated' });
+    }
+    this.dispose();
+    await this.facade.terminateSession(this.info.sessionId);
+  }
+
+  async restart(): Promise<PythonSessionHandle> {
+    this.dispose();
+    const info = await this.facade.restartSession(this.info.sessionId);
+    const handle = new PythonSessionHandleImpl(this.facade, info);
+    (this.facade as unknown as { handles: Map<string, PythonSessionHandle> }).handles.set(info.sessionId, handle);
+    return handle;
+  }
+
+  /** 只取消本地监听，不终止 Python 会话。 */
+  dispose(): void {
+    this.offOutput();
+    this.offState();
+    this.outputListeners.clear();
+    this.stateListeners.clear();
+    this.facade.releaseHandle(this.info.sessionId);
+  }
+}
 /** 门面暴露的事件。 */
 export interface PythonFacadeEvents {
   sessionOutput: PythonOutputEvent;

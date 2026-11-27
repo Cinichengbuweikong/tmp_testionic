@@ -310,17 +310,24 @@
     </section>
 
     <section class="card">
-      <h2>Python（Android/iOS 原生 CPython 3.11；Web 走 Pyodide）</h2>
+      <h2>Python 实验台（原生 CPython 3.11）</h2>
+      <div id="python-editor" class="python-editor"></div>
       <div class="actions">
-        <button @click="pythonInit">初始化运行时</button>
-        <button @click="pythonRun">运行代码</button>
+        <button @click="pyRun">运行（Ctrl/Cmd+Enter）</button>
+        <button @click="pyStop">停止</button>
+        <button @click="pyRestart">重启会话</button>
         <button @click="pythonSessions">会话列表</button>
         <button @click="pythonEditorTest">编辑器自检</button>
+        <span class="hint">状态：{{ pyState }}</span>
       </div>
-      <div id="python-editor" class="python-editor"></div>
+      <div class="py-stdin">
+        <input v-model="pyStdinText" @keyup.enter="pySendStdin" placeholder="stdin：input() 会读到这里（Android/iOS 真阻塞）" />
+        <button @click="pySendStdin">发送</button>
+      </div>
+      <pre class="py-output">{{ pyOutput }}</pre>
       <p class="hint">
-        每个会话是独立 Worker（Python 崩溃/死循环不影响 App）；stdout/stderr 实时推送。
-        Android 用 Chaquopy、iOS 用 Python-Apple-support（都不依赖 WebView，首次启动 ~1s）；只有 Web 需要 Pyodide（编译约 9MB wasm）。
+        Android = Chaquopy、iOS = Python-Apple-support（都是原生 CPython 3.11，不依赖 WebView）；
+        Web = Pyodide。stdout/stderr 实时追加，stdin 用下面的输入框。
       </p>
     </section>
 
@@ -400,6 +407,23 @@ export default {
       backButtonEnabled: false,
       pythonSession: null,
       pythonCode: 'import sys\n\nprint("hello from", sys.version.split()[0])\nfor i in range(3):\n    print("count", i)\n\n1 + 2',
+      // Python 实验台
+      pySession: null,
+      pyEditor: null,
+      pyOutput: '',
+      pyStdinText: '',
+      pyState: '未启动',
+      pySample: [
+        'import sys',
+        '',
+        'print("Python", sys.version.split()[0], "on", sys.platform)',
+        '',
+        'name = input("你叫什么？ ")',
+        'for i in range(3):',
+        '    print(i, "hello,", name)',
+        '',
+        '1 + 2',
+      ].join('\n'),
       urlPreview: '',
       colors: [
         { label: '橙 #FF5722', value: '#FF5722' },
@@ -412,11 +436,33 @@ export default {
     };
   },
 
+  beforeDestroy() {
+    try {
+      if (this.pySession) this.pySession.dispose();
+    } catch (error) {
+      /* ignore */
+    }
+    try {
+      if (this.pyEditor) this.pyEditor.destroy();
+    } catch (error) {
+      /* ignore */
+    }
+    this.pySession = null;
+    this.pyEditor = null;
+  },
+
   async mounted() {
     await this.loadDeviceInfo();
 
     // 调试/自动化入口：CDP 里可以直接驱动 Python 运行时与编辑器
     window.__py = { Python, PythonNative, initEditor, getEditorValue, destroyEditor };
+
+    // Python 实验台：编辑器先建好（会话懒创建，避免每次进页面都启动解释器）
+    try {
+      this.pyEnsureEditor();
+    } catch (error) {
+      this.pyOutput = `[编辑器初始化失败] ${String((error && error.message) || error)}\n`;
+    }
 
     if (this.$route.query.autotest) {
       await this.runAutotest();
@@ -432,6 +478,101 @@ export default {
       this.print(`${label} 失败`, { message: String((err && err.message) || err) });
     },
 
+    // ---------- Python 实验台：编辑器 + 流式 stdout/stderr + 阻塞 stdin ----------
+
+    pyEnsureEditor() {
+      if (this.pyEditor) return this.pyEditor;
+      this.pyEditor = initEditor('#python-editor', {
+        value: this.pySample,
+        height: '220px',
+        theme: 'light',
+        onRun: () => this.pyRun(),
+      });
+      return this.pyEditor;
+    },
+
+    /** 懒创建会话；句柄自带流式输出与 stdin。 */
+    async pyEnsureSession() {
+      if (this.pySession) return this.pySession;
+      this.pyState = '启动中…';
+      const session = await Python.createSession({ name: 'playground' });
+      session.onStdout((text) => {
+        this.pyOutput += text;
+      });
+      session.onStderr((text) => {
+        this.pyOutput += `[stderr] ${text}`;
+      });
+      session.onState((event) => {
+        this.pyState = event.state;
+      });
+      this.pySession = session;
+      this.pyState = session.state;
+      return session;
+    },
+
+    async pyRun() {
+      try {
+        const session = await this.pyEnsureSession();
+        const code = this.pyEnsureEditor().getValue();
+        this.pyOutput += `\n>>> 运行（${session.state}）\n`;
+        try {
+          const result = await session.exec(code);
+          if (result.result !== null) this.pyOutput += `\n[结果] ${result.result}\n`;
+        } catch (error) {
+          this.pyOutput += `\n[异常] ${error.message}\n`;
+        }
+      } catch (error) {
+        this.pyOutput += `\n[启动失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async pySendStdin() {
+      if (!this.pyStdinText && this.pyStdinText !== '0') return;
+      const text = this.pyStdinText;
+      this.pyStdinText = '';
+      try {
+        const session = await this.pyEnsureSession();
+        this.pyOutput += `${text}\n`; // 回显，像终端一样
+        await session.writeStdin(text);
+      } catch (error) {
+        this.pyOutput += `\n[stdin 失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async pyStop() {
+      try {
+        if (this.pySession) {
+          await this.pySession.terminate();
+          this.pySession = null;
+        }
+        this.pyState = '已停止';
+      } catch (error) {
+        this.pyOutput += `\n[停止失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async pyRestart() {
+      try {
+        if (this.pySession) {
+          const session = await this.pySession.restart();
+          session.onStdout((text) => {
+            this.pyOutput += text;
+          });
+          session.onStderr((text) => {
+            this.pyOutput += `[stderr] ${text}`;
+          });
+          session.onState((event) => {
+            this.pyState = event.state;
+          });
+          this.pySession = session;
+        } else {
+          await this.pyEnsureSession();
+        }
+        this.pyOutput += '\n[会话已重启]\n';
+      } catch (error) {
+        this.pyOutput += `\n[重启失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
     // ---------- Python（CPython/WASM） ----------
 
     async pythonInit() {
@@ -3187,6 +3328,38 @@ export default {
   border: 1px solid rgba(127, 127, 127, 0.25);
   border-radius: 8px;
   overflow: hidden;
+  text-align: left;
+}
+
+.py-stdin {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.py-stdin input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 6px;
+}
+
+.py-output {
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.75rem;
+  max-height: 220px;
+  overflow: auto;
+  background: #14171a;
+  color: #e8eaed;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
   text-align: left;
 }
 

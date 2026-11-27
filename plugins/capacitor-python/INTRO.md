@@ -23,13 +23,15 @@
 
 ```ts
 Python.initialize()                            // 启动解释器
-Python.createSession({ name })                 // 独立会话
-Python.exec(sessionId, code)                   // { result, stdout, stderr }
-Python.run(sessionId, code)                    // 不等：输出走事件
-Python.writeStdin(sessionId, 'Alice')          // Android 上 input() 会真阻塞
-Python.installPackages(sessionId, [url])       // 原生：纯 Python wheel
-Python.terminateSession / restartSession / listSessions
-Python.addListener('sessionOutput' | 'sessionState' | 'sessionDone' | 'sessionError', cb)
+const s = await Python.createSession({ name }) // 返回会话句柄
+s.onStdout((t) => …) / s.onStderr((t) => …)    // 实时流式输出
+s.onState((e) => …)                            // idle / running / …
+await s.exec(code)                             // { result, stdout, stderr }
+s.run(code)                                    // 不等：输出走事件
+await s.writeStdin('Alice')                    // Android/iOS 上 input() 真阻塞
+await s.installWheels([url])                   // 纯 Python wheel
+await s.terminate() / await s.restart()
+Python.listSessions() / Python.addListener(...) // 全局视角（可选）
 ```
 
 编辑器（`capacitor-python/editor`，CodeMirror 6，~140KB gzip）：
