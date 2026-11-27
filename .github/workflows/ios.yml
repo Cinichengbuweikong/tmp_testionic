@@ -54,7 +54,13 @@ jobs:
       # capacitor-python 的 iOS 原生运行时（Python-Apple-support xcframework + 裁剪后的 stdlib）
       # 不入库；SPM 的 binaryTarget(path:) 在 resolve 时必须已经存在
       - name: Fetch Python iOS runtime (Python-Apple-support)
-        run: node plugins/capacitor-python/scripts/fetch-python-ios-runtime.mjs
+        run: |
+          set -o pipefail
+          if ! node plugins/capacitor-python/scripts/fetch-python-ios-runtime.mjs 2>&1 | tee fetch-python-ios.log; then
+            # 把失败原因抛成 annotation，公开页面能直接看到（详细日志需要登录）
+            tail -n 25 fetch-python-ios.log | sed 's/^/::error::/'
+            exit 1
+          fi
 
       - name: Static checks (plugin wiring)
         run: npm run verify:ios
