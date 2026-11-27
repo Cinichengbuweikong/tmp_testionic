@@ -1,5 +1,27 @@
 # 项目上下文存档（HANDOFF）
 
+> ## 🆕 2026-11-27（深夜 3）测试视角代码审查：10 个问题 + 修复
+>
+> 用户要求"从测试角度查 bug/隐患并修"。这一轮实际发现并修掉的：
+>
+> | # | 问题 | 后果 | 修复 |
+> | --- | --- | --- | --- |
+> | 1 | **同一会话并发 `exec`**：门面用 `current`（按 sessionId）聚合输出 | 两个并发 exec 的 stdout 会**串台**（后一个的输出去前一个的结果里） | 门面加 `execChains`：**同一会话串行**，不同会话并行；实测同一会话两个 exec 总耗时 627ms（串行）、各自 stdout 干净 |
+> | 2 | 原生 `run()` 的 `executionId` 是**门面自己编的**，事件里是原生编的 | 调用方拿 `{executionId}` 和 `sessionDone` 事件**对不上** | 门面把 executionId 传给原生（TS 定义 + Java + Swift 都用传入值）；实测 `matched: true` |
+> | 3 | Android `listSessions()/getInfo` 每次 `callAttr("python_version")` | 解释器在跑用户代码（持 GIL）时，**Capacitor 插件线程会被堵住** → 所有插件调用卡死 | 启动时缓存 `cachedVersion`，之后只读字段 |
+> | 4 | Android `terminateSession/terminateAll` 在插件线程上 `callAttr("reset_session")` | 同上，可能等 GIL | 移到 `PythonEngine.EXECUTOR` 上执行后再 resolve |
+> | 5 | Android wheel 下载/解压**无体积上限** | 恶意/异常服务器可写满磁盘；zip bomb | 下载 64MB、解压总量 256MB 上限 |
+> | 6 | iOS `pushStdin` 队列**无上限** | 脚本不消费输入时内存无限增长 | 上限 1000 行（丢最旧的） |
+> | 7 | 门面 `attachNativeEvents()` 注册失败后 `nativeAttached` 仍为 true | 之后**永远收不到事件** | 注册失败时重置标志，下次调用可重试 |
+> | 8 | `terminateAll()` 不清 `handles`/`execChains` | 句柄引用泄漏、旧 chain 残留 | 一并清空 |
+> | 9 | `installPackages(sessionId, [])` 空数组直接打到原生 | 错误信息含糊 | 门面抛 `PACKAGES_EMPTY` |
+> | 10 | `handle.restart()` 通过 `as unknown as {handles}` 强转私有字段 | 易碎 | 门面加 `adoptHandle()` |
+>
+> 另外补了文档：**`installPackages` vs `installWheels` 的区别表**（语义/平台/何时用）。
+>
+> 验证：Android 真机 autotest `ok:true`；探针结果 `serialized.elapsedMs=627`（不串台）、
+> `runCorrelation.matched=true`、跨会话并发 507ms、`terminateAll` 后 0 个会话。
+
 > ## 🆕 2026-11-27（深夜 2）autotest 与实验台的隔离 + 权限残留
 >
 > 用户在真机上玩实验台后发现"残留输入输出"，并且 autotest 变成 `ok:false`。

@@ -254,6 +254,27 @@ await Python.createSession({
 | `stderr` | `string` | 本次执行期间的 stderr 聚合 |
 
 
+
+#### `installPackages` 和 `installWheels` 有什么区别？
+
+| | `installPackages(sessionId, packages, options?)` | `installWheels(sessionId, urls)` |
+| --- | --- | --- |
+| 语义 | "装包"：参数可以是**包名**或 wheel 地址 | "装 wheel 文件"：只接受 wheel 的 URL / 本地路径 |
+| Web | micropip 安装；支持包名、URL，支持 `options.indexUrls` 自定义源 | 把相对路径解析成绝对 URL 后安装；**不支持** `indexUrls` |
+| Android | 参数按 **wheel 的 URL/路径** 处理；传包名报 `NATIVE_PIP_UNSUPPORTED` | 与 `installPackages` **完全等价**（内部同一实现） |
+| iOS | 抛 `IOS_EXTENSIONS_UNAVAILABLE` | 同左 |
+| 什么时候用 | 想在 Web 上按包名安装；或想用统一入口/自定义源 | 手里已经有 wheel 文件（离线包、自己编译的轮子） |
+
+补充细节：
+
+- **Android 两者等价**：原生没有 pip 进程，只能"下载 wheel → 解压 → `sys.path`"，
+  所以 `installPackages(['six']) ` 和 `installWheels(['six']) ` 都会当成路径并失败；
+  正确写法是传 URL：`installWheels(['https://.../six-1.17.0-py2.py3-none-any.whl'])`。
+- **Web 的 `installWheels`** 会把 `python-wheels/xxx.whl` 解析成页面的绝对 URL（
+  `https://localhost/python-wheels/xxx.whl`），所以离线包放在 `public/python-wheels/` 即可。
+- 两个方法都只负责"装到当前会话的 `sys.path`"，不会重启会话；装完直接 `import`。
+- 都支持重复安装（后装的同名文件会覆盖先装的）。
+
 #### 安装示例（`installPackages` / `installWheels`）
 
 ```ts

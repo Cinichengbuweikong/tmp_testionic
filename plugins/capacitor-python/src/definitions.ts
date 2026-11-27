@@ -248,7 +248,7 @@ export interface PythonPlugin {
   getInfo(): Promise<PythonNativeInfo>;
   createSession(options: PythonCreateSessionOptions): Promise<PythonSessionInfo>;
   exec(options: { sessionId: string; code: string; timeoutMs?: number }): Promise<{ executionId: string; result: string | null }>;
-  run(options: { sessionId: string; code: string }): Promise<{ executionId: string }>;
+  run(options: { sessionId: string; code: string; executionId?: string }): Promise<{ executionId: string }>;
   writeStdin(options: { sessionId: string; data: string }): Promise<void>;
   listSessions(): Promise<{ sessions: PythonSessionInfo[] }>;
   terminateSession(options: { sessionId: string }): Promise<void>;

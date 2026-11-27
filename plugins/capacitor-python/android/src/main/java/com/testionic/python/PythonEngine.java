@@ -35,8 +35,15 @@ final class PythonEngine {
 
     private static final Object LOCK = new Object();
     private static final Map<String, PythonSession> SESSIONS = new ConcurrentHashMap<>();
+
+    /** 单个 wheel 下载上限（防止被超大响应写满磁盘） */
+    private static final long MAX_DOWNLOAD_BYTES = 64L * 1024 * 1024;
+    /** wheel 解压后的总字节上限（防 zip bomb） */
+    private static final long MAX_EXTRACT_BYTES = 256L * 1024 * 1024;
     private static volatile boolean started;
     private static PyObject runtimeModule;
+    /** 启动后缓存的版本号：getInfo/listSessions 不能在插件线程上现查（会等 GIL 释放） */
+    private static volatile String cachedVersion = "unknown";
 
     /** Python 执行专用线程池：Capacitor 的插件线程不能被长任务占住。 */
     static final ExecutorService EXECUTOR = Executors.newCachedThreadPool(new ThreadFactory() {
@@ -65,6 +72,7 @@ final class PythonEngine {
             }
             runtimeModule = Python.getInstance().getModule("capython.runtime");
             runtimeModule.callAttr("install");
+            cachedVersion = runtimeModule.callAttr("python_version").toString();
             started = true;
         }
     }
@@ -74,7 +82,7 @@ final class PythonEngine {
     }
 
     static String pythonVersion() {
-        return runtimeModule.callAttr("python_version").toString();
+        return cachedVersion;
     }
 
     static PythonSession createSession(String name) {
@@ -199,8 +207,13 @@ final class PythonEngine {
             try (InputStream input = connection.getInputStream();
                  FileOutputStream output = new FileOutputStream(target)) {
                 byte[] buffer = new byte[64 * 1024];
+                long written = 0;
                 int read;
                 while ((read = input.read(buffer)) > 0) {
+                    written += read;
+                    if (written > MAX_DOWNLOAD_BYTES) {
+                        throw new IOException("DOWNLOAD_TOO_LARGE: > " + MAX_DOWNLOAD_BYTES + " bytes");
+                    }
                     output.write(buffer, 0, read);
                 }
             }
@@ -227,6 +240,7 @@ final class PythonEngine {
             java.util.zip.ZipEntry entry;
             byte[] buffer = new byte[64 * 1024];
             int entries = 0;
+            long totalBytes = 0;
             while ((entry = zip.getNextEntry()) != null) {
                 if (++entries > 20_000) {
                     throw new IOException("WHEEL_TOO_MANY_ENTRIES");
@@ -246,6 +260,10 @@ final class PythonEngine {
                 try (FileOutputStream output = new FileOutputStream(out)) {
                     int read;
                     while ((read = zip.read(buffer)) > 0) {
+                        totalBytes += read;
+                        if (totalBytes > MAX_EXTRACT_BYTES) {
+                            throw new IOException("WHEEL_TOO_LARGE: > " + MAX_EXTRACT_BYTES + " bytes");
+                        }
                         output.write(buffer, 0, read);
                     }
                 }

@@ -112,18 +112,23 @@ public class PythonPlugin extends Plugin {
             call.reject("sessionId is required");
             return;
         }
-        PythonEngine.terminateSession(sessionId);
-        JSObject ret = new JSObject();
-        ret.put("terminated", true);
-        call.resolve(ret);
+        // 放到执行线程：reset_session 要在解释器里跑，插件线程不能被它堵住
+        PythonEngine.EXECUTOR.execute(() -> {
+            PythonEngine.terminateSession(sessionId);
+            JSObject ret = new JSObject();
+            ret.put("terminated", true);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void terminateAll(PluginCall call) {
-        PythonEngine.terminateAll();
-        JSObject ret = new JSObject();
-        ret.put("terminated", true);
-        call.resolve(ret);
+        PythonEngine.EXECUTOR.execute(() -> {
+            PythonEngine.terminateAll();
+            JSObject ret = new JSObject();
+            ret.put("terminated", true);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
@@ -195,7 +200,7 @@ public class PythonPlugin extends Plugin {
             call.reject("sessionId is required");
             return;
         }
-        String executionId = "run-" + sequence.incrementAndGet();
+        String executionId = call.getString("executionId", "run-" + sequence.incrementAndGet());
         JSObject ret = new JSObject();
         ret.put("executionId", executionId);
         call.resolve(ret);

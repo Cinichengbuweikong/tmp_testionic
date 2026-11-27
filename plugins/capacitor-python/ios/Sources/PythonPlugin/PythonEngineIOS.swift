@@ -217,6 +217,10 @@ public final class PythonEngineIOS {
     func pushStdin(sessionId: String, line: String) {
         guard let session = session(id: sessionId) else { return }
         session.condition.lock()
+        // 上限 1000 行：防止脚本不消费输入时内存无限增长（丢最旧的，保留最近的）
+        if session.pendingLines.count >= 1000 {
+            session.pendingLines.removeFirst(session.pendingLines.count - 999)
+        }
         session.pendingLines.append(line.hasSuffix("\n") ? line : line + "\n")
         session.condition.signal()
         session.condition.unlock()

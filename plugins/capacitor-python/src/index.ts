@@ -64,6 +64,8 @@ class PythonFacade {
   private readonly nativeListeners = new Map<string, Set<Listener<any>>>();
   private readonly current = new Map<string, PendingExecution>();
   private readonly handles = new Map<string, PythonSessionHandle>();
+  // 同一会话的执行串行化：native 的 exec/run 是异步的，并发会把 current 输出串台
+  private readonly execChains = new Map<string, Promise<unknown>>();
   private nativeAttached = false;
   private info: PythonRuntimeInfo | null = null;
   private forcedEngine: 'auto' | 'native' | 'pyodide' = 'auto';
@@ -139,6 +141,11 @@ class PythonFacade {
     return handle;
   }
 
+  /** @internal 供会话句柄注册（restart 时用） */
+  adoptHandle(handle: PythonSessionHandle): void {
+    this.handles.set(handle.sessionId, handle);
+  }
+
   /** @internal 供会话句柄回调 */
   releaseHandle(sessionId: string): void {
     this.handles.delete(sessionId);
@@ -160,8 +167,23 @@ class PythonFacade {
 
   /** 执行并等待：返回结果 + 本次执行的 stdout/stderr。 */
   async exec(sessionId: string, code: string, timeoutMs?: number): Promise<PythonExecResult> {
-    if (this.isNative) return this.nativeExec(sessionId, code, timeoutMs);
-    return this.web.exec(sessionId, code, timeoutMs);
+    return this.enqueue(sessionId, () =>
+      this.isNative ? this.nativeExec(sessionId, code, timeoutMs) : this.web.exec(sessionId, code, timeoutMs),
+    );
+  }
+
+  /** 同一会话的 exec/run 串行执行（不同会话互不影响）。 */
+  private enqueue<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.execChains.get(sessionId) ?? Promise.resolve();
+    const next = previous.then(task, task);
+    this.execChains.set(
+      sessionId,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
   }
 
   /** 触发执行、立即返回；输出与完成都走事件。 */
@@ -170,7 +192,8 @@ class PythonFacade {
       this.attachNativeEvents();
       const executionId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       this.nativeEmit('sessionState', { sessionId, state: 'running' });
-      void PythonNative.run({ sessionId, code });
+      // 把 executionId 传给原生：原生发 sessionDone/sessionError 时带回来，调用方才能对上
+      void this.enqueue(sessionId, () => PythonNative.run({ sessionId, code, executionId }) as Promise<unknown>);
       return { executionId };
     }
     return this.web.run(sessionId, code);
@@ -191,6 +214,9 @@ class PythonFacade {
     packages: string[],
     options: PythonInstallOptions = {},
   ): Promise<PythonInstallResult> {
+    if (!packages || packages.length === 0) {
+      throw new Error('PACKAGES_EMPTY: packages 不能为空');
+    }
     if (this.isNative) {
       if (Capacitor.getPlatform() === 'ios') {
         // zipfile 依赖 zlib（C 扩展）；iOS 纯 stdlib 阶段没有 lib-dynload
@@ -240,6 +266,8 @@ class PythonFacade {
 
   async terminateAll(): Promise<void> {
     this.current.clear();
+    this.handles.clear();
+    this.execChains.clear();
     if (this.isNative) {
       await PythonNative.terminateAll();
       return;
@@ -290,8 +318,15 @@ class PythonFacade {
   private attachNativeEvents(): void {
     if (this.nativeAttached) return;
     this.nativeAttached = true;
+    // 注意：如果下面的注册失败（插件不存在），nativeAttached 会一直是 true，
+    // 之后再也收不到事件 —— 这里在 catch 里重置，让下一次调用可以重试。
+    const attach = (event: string, handler: (event: any) => void) => {
+      PythonNative.addListener(event, handler as never).catch(() => {
+        this.nativeAttached = false;
+      });
+    };
 
-    void PythonNative.addListener('sessionOutput', (event: any) => {
+    attach('sessionOutput', (event: any) => {
       const { sessionId, stream, data } = event;
       const pending = this.current.get(sessionId);
       if (pending) {
@@ -300,7 +335,7 @@ class PythonFacade {
       }
       this.nativeEmit('sessionOutput', { sessionId, stream, data });
     });
-    void PythonNative.addListener('sessionDone', (event: any) => {
+    attach('sessionDone', (event: any) => {
       const pending = this.current.get(event.sessionId);
       if (pending) {
         this.current.delete(event.sessionId);
@@ -317,7 +352,7 @@ class PythonFacade {
       });
       this.nativeEmit('sessionState', { sessionId: event.sessionId, state: 'idle' });
     });
-    void PythonNative.addListener('sessionError', (event: any) => {
+    attach('sessionError', (event: any) => {
       const pending = this.current.get(event.sessionId);
       if (pending) {
         this.current.delete(event.sessionId);
@@ -516,7 +551,7 @@ class PythonSessionHandleImpl implements PythonSessionHandle {
     this.dispose();
     const info = await this.facade.restartSession(this.info.sessionId);
     const handle = new PythonSessionHandleImpl(this.facade, info);
-    (this.facade as unknown as { handles: Map<string, PythonSessionHandle> }).handles.set(info.sessionId, handle);
+    this.facade.adoptHandle(handle);
     return handle;
   }
 

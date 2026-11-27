@@ -163,7 +163,7 @@ public class PythonPlugin: CAPPlugin, CAPBridgedPlugin, PythonEngineDelegate {
             return
         }
         let code = call.getString("code") ?? ""
-        let executionId = nextExecutionId("run")
+        let executionId = call.getString("executionId") ?? nextExecutionId("run")
         call.resolve(["executionId": executionId])
         engine.run(sessionId: sessionId, source: code) { json in
             let result = Self.parse(json)
