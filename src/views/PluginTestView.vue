@@ -312,8 +312,10 @@
     <section class="card">
       <h2>Python 实验台（原生 CPython 3.11）</h2>
       <div id="python-editor" class="python-editor"></div>
+      <div id="python-editor-autotest" style="display: none"></div>
       <div class="actions">
         <button @click="pyRun">运行（Ctrl/Cmd+Enter）</button>
+        <button @click="pyClear">清空输出</button>
         <button @click="pyStop">停止</button>
         <button @click="pyRestart">重启会话</button>
         <button @click="pythonSessions">会话列表</button>
@@ -438,7 +440,11 @@ export default {
 
   beforeDestroy() {
     try {
-      if (this.pySession) this.pySession.dispose();
+      if (this.pySession) {
+        // 先终止 Python 会话，避免下次进页面还留着上一次的输出/阻塞线程
+        void this.pySession.terminate();
+        this.pySession.dispose();
+      }
     } catch (error) {
       /* ignore */
     }
@@ -508,6 +514,10 @@ export default {
       this.pySession = session;
       this.pyState = session.state;
       return session;
+    },
+
+    pyClear() {
+      this.pyOutput = '';
     },
 
     async pyRun() {
@@ -608,11 +618,11 @@ export default {
 
     async pythonEditorTest() {
       try {
-        const handle = initEditor('#python-editor', { value: this.pythonCode, theme: 'light', height: '180px' });
+        const handle = initEditor('#python-editor-autotest', { value: this.pythonCode, theme: 'light', height: '180px' });
         const value = handle.getValue();
         handle.insert('\n# inserted by test');
-        const after = getEditorValue('#python-editor');
-        destroyEditor('#python-editor');
+        const after = getEditorValue('#python-editor-autotest');
+        destroyEditor('#python-editor-autotest');
         this.print('编辑器自检', { length: value.length, inserted: after.includes('inserted by test'), destroyed: true });
       } catch (err) {
         this.error('编辑器自检', err);
@@ -627,6 +637,23 @@ export default {
       const results = { platform: this.platform };
       window.__autotestStage = 'start';
       window.__autotestResults = results;
+
+      // 清掉上一次运行/手工操作留下的状态，保证测试可复现（不影响断言，只是为了干净起点）
+      try {
+        await Python.terminateAll();
+      } catch (error) {
+        /* ignore */
+      }
+      try {
+        await BackgroundKeepalive.stop();
+      } catch (error) {
+        /* ignore */
+      }
+      try {
+        await SecureStorage.clear();
+      } catch (error) {
+        /* ignore */
+      }
       try {
         results.echo = await NativeBasics.echo({ value: 'autotest' });
         await NativeBasics.showToast({ text: 'autotest toast', duration: 'short' });
@@ -1444,8 +1471,14 @@ export default {
             results.reason = `file-url check failed: ${JSON.stringify(results.fileUrl)}`;
           }
         } catch (err) {
-          results.ok = false;
-          results.fileUrlError = String((err && err.message) || err);
+          const message = String((err && err.message) || err);
+          if (/EACCES|Permission denied|MANAGE_EXTERNAL_STORAGE/i.test(message)) {
+            // 写公共目录需要"所有文件访问"权限；没授权时跳过（用户可在 native-files 卡片里授予）
+            results.fileUrl = 'skipped: 需要 MANAGE_EXTERNAL_STORAGE';
+          } else {
+            results.ok = false;
+            results.fileUrlError = message;
+          }
         }
 
         // CppBridge：C/C++ 链路（C++ 函数、纯 C 函数、native 内存句柄）
@@ -1765,11 +1798,11 @@ export default {
               pythonSession.sessionId,
               'import sys\nprint("python-autotest")\nprint(sys.version.split()[0])\n1 + 2',
             );
-            const editor = initEditor('#python-editor', { value: 'print("hi")' });
+            const editor = initEditor('#python-editor-autotest', { value: 'print("hi")' });
             const editorValue = editor.getValue();
             editor.setValue('x = 1');
-            const editorAfter = getEditorValue('#python-editor');
-            destroyEditor('#python-editor');
+            const editorAfter = getEditorValue('#python-editor-autotest');
+            destroyEditor('#python-editor-autotest');
             await Python.terminateSession(pythonSession.sessionId);
             // iOS：验证"构建期嵌入的 pip 包"能否 import（ios/requirements.txt 里是 six）
             let packages = null;
