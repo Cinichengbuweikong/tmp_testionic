@@ -1,63 +1,391 @@
 /**
- * capacitor-python 入口。
+ * capacitor-python 的对外入口（门面）。
  *
- * 用法：
+ * 两个引擎，同一套 API：
+ *   - **原生引擎**（Android / iOS）：真机 CPython（Android = Chaquopy 内嵌解释器；
+ *     iOS = Python-Apple-support 静态库），不依赖 WebView，性能接近桌面 CPython；
+ *   - **Web 引擎**（浏览器）：Pyodide（CPython → WebAssembly），因为浏览器里没有别的选择。
+ *
+ * 判断规则很简单：`Capacitor.getPlatform() === 'web'` → Pyodide，否则 → 原生插件。
+ *
  * ```ts
  * import { Python } from 'capacitor-python';
- * import { initEditor, destroyEditor, getEditorValue, setEditorValue } from 'capacitor-python/editor';
  *
- * await Python.initialize();                       // 解析/校验 Pyodide 资源
+ * await Python.initialize();                       // 启动解释器
  * const s = await Python.createSession({ name: 'demo' });
- * const off = Python.addListener('sessionOutput', (e) => console.log(e.stream, e.data));
+ * Python.addListener('sessionOutput', (e) => console.log(e.stream, e.data));
  * const out = await Python.exec(s.sessionId, 'print("hi"); 1 + 1');
- * console.log(out.stdout, out.result);             // "hi\n", "2"
  * ```
- *
- * 原生插件（`PythonNative`）只有 `getInfo()`，用来判断当前 WebView 是否满足最低版本；
- * 真正的 Python 会话逻辑在 `PythonRuntime`（JS + WASM）。
  */
 
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
-import type { PythonNativeInfo, PythonPlugin } from './definitions';
-import { PythonRuntime } from './engine/runtime';
+import type {
+  PythonCreateSessionOptions,
+  PythonDoneEvent,
+  PythonErrorEvent,
+  PythonExecResult,
+  PythonInstallOptions,
+  PythonInstallResult,
+  PythonNativeInfo,
+  PythonOutputEvent,
+  PythonPlugin,
+  PythonRunResult,
+  PythonRuntimeInfo,
+  PythonSessionInfo,
+  PythonStateEvent,
+} from './definitions';
+import { PythonRuntime as PyodideRuntime } from './engine/runtime';
 
-/** 原生壳（Android/iOS）：平台信息与最小版本检查。 */
+/** 原生插件（Android = Chaquopy；iOS = Python-Apple-support）。 */
 export const PythonNative = registerPlugin<PythonPlugin>('Python');
 
+type Listener<T> = (payload: T) => void;
+
+interface PendingExecution {
+  executionId: string;
+  stdout: string;
+  stderr: string;
+  resolve: (result: { result: string | null; stdout: string; stderr: string }) => void;
+  reject: (error: Error) => void;
+}
+
 /**
- * 在创建会话之前检查当前环境能否运行 Pyodide。
+ * 门面：把 web 引擎与原生插件统一成同一个对象。
  *
- * - Android：解析 WebView 的 Chrome 主版本，< 90 返回 `supported: false`；
- * - iOS：系统 < 16.4 返回 `supported: false`；
- * - Web：直接返回 supported（由浏览器决定）。
+ * 原生侧的输出事件只带 sessionId，所以这里按 session 维护"当前执行"，
+ * 把输出归到对应的 execution 上（`exec` 用；`run` 只转发事件）。
+ */
+class PythonFacade {
+  private readonly web = new PyodideRuntime();
+  private readonly nativeListeners = new Map<string, Set<Listener<any>>>();
+  private readonly current = new Map<string, PendingExecution>();
+  private nativeAttached = false;
+  private info: PythonRuntimeInfo | null = null;
+
+  /**
+   * 是否使用原生引擎。
+   *
+   * 目前：**Android = 原生**（Chaquopy CPython，3.11，不依赖 WebView）。
+   * iOS 原生 CPython（Python-Apple-support）需要宿主 App 在 Xcode 里加一个 Run Script
+   * 把扩展模块转成 framework 并签名，且会让安装包 +55MB —— 属于宿主工程级改动，
+   * 所以 iOS 暂时继续走 Web 引擎（Pyodide，CI 已验证可用）。详见 README。
+   */
+  get isNative(): boolean {
+    return Capacitor.getPlatform() === 'android';
+  }
+
+  /** 当前引擎信息（initialize 之后才有）。 */
+  get runtimeInfo(): PythonRuntimeInfo | null {
+    return this.info;
+  }
+
+  /** 启动/解析运行时；幂等。 */
+  async initialize(options: { runtimeUrl?: string; version?: string; verify?: boolean } = {}): Promise<PythonRuntimeInfo> {
+    if (this.isNative) {
+      const result = await PythonNative.initialize();
+      this.info = {
+        engine: 'native',
+        pythonVersion: String(result.pythonVersion ?? 'unknown'),
+        platform: String(result.platform ?? Capacitor.getPlatform()),
+      };
+      return this.info;
+    }
+    this.info = await this.web.initialize(options);
+    return this.info;
+  }
+
+  /** 原生平台信息 / WebView 版本检查（web 上直接 supported=true）。 */
+  async getInfo(): Promise<PythonNativeInfo> {
+    if (!this.isNative) return { platform: 'web', engine: 'pyodide', supported: true };
+    return PythonNative.getInfo();
+  }
+
+  /** 创建会话（原生：独立 globals + 阻塞 stdin；Web：独立 Worker）。 */
+  async createSession(options: PythonCreateSessionOptions = {}): Promise<PythonSessionInfo> {
+    if (this.isNative) {
+      this.attachNativeEvents();
+      return (await PythonNative.createSession(options)) as unknown as PythonSessionInfo;
+    }
+    return this.web.createSession(options);
+  }
+
+  async listSessions(): Promise<PythonSessionInfo[]> {
+    if (this.isNative) {
+      const result = await PythonNative.listSessions();
+      return (result.sessions ?? []) as PythonSessionInfo[];
+    }
+    return this.web.listSessions();
+  }
+
+  /** 执行并等待：返回结果 + 本次执行的 stdout/stderr。 */
+  async exec(sessionId: string, code: string, timeoutMs?: number): Promise<PythonExecResult> {
+    if (this.isNative) return this.nativeExec(sessionId, code, timeoutMs);
+    return this.web.exec(sessionId, code, timeoutMs);
+  }
+
+  /** 触发执行、立即返回；输出与完成都走事件。 */
+  run(sessionId: string, code: string): PythonRunResult {
+    if (this.isNative) {
+      this.attachNativeEvents();
+      const executionId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      this.nativeEmit('sessionState', { sessionId, state: 'running' });
+      void PythonNative.run({ sessionId, code });
+      return { executionId };
+    }
+    return this.web.run(sessionId, code);
+  }
+
+  /** 写 stdin（原生：真阻塞 input()；Web：queued 模式）。 */
+  async writeStdin(sessionId: string, data: string): Promise<void> {
+    if (this.isNative) {
+      await PythonNative.writeStdin({ sessionId, data });
+      return;
+    }
+    this.web.writeStdin(sessionId, data);
+  }
+
+  /** 安装包：原生只支持纯 Python wheel（URL/路径）；Web 走 micropip。 */
+  async installPackages(
+    sessionId: string,
+    packages: string[],
+    options: PythonInstallOptions = {},
+  ): Promise<PythonInstallResult> {
+    if (this.isNative) {
+      return (await PythonNative.installPackages({
+        sessionId,
+        packages,
+      })) as unknown as PythonInstallResult;
+    }
+    return this.web.installPackages(sessionId, packages, options.indexUrls);
+  }
+
+  /** 从 URL 安装 wheel（原生与 web 都支持）。 */
+  async installWheels(sessionId: string, urls: string[]): Promise<PythonInstallResult> {
+    if (this.isNative) {
+      return (await PythonNative.installPackages({
+        sessionId,
+        packages: urls,
+      })) as unknown as PythonInstallResult;
+    }
+    return this.web.installWheels(sessionId, urls);
+  }
+
+  async restartSession(sessionId: string): Promise<PythonSessionInfo> {
+    if (this.isNative) {
+      return (await PythonNative.restartSession({ sessionId })) as unknown as PythonSessionInfo;
+    }
+    return this.web.restartSession(sessionId);
+  }
+
+  async terminateSession(sessionId: string): Promise<void> {
+    this.current.delete(sessionId);
+    if (this.isNative) {
+      await PythonNative.terminateSession({ sessionId });
+      return;
+    }
+    this.web.terminateSession(sessionId);
+  }
+
+  async terminateAll(): Promise<void> {
+    this.current.clear();
+    if (this.isNative) {
+      await PythonNative.terminateAll();
+      return;
+    }
+    this.web.terminateAll();
+  }
+
+  /**
+   * 事件监听。返回 `{ remove() }`（与 web 引擎一致；原生的异步注册在后台完成）。
+   */
+  addListener<K extends keyof PythonFacadeEvents>(
+    event: K,
+    listener: Listener<PythonFacadeEvents[K]>,
+  ): { remove: () => void } {
+    if (!this.isNative) {
+      return this.web.addListener(event as never, listener as never);
+    }
+    this.attachNativeEvents();
+    let set = this.nativeListeners.get(event);
+    if (!set) {
+      set = new Set();
+      this.nativeListeners.set(event, set);
+    }
+    set.add(listener);
+    return { remove: () => this.nativeListeners.get(event)?.delete(listener) };
+  }
+
+  removeAllListeners(): void {
+    this.nativeListeners.clear();
+    if (!this.isNative) this.web.removeAllListeners();
+  }
+
+  // ------------------------------------------------------------------ native
+
+  private nativeEmit<K extends keyof PythonFacadeEvents>(event: K, payload: PythonFacadeEvents[K]): void {
+    const set = this.nativeListeners.get(event);
+    if (!set) return;
+    for (const listener of set) {
+      try {
+        listener(payload);
+      } catch (error) {
+        console.error(`[capacitor-python] listener for "${event}" threw`, error);
+      }
+    }
+  }
+
+  /** 只挂一次原生监听，把事件转成和 web 引擎一致的形状。 */
+  private attachNativeEvents(): void {
+    if (this.nativeAttached) return;
+    this.nativeAttached = true;
+
+    void PythonNative.addListener('sessionOutput', (event: any) => {
+      const { sessionId, stream, data } = event;
+      const pending = this.current.get(sessionId);
+      if (pending) {
+        if (stream === 'stdout') pending.stdout += data;
+        else pending.stderr += data;
+      }
+      this.nativeEmit('sessionOutput', { sessionId, stream, data });
+    });
+    void PythonNative.addListener('sessionDone', (event: any) => {
+      const pending = this.current.get(event.sessionId);
+      if (pending) {
+        this.current.delete(event.sessionId);
+        pending.resolve({
+          result: event.result ?? null,
+          stdout: pending.stdout,
+          stderr: pending.stderr,
+        });
+      }
+      this.nativeEmit('sessionDone', {
+        sessionId: event.sessionId,
+        executionId: pending ? pending.executionId : event.executionId,
+        result: event.result ?? null,
+      });
+      this.nativeEmit('sessionState', { sessionId: event.sessionId, state: 'idle' });
+    });
+    void PythonNative.addListener('sessionError', (event: any) => {
+      const pending = this.current.get(event.sessionId);
+      if (pending) {
+        this.current.delete(event.sessionId);
+        const error = new Error(`${event.type}: ${event.message}`);
+        (error as any).pythonType = event.type;
+        (error as any).traceback = event.traceback;
+        pending.reject(error);
+      }
+      this.nativeEmit('sessionError', {
+        sessionId: event.sessionId,
+        executionId: pending ? pending.executionId : event.executionId ?? null,
+        type: event.type ?? 'Error',
+        message: event.message ?? '',
+        traceback: event.traceback ?? null,
+      });
+      this.nativeEmit('sessionState', { sessionId: event.sessionId, state: 'idle' });
+    });
+  }
+
+  private nativeExec(sessionId: string, code: string, timeoutMs?: number): Promise<PythonExecResult> {
+    this.attachNativeEvents();
+    const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    return new Promise<PythonExecResult>((resolve, reject) => {
+      const timer = timeoutMs
+        ? setTimeout(() => {
+            this.current.delete(sessionId);
+            reject(new Error(`EXEC_TIMEOUT: 超过 ${timeoutMs}ms，已终止该会话`));
+            void this.terminateSession(sessionId);
+          }, timeoutMs)
+        : null;
+
+      this.current.set(sessionId, {
+        executionId,
+        stdout: '',
+        stderr: '',
+        resolve: (out) => {
+          if (timer) clearTimeout(timer);
+          resolve({ executionId, ...out });
+        },
+        reject: (error) => {
+          if (timer) clearTimeout(timer);
+          reject(error);
+        },
+      });
+
+      this.nativeEmit('sessionState', { sessionId, state: 'running' });
+      // 原生 exec 直接 resolve（不像 run 那样发 sessionDone 事件），所以这里主动收尾：
+      // 用 pending 里累积的 stdout/stderr 拼出本次执行结果，并补发事件给监听方。
+      void PythonNative.exec({ sessionId, code })
+        .then((result) => {
+          const pending = this.current.get(sessionId);
+          if (!pending) return;
+          this.current.delete(sessionId);
+          pending.resolve({ result: result.result ?? null, stdout: pending.stdout, stderr: pending.stderr });
+          this.nativeEmit('sessionDone', {
+            sessionId,
+            executionId: pending.executionId,
+            result: result.result ?? null,
+          });
+          this.nativeEmit('sessionState', { sessionId, state: 'idle' });
+        })
+        .catch(
+          (error: Error & { data?: { traceback?: string } }) => {
+            const pending = this.current.get(sessionId);
+            if (!pending) return;
+            this.current.delete(sessionId);
+            (error as any).traceback = error?.data?.traceback ?? null;
+            this.nativeEmit('sessionError', {
+              sessionId,
+              executionId: pending.executionId,
+              type: (error as any).pythonType ?? 'Error',
+              message: error.message,
+              traceback: error?.data?.traceback ?? null,
+            });
+            this.nativeEmit('sessionState', { sessionId, state: 'idle' });
+            pending.reject(error);
+          },
+        );
+    });
+  }
+}
+
+/** 门面暴露的事件。 */
+export interface PythonFacadeEvents {
+  sessionOutput: PythonOutputEvent;
+  sessionState: PythonStateEvent;
+  sessionDone: PythonDoneEvent;
+  sessionError: PythonErrorEvent;
+}
+
+/** 单例门面：`import { Python } from 'capacitor-python'`。 */
+export const Python = new PythonFacade();
+
+/**
+ * 检查当前环境能否运行 Python。
  *
- * 注意：即使这里返回 true，也建议把 `createSession()` 放进 try/catch —— 极老的 WebView
- * 可能在编译 wasm 时才失败，`createSession` 会以 `UNSUPPORTED_WEBVIEW` 错误拒绝。
+ * - 原生（Android/iOS）：不依赖 WebView，直接 supported；
+ * - Web：Pyodide 需要较新的浏览器/WebView。
  */
 export async function checkPythonSupport(): Promise<{
   supported: boolean;
   info?: PythonNativeInfo;
   reason?: string;
 }> {
-  if (!Capacitor.isNativePlatform()) {
-    return { supported: true, reason: 'web' };
+  if (Capacitor.getPlatform() === 'android') {
+    try {
+      const info = await PythonNative.getInfo();
+      return { supported: info.supported !== false, info };
+    } catch (error) {
+      return { supported: true, reason: `getInfo failed: ${String((error as Error)?.message ?? error)}` };
+    }
   }
-  try {
-    const info = await PythonNative.getInfo();
-    const supported = info.supported !== false;
-    return { supported, info: { ...info, supported }, reason: supported ? undefined : info.note };
-  } catch (error) {
-    // 原生插件不可用时不阻塞主流程，交给 createSession 去暴露真实错误
-    return { supported: true, reason: `getInfo failed: ${String((error as Error)?.message ?? error)}` };
-  }
+  const major = Number((navigator.userAgent.match(/Chrome\/(\d+)/) ?? [])[1] ?? 0);
+  const supported = major === 0 || major >= 90;
+  return {
+    supported,
+    reason: supported ? undefined : `WebView/browser Chrome/${major} < 90，web 版 Pyodide 无法加载（原生平台不受影响）`,
+  };
 }
 
-/**
- * 默认的 Python 运行时实例（单例）。
- * 需要多实例/自定义运行时目录时，可以 `new PythonRuntime({ runtimeUrl, version })`。
- */
-export const Python = new PythonRuntime();
-
-export { PythonRuntime, PythonSession, DEFAULT_PYODIDE_VERSION, DEFAULT_RUNTIME_URL } from './engine/runtime';
+export { PyodideRuntime };
 export * from './definitions';

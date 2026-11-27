@@ -12,10 +12,23 @@ buildscript {
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.0'
+        // Chaquopy：把 CPython 运行时打进这个 library 模块（AAR），宿主 app 无需任何配置
+        classpath 'com.chaquo.python:gradle:17.2.0'
     }
 }
 
 apply plugin: 'com.android.library'
+// 关键实验：Chaquopy 是否能应用在 library 模块上（而不是 app 模块）
+apply plugin: 'com.chaquo.python'
+
+chaquopy {
+    defaultConfig {
+        // 选 3.11 而不是 3.13：Chaquopy 从 3.12 起只支持 64 位 ABI，而 Android 7 时代
+        // 还有大量 armeabi-v7a 设备。3.11 是"能覆盖 32 位 + 足够新"的折中。
+        version = '3.11'
+        // buildPython 只在 pip install 时需要，先不配
+    }
+}
 
 android {
     namespace = "com.testionic.python"
@@ -26,6 +39,10 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Chaquopy 在 library 模块里必须显式声明 ABI（它没法像 app 模块那样自动推断）
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
     }
     buildTypes {
         release {

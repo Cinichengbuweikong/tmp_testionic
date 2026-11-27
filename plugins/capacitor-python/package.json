@@ -1,6 +1,6 @@
 {
   "name": "capacitor-python",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capacitor Python 插件：在 App 内运行 CPython（Pyodide/WebAssembly），每个会话独立 Worker 隔离，实时 stdin/stdout/stderr，支持多会话、pip 包与框架无关的 Python 代码编辑器。",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",

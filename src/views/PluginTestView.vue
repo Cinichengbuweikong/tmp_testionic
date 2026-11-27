@@ -310,7 +310,7 @@
     </section>
 
     <section class="card">
-      <h2>Python（CPython 3.14 / WebAssembly）</h2>
+      <h2>Python（Android 原生 CPython 3.11 / Web+Ios 走 Pyodide）</h2>
       <div class="actions">
         <button @click="pythonInit">初始化运行时</button>
         <button @click="pythonRun">运行代码</button>
@@ -320,7 +320,7 @@
       <div id="python-editor" class="python-editor"></div>
       <p class="hint">
         每个会话是独立 Worker（Python 崩溃/死循环不影响 App）；stdout/stderr 实时推送。
-        首次加载需要编译约 9MB 的 wasm，模拟器/真机上约 5~10 秒。
+        Android 走原生解释器（Chaquopy，不依赖 WebView，首次启动 ~1s）；iOS/Web 走 Pyodide（需要编译约 9MB wasm，5~10s）。
       </p>
     </section>
 
@@ -458,8 +458,8 @@ export default {
 
     async pythonSessions() {
       try {
-        const info = await PythonNative.getInfo();
-        this.print('Python 会话', { native: info, sessions: Python.listSessions() });
+        const info = await Python.getInfo();
+        this.print('Python 会话', { native: info, sessions: await Python.listSessions() });
       } catch (err) {
         this.error('Python 会话列表', err);
       }

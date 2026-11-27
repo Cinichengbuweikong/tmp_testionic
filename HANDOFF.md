@@ -1,5 +1,60 @@
 # 项目上下文存档（HANDOFF）
 
+> ## 🆕 2026-11-27 `capacitor-python` 重构：Android 改成**原生 CPython**（Chaquopy）
+>
+> 用户明确否掉了"WebView 里跑 WASM"的初版：① 他的手机 WebView 是 Chrome/87，跑不了；
+> ② WASM 局限在浏览器沙盒，不是他要的"真机 Python"。要求换成原生，最低支持 Android 7 / iOS 15。
+>
+> ### 结论（已实现并真机验证）
+>
+> **Android = Chaquopy 17.2 + CPython 3.11（原生，不依赖 WebView）；iOS/Web = Pyodide（WASM）。**
+>
+> - Chaquopy **支持装在插件的 `com.android.library` 模块里**（官方文档明确），宿主 app 零配置；
+>   唯一约束：一个 App 只能有一个模块应用它（重复会 "More than one file found with OS independent path"）。
+> - **Python 3.11 而不是 3.13**：Chaquopy 从 3.12 起只支持 64 位 ABI，而 Android 7 时代有大量
+>   armeabi-v7a 设备；3.11 同时覆盖 arm64/arm32/x86_64。
+> - AAR 23MB，APK 58MB（三个 ABI，Python 部分约 +19MB）→ 正式发布要用 ABI split / App Bundle。
+> - **Chaquopy 没有 iOS 版本**（官方 FAQ 明确）。iOS 原生等价物是 BeeWare `Python-Apple-support`
+>   （CPython 3.11 静态库 + stdlib + 67 个 `.so`），但必须由**宿主 App** 在 Xcode 里加 Run Script
+>   把 `.so` 转成 framework 并 codesign（SPM 插件做不到），且体积 +55MB → 分步实现，目前 iOS 走 Pyodide。
+>
+> ### 代码结构
+>
+> - `src/index.ts` = **门面**：`Capacitor.getPlatform() === 'android'` → 原生插件；否则 → `PyodideRuntime`。
+>   事件在门面里统一成 `sessionOutput/sessionState/sessionDone/sessionError`。
+> - `android/src/main/python/capython/runtime.py`：`sys.stdout/stderr` 线程级代理（按 `threading.local`
+>   的 session_id 分流）、`sys.stdin` 阻塞 `readline`（`PythonBridge.readLine` 轮询队列）、
+>   `exec` + 最后一个表达式 `eval`（返回 JSON）、`add_site_dir`、`interrupt`（ctypes）。
+> - Java：`PythonBridge`（emit/readLine/队列）、`PythonEngine`（Chaquopy 启动、会话、wheel 安装）、
+>   `PythonSession`、`PythonPlugin`（11 个 @PluginMethod + 事件）。
+> - 门面 `exec` 用原生 resolve 收尾（Java 的 `exec` 直接 resolve，不像 `run` 那样发 sessionDone 事件）。
+>
+> ### 真机实测（Android 10 / WebView 87，正是 Pyodide 跑不动的环境）
+>
+> - `initialize` → `pythonVersion 3.11.17`、`engine native`；
+> - `createSession` → `stdinMode: blocking`；
+> - `exec('print(...); 1+2')` → `result: "3"`，stdout 实时事件 `hello native\n3.11.17\n`；
+> - `raise ValueError` → 正常 reject，会话仍可继续；两个会话 `x=42` 互不可见（NameError）；
+> - **阻塞 stdin**：`input("Name? ")` 实时输出提示符 → 800ms 后 `writeStdin('Alice')` → `hello, Alice`；
+> - 完整 autotest `ok:true`（python 段 engine=native / 3.11.17 / result=3 / 编辑器全过）。
+>
+> ### 踩坑
+>
+> 1. Chaquopy 的 `PyObject.toJava(Map.class)` **不支持 dict → Map**（TypeError）→ Python 侧返回 JSON 字符串。
+> 2. `new org.json.JSONObject(json)` 抛受检 `JSONException`，必须 try/catch。
+> 3. Chaquopy 在 library 模块里**必须**声明 `ndk.abiFilters`。
+> 4. `PluginCall.reject(String, Throwable)` 不存在 → catch 用 `Exception`。
+> 5. 门面最初在原生 `exec` 上等一个不会来的事件 → 120s 超时；改成用 promise 结果收尾。
+> 6. 仍要避免 PowerShell 的 `Get-Content/Set-Content` 改 UTF-8 源码（会写坏）。
+>
+> ### 下一步（iOS 原生）
+>
+> 方案已写进插件 README「iOS 原生引擎」：下载 `Python-3.11-iOS-support.b13.tar.gz`
+> （30.7MB，sha256 `e1f55eef…`）→ `binaryTarget(path:)` + stdlib 资源 → **宿主 pbxproj 加 Run Script**
+> （`install_python` + `ENABLE_USER_SCRIPT_SANDBOXING=NO`）→ Swift `PyConfig`/`PyRun_StringFlags` +
+> ctypes 回调实现实时 stdout/stdin。Swift 侧的 11 个插件方法已经就位（当前返回
+> `NATIVE_ENGINE_NOT_AVAILABLE`），第二步只需替换实现。
+
 > ## 🆕 2026-11-26 新插件：`capacitor-python`（第 19 个插件）
 >
 > 需求：App 内集成 Python 解释器 —— 崩溃不影响主程序、实时 stdin/stdout/stderr、多份代码并发、

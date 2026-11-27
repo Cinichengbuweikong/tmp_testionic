@@ -1,58 +1,97 @@
 import Capacitor
 import Foundation
 import UIKit
-import WebKit
 
 /**
- * Python 插件的 iOS 原生壳。
+ * capacitor-python 的 iOS 原生壳。
  *
- * Python 引擎是 Pyodide（CPython → WebAssembly），运行在 WKWebView 的 Web Worker 里
- * （Capacitor 8 的 `capacitor://localhost` 已经能正确返回 `.wasm` 的 MIME，Worker 也支持 ESM），
- * 因此会话、stdio、pip 逻辑都在 JS 侧。原生壳只做两件事：
- *   1. 上报系统版本，供 JS 判断是否满足 Pyodide 的最低要求（iOS 16.4+）；
- *   2. 预留未来切到"原生 CPython"（Python-Apple-support / xcframework）的挂载点。
+ * ## 当前状态（分步实现的第一步）
  *
- * 为什么不用原生 CPython 作为默认引擎，见 README「为什么是 WebAssembly 版 CPython」：
- * iOS 禁止 fork/exec/子进程，进程内嵌 CPython 一旦段错误就是整个 App 崩溃，
- * 无法满足"Python 崩溃不影响主程序"的要求；Web Worker 则是真正独立的线程/进程边界。
+ * iOS 上**原生 CPython 尚未接入**：Chaquopy 没有 iOS 版本，iOS 的原生等价物是
+ * BeeWare 的 `Python-Apple-support`（CPython 3.11 静态库 + stdlib + `lib-dynload/*.so`），
+ * 它需要一个**宿主 App 的 Run Script** 把 67 个 `.so` 转成 `Frameworks/*.framework` 并签名
+ * （iOS 不允许 `Frameworks/` 之外的可执行代码），还会让安装包 +55MB —— 属于工程级改动。
+ *
+ * 因此目前 iOS 走 **Pyodide 引擎**（CPython 3.14 → WebAssembly，跑在 WKWebView 的 module worker 里，
+ * CI 已验证）。`src/index.ts` 的门面只在 Android 上把调用转给原生插件，iOS/Web 都走 Pyodide。
+ *
+ * 下面这些方法是为了**方法数与 TS 接口保持一致**（仓库的 audit 会检查），
+ * 同时给第二步（接入 Python-Apple-support）留好 API 面。第二步只需要替换
+ * `PythonEngineIOS` 的实现，插件方法本身不用改。
  */
 @objc(PythonPlugin)
 public class PythonPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "PythonPlugin"
     public let jsName = "Python"
     public let pluginMethods: [CAPPluginMethod] = [
-        CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "initialize", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "createSession", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "exec", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "run", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "writeStdin", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "listSessions", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "terminateSession", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "terminateAll", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "restartSession", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "installPackages", returnType: CAPPluginReturnPromise)
     ]
 
-    /// Pyodide 314.x 官方要求 iOS / WKWebView ≥ 16.4（更低的 WebKit 解析不了它的 ESM/新语法）。
-    private let minimumIOS = "16.4"
+    private static let notAvailableMessage =
+        "NATIVE_ENGINE_NOT_AVAILABLE_ON_IOS: iOS 目前使用 Pyodide 引擎（WebAssembly），" +
+        "原生 CPython 需要接入 Python-Apple-support（见 README「iOS 原生引擎」）。"
+
+    // MARK: - 基础信息
 
     @objc public func getInfo(_ call: CAPPluginCall) {
-        let systemVersion = UIDevice.current.systemVersion
-        let supported = compareVersions(systemVersion, minimumIOS) >= 0
-        var result: [String: Any] = [
+        call.resolve([
             "platform": "ios",
             "engine": "pyodide",
-            "systemVersion": systemVersion,
-            "webViewVersion": systemVersion,
-            "supported": supported
-        ]
-        if !supported {
-            result["note"] = "iOS \(systemVersion) 低于 Pyodide 要求的 \(minimumIOS)，Python 运行时可能无法加载。"
-        }
-        call.resolve(result)
+            "systemVersion": UIDevice.current.systemVersion,
+            "supported": true,
+            "note": "iOS 使用 Pyodide（WebAssembly）引擎；原生 CPython 待接入（Python-Apple-support）"
+        ])
     }
 
-    /// 语义化比较（只处理数字段，缺省补 0），返回 -1/0/1。
-    private func compareVersions(_ lhs: String, _ rhs: String) -> Int {
-        let left = lhs.split(separator: ".").map { Int($0) ?? 0 }
-        let right = rhs.split(separator: ".").map { Int($0) ?? 0 }
-        let count = max(left.count, right.count)
-        for index in 0..<count {
-            let l = index < left.count ? left[index] : 0
-            let r = index < right.count ? right[index] : 0
-            if l != r { return l < r ? -1 : 1 }
-        }
-        return 0
+    // MARK: - 原生引擎接口（待实现）
+
+    @objc public func initialize(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func createSession(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func exec(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func run(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func writeStdin(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func listSessions(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func terminateSession(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func terminateAll(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func restartSession(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
+    }
+
+    @objc public func installPackages(_ call: CAPPluginCall) {
+        call.reject(Self.notAvailableMessage, "NATIVE_ENGINE_NOT_AVAILABLE")
     }
 }

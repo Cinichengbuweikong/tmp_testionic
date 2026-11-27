@@ -40,24 +40,27 @@ export type PythonSessionState =
  */
 export type PythonStdinMode = 'blocking' | 'queued';
 
-/** 运行时（Pyodide 资源）信息。 */
+/** 运行时信息（原生引擎与 Web 引擎共用，web 专属字段可选）。 */
 export interface PythonRuntimeInfo {
-  engine: 'pyodide';
-  /** Pyodide 版本，例如 `314.0.8`（314 = CPython 3.14） */
-  pyodideVersion: string;
-  /** 解释器版本，例如 `3.14.2` */
+  /** 原生引擎（Chaquopy / Python-Apple-support）或 Web 引擎（Pyodide） */
+  engine: 'pyodide' | 'native';
+  /** 解释器版本，例如 `3.11.17` / `3.14.2` */
   pythonVersion: string;
-  /** 资源目录的绝对 URL（以 / 结尾） */
-  runtimeUrl: string;
-  /** 该运行时要求的最低 WebView 版本（低于它会在加载时语法错误） */
-  minimum: {
+  /** 原生平台（`android` / `ios`）；web 引擎没有 */
+  platform?: string;
+  /** 仅 Web 引擎：Pyodide 版本，例如 `314.0.8` */
+  pyodideVersion?: string;
+  /** 仅 Web 引擎：资源目录的绝对 URL（以 / 结尾） */
+  runtimeUrl?: string;
+  /** 仅 Web 引擎：该运行时要求的最低 WebView 版本 */
+  minimum?: {
     /** Android WebView 的主版本号（Chrome/xx） */
     androidWebView: number;
-    /** iOS 最低版本（SFSafariViewController/WKWebView 同源） */
+    /** iOS 最低版本 */
     ios: string;
   };
-  /** 资源清单（含 sha256，可用于校验） */
-  files: PythonRuntimeFile[];
+  /** 仅 Web 引擎：资源清单（含 sha256） */
+  files?: PythonRuntimeFile[];
 }
 
 export interface PythonRuntimeFile {
@@ -180,12 +183,22 @@ export interface PythonNativeInfo {
 }
 
 /**
- * 原生插件（Android/iOS）暴露的方法。
+ * 原生插件（Android = Chaquopy；iOS = Python-Apple-support）暴露的方法。
  *
- * 注意：Python 引擎是 JS/WASM 实现，原生壳只负责平台信息与未来的原生引擎扩展点，
- * 所以这里只有 `getInfo`。真正的会话 API 在 `PythonRuntime`（纯 JS 类）里。
+ * TS 门面（`src/index.ts`）在原生平台上把调用转发到这里；web 平台走 Pyodide 引擎。
  */
 export interface PythonPlugin {
-  /** 返回平台/WebView 信息，以及是否满足 Pyodide 的最低版本要求。 */
+  /** 事件监听（Capacitor 内置；不计入方法数审计）。 */
+  addListener(eventName: string, listener: (data: never) => void): Promise<{ remove: () => void }>;
+  initialize(): Promise<PythonRuntimeInfo>;
   getInfo(): Promise<PythonNativeInfo>;
+  createSession(options: PythonCreateSessionOptions): Promise<PythonSessionInfo>;
+  exec(options: { sessionId: string; code: string; timeoutMs?: number }): Promise<{ executionId: string; result: string | null }>;
+  run(options: { sessionId: string; code: string }): Promise<{ executionId: string }>;
+  writeStdin(options: { sessionId: string; data: string }): Promise<void>;
+  listSessions(): Promise<{ sessions: PythonSessionInfo[] }>;
+  terminateSession(options: { sessionId: string }): Promise<void>;
+  terminateAll(): Promise<void>;
+  restartSession(options: { sessionId: string }): Promise<PythonSessionInfo>;
+  installPackages(options: { sessionId: string; packages: string[] }): Promise<PythonInstallResult>;
 }

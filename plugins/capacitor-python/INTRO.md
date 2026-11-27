@@ -1,39 +1,34 @@
 # capacitor-python · 插件概览
 
-**一句话**：在 App 里跑真的 CPython 3.14（WebAssembly），每个会话独立 Worker 隔离，
-实时 stdout/stderr，多会话并发，支持 pip 包，并自带一个框架无关的 Python 代码编辑器。
+**一句话**：在 Capacitor App 里跑真正的 Python —— Android 用**原生 CPython 3.11**（Chaquopy），
+iOS/Web 用 **Pyodide（CPython 3.14 → WebAssembly）**；同一套 API：多会话、实时 stdout/stderr、
+阻塞 stdin、包安装、框架无关的 Python 编辑器。
 
-## 它解决什么问题
+## 平台矩阵
 
-App 里想执行用户写的 Python（脚本/教学/自动化/插件化），但：
-
-- 原生嵌入 CPython 在 **iOS 上无法隔离崩溃**（Apple 禁止子进程，段错误 = App 闪退）；
-- 原生方案要两套实现（Android Chaquopy + iOS Python-Apple-support），3~6 周工作量，+20~40MB；
-- 只想跑"一小段代码"，不需要 CPython 的全部能力。
-
-这个插件用 **Pyodide（CPython → WebAssembly）** 跑在 Web Worker 里：
-Python 崩了/死循环了，`terminate()` 掉 Worker 就行，App 与其它会话完全不受影响。
-
-## 平台
-
-| | Android | iOS | Web |
+| | Android 7+ | iOS 15+ | Web |
 | --- | --- | --- | --- |
-| 运行 Python | ✅ WebView ≥ Chrome/90 | ✅ iOS ≥ 16.4 | ✅ 现代浏览器 |
-| 会话隔离 | ✅ 每会话一个 Worker | ✅ | ✅ |
+| 引擎 | **原生 CPython 3.11**（Chaquopy） | Pyodide（WASM） | Pyodide（WASM） |
+| 依赖 WebView | ❌ 不依赖 | ✅ 需要 iOS 16.4+ | ✅ 需要 Chrome 90+ |
+| 多会话 | ✅ 独立 globals + 线程 | ✅ 独立 Worker | ✅ 独立 Worker |
 | 实时 stdout/stderr | ✅ | ✅ | ✅ |
-| pip | ✅ micropip（离线 wheel 也支持） | ✅ | ✅ |
-| 阻塞式 `input()` | ⚠️ 默认队列模式 | ⚠️ 默认队列模式 | ⚠️ |
+| 阻塞 `input()` | ✅ | ⚠️ 队列模式 | ⚠️ 队列模式 |
+| C 扩展包 | ✅ 构建期 pip 打包 | ⚠️ 仅 Pyodide 轮子 | ⚠️ 仅 Pyodide 轮子 |
+| 体积 | +19MB（3 ABI） | 0 | 0（13MB 资源） |
+
+> Chaquopy 只有 Android 版；iOS 原生等价物是 BeeWare `Python-Apple-support`，
+> 但需要宿主动 Xcode 工程 + 体积 +55MB，所以暂未接入（README 有完整方案）。
 
 ## 核心 API
 
 ```ts
-Python.initialize()                      // 校验运行时（13MB）
-Python.createSession({ name, packages }) // 独立解释器
-Python.exec(sessionId, code)             // 等结果：{ result, stdout, stderr }
-Python.run(sessionId, code)              // 不等：输出走事件
-Python.writeStdin(sessionId, line)
-Python.installPackages(sessionId, ['numpy'])
-Python.terminateSession(sessionId) / restartSession / listSessions
+Python.initialize()                            // 启动解释器
+Python.createSession({ name })                 // 独立会话
+Python.exec(sessionId, code)                   // { result, stdout, stderr }
+Python.run(sessionId, code)                    // 不等：输出走事件
+Python.writeStdin(sessionId, 'Alice')          // Android 上 input() 会真阻塞
+Python.installPackages(sessionId, [url])       // 原生：纯 Python wheel
+Python.terminateSession / restartSession / listSessions
 Python.addListener('sessionOutput' | 'sessionState' | 'sessionDone' | 'sessionError', cb)
 ```
 
@@ -47,23 +42,20 @@ getEditorValue / setEditorValue / insertEditorText / focusEditor / setEditorRead
 
 ## 典型场景
 
-- 教学/练习类 App：内置 Python 编辑器 + 运行结果；
+- 教学/练习类 App：内置编辑器 + 真机执行 Python；
 - 用户自定义脚本（自动化、数据处理）；
-- 把 Python 当"插件脚本"执行，出问题不影响主程序；
-- 用 Python 做原型验证（numpy/pandas 可用）。
+- 需要 CPython 语义（C 扩展、真实线程）而不是浏览器沙盒时。
 
 ## 必须知道的坑
 
-1. **旧 WebView 跑不了**：Android WebView < 90、iOS < 16.4 会在解析 wasm glue 时报错，
-   用 `checkPythonSupport()` 提前判断；
-2. **`input()` 默认不是真交互**：没有 SharedArrayBuffer，只能预输入队列；
-3. **不能装任意 C 扩展**：只有 Pyodide 已编译的轮子可用；
-4. **内存 50MB/会话**，iOS 注意 jetsam（≤3 个会话）；
-5. **首次加载 5~10 秒**（编译 9.2MB wasm），要有 loading UI；
-6. **ssl 是桩**：`requests` 走浏览器，拿不到证书/超时控制。
+1. **Android 没有进程级隔离**：Python 段错误会带走 App；普通异常/死循环不影响其它会话；
+2. **中断是协作式的**：超时会清空该会话，但线程要下一条 bytecode 才退出；
+3. **C 扩展只能构建期打包**（Chaquopy `pip { install }`），运行时只能装纯 Python wheel；
+4. **APK +19MB**（arm64 + arm32 + x86_64），正式发布建议 ABI split；
+5. **iOS/Web 需要较新 WebView**（Chrome 90+/iOS 16.4+），Android 原生不受影响。
 
 ## 实测
 
-Android 16 模拟器：加载 8.4s、执行 37ms、多会话隔离、死循环超时只杀单会话、编辑器全通过。
-Android 10 真机（WebView 87）：按预期 `UNSUPPORTED_WEBVIEW`，不崩溃。
-iOS：GitHub Actions 模拟器 autotest。
+Android 10 真机（WebView 87，正是 Pyodide 跑不动的环境）：原生 CPython 3.11.17，
+`initialize/createSession/exec`、实时输出、异常、多会话隔离、阻塞 stdin、编辑器、完整 autotest 全通过。
+Android 16 模拟器同样通过；iOS 走 Pyodide，CI 全绿。
