@@ -204,7 +204,8 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     fileprivate func emit(line: String, isStderr: Bool) {
-        notifyListeners("consoleOutput", [
+        // Capacitor 8 的 ObjC 方法导入到 Swift 后要求 `data:` 标签。
+        notifyListeners("consoleOutput", data: [
             "data": line + "\n",
             "stream": isStderr ? "stderr" : "stdout"
         ])
