@@ -67,12 +67,12 @@ ensure_tool() {
   local tool="$1"
   local pyver userbin
   if ! command -v "$tool" >/dev/null 2>&1; then
-    log "安装 $tool（python3 -m pip --user）"
+    log "安装 ${tool}（python3 -m pip --user）"
     python3 -m pip install --user --quiet "$tool" >>"$LOG" 2>&1 || die "装不上 $tool"
     pyver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
     userbin="$HOME/Library/Python/$pyver/bin"
     export PATH="$userbin:$PATH"
-    command -v "$tool" >/dev/null 2>&1 || die "装完还是找不到 $tool（PATH=$PATH）"
+    command -v "$tool" >/dev/null 2>&1 || die "装完还是找不到 ${tool}（PATH=${PATH}）"
   fi
   log "$tool: $("$tool" --version 2>&1 | head -n 1)"
 }
@@ -80,10 +80,10 @@ ensure_tool meson
 ensure_tool ninja
 
 if [[ ! -d "$VENDOR/ish-arm64" ]]; then
-  log "clone $ISH_REPO @ $ISH_COMMIT（sparse，只要 ish-arm64）"
+  log "clone $ISH_REPO @ ${ISH_COMMIT}（sparse，只要 ish-arm64）"
   mkdir -p "$VENDOR"
   git clone --depth 1 --filter=blob:none --sparse "$ISH_REPO" "$VENDOR" >>"$LOG" 2>&1 \
-    || die "git clone 失败（$LOG）"
+    || die "git clone 失败（${LOG}）"
   git -C "$VENDOR" sparse-checkout set ish-arm64 >>"$LOG" 2>&1 || die "sparse-checkout 失败"
   if [[ "$ISH_COMMIT" != "HEAD" ]]; then
     git -C "$VENDOR" fetch --depth 1 origin "$ISH_COMMIT" >>"$LOG" 2>&1 || die "fetch $ISH_COMMIT 失败"
@@ -136,7 +136,7 @@ build_slice() {
       --cross-file "$cross" \
       -Dguest_arch=arm64 \
       --buildtype=release
-  ) >>"$LOG" 2>&1 || { tail -n 40 "$LOG" >&2; die "meson setup 失败 [$sdk]（$LOG）"; }
+  ) >>"$LOG" 2>&1 || { tail -n 40 "$LOG" >&2; die "meson setup 失败 [$sdk]（${LOG}）"; }
 
   log "ninja [$sdk]"
   ninja -C "$build_dir" >>"$LOG" 2>&1 || {
@@ -144,7 +144,7 @@ build_slice() {
     grep -m 5 -E 'error:|fatal error|FAILED' "$LOG" | while IFS= read -r line; do
       echo "::error::[ish] $line" >&2
     done
-    die "ninja 失败 [$sdk]（$LOG）"
+    die "ninja 失败 [$sdk]（${LOG}）"
   }
 
   libs=()
@@ -189,7 +189,7 @@ xcrun xcodebuild -create-xcframework \
   -library "$BUILD/xcf/iossim-arm64/libcapish.a" -headers "$BUILD/xcf/iossim-arm64/Headers" \
   -output "$OUT" >>"$LOG" 2>&1 || { tail -n 20 "$LOG" >&2; die "xcodebuild -create-xcframework 失败"; }
 
-log "完成：$OUT（$(du -sh "$OUT" | cut -f1)）"
+log "完成：${OUT}（$(du -sh "$OUT" | cut -f1)）"
 printf '\n下一步（一次性，改宿主 App 工程）：\n'
 printf '  1) 把 %s 链接进 App target（SPM: .binaryTarget(name: "CapISH", path: "...")）\n' "$OUT"
 printf '  2) App 的 HEADER_SEARCH_PATHS 加上 %s，__has_include("ISHShellExecutor.h") 才会走真引擎\n' "$HEADERS"
