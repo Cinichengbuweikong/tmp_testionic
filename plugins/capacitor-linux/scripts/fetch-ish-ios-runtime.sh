@@ -10,19 +10,24 @@
 # libfakefs.a）。xcodeproj 里的 libish 之类 target 是 0 源文件的壳，真正的编译由
 # app/xcode-meson.sh + app/xcode-ninja.sh 在 Build Phase 里跑，所以这里复刻那条路。
 #
+# 切片（xcframework 必须覆盖 App 会构建的所有架构）：
+#   ios-arm64      iphoneos/arm64
+#   iossim-arm64   iphonesimulator/arm64      ┐ lipo 成同一个 iossim 库
+#   iossim-x86_64  iphonesimulator/x86_64     ┘
+# 少了 x86_64 那片，在 Intel Mac / generic simulator 构建时链接会报
+# "_OBJC_CLASS_$_ISHShellExecutor, referenced from ... symbol(s) not found for architecture x86_64"。
+#
 # 产物（都 git-ignore）：
 #   ios/ish-vendor/         iSH-ARM64 源码
 #   ios/ish-build/          meson 构建目录 + 合并后的 .a + build.log
-#   ios/CapISH.xcframework  最终 framework（device + simulator）
-#   ios/ish-headers/        ISHShellExecutor.h（CapISHBridge 用它走真引擎路径）
+#   ios/CapISH.xcframework  最终 framework
+#   ios/ish-headers/        ISHShellExecutor.h
+#   ios/Sources/CapISHBridge/include/ISHShellExecutor.h（桥靠 __has_include 判断引擎）
 #
 # 用法：
 #   bash scripts/fetch-ish-ios-runtime.sh
-#   ISH_DEBUG=1 bash scripts/fetch-ish-ios-runtime.sh      # 打印每条命令
-#   ISH_COMMIT=<sha> bash scripts/fetch-ish-ios-runtime.sh # 固定引擎版本
-#
-# 失败时把关键行抛成 GitHub annotation（::error::），这样公开 API 也能读到，
-# 不需要 token 拉日志。
+#   ISH_DEBUG=1 bash scripts/fetch-ish-ios-runtime.sh
+#   ISH_COMMIT=<sha> bash scripts/fetch-ish-ios-runtime.sh
 
 set -euo pipefail
 
@@ -42,7 +47,6 @@ mkdir -p "$BUILD"
 : > "$LOG"
 
 log() { printf '[ish] %s\n' "$*"; }
-warn() { printf '[ish] WARN: %s\n' "$*" >&2; }
 die() { printf '[ish] ERROR: %s\n' "$*" >&2; echo "::error::[ish] $*" >&2; exit 1; }
 
 on_err() {
@@ -61,7 +65,6 @@ command -v xcrun >/dev/null 2>&1 || die "找不到 xcrun"
 command -v python3 >/dev/null 2>&1 || die "找不到 python3（装 meson 用）"
 
 log "xcodebuild: $(xcodebuild -version 2>/dev/null | head -n 1)"
-log "pwd=$PWD"
 
 # meson + ninja。macOS runner 的 Homebrew python 是 PEP 668（externally-managed），
 # `pip install --user` 会被拒绝，所以统一装进一个 venv 再把它的 bin 放到 PATH 前面。
@@ -72,31 +75,22 @@ ensure_build_tools() {
     command -v "$t" >/dev/null 2>&1 || missing=1
   done
   if [ "$missing" -eq 0 ]; then
-    log "meson: $(meson --version 2>&1 | head -n 1)"
-    log "ninja: $(ninja --version 2>&1 | head -n 1)"
+    log "meson: $(meson --version 2>&1 | head -n 1) / ninja: $(ninja --version 2>&1 | head -n 1)"
     return 0
   fi
-
   log "安装 meson + ninja（venv: ${venv}）"
   if [ ! -x "$venv/bin/python3" ]; then
-    python3 -m venv "$venv" >>"$LOG" 2>&1 || {
-      tail -n 8 "$LOG" >&2
-      die "创建 venv 失败（${LOG}）"
-    }
+    python3 -m venv "$venv" >>"$LOG" 2>&1 || { tail -n 8 "$LOG" >&2; die "创建 venv 失败（${LOG}）"; }
   fi
   "$venv/bin/python3" -m pip install --quiet --disable-pip-version-check \
     --upgrade pip meson ninja >>"$LOG" 2>&1 || {
     tail -n 12 "$LOG" >&2
-    grep -m 3 -E 'ERROR|error:' "$LOG" | while IFS= read -r line; do
-      echo "::error::PIP|$line" >&2
-    done
     die "venv 里装不上 meson/ninja（${LOG}）"
   }
   export PATH="$venv/bin:$PATH"
   command -v meson >/dev/null 2>&1 || die "装完还是找不到 meson（PATH=${PATH}）"
   command -v ninja >/dev/null 2>&1 || die "装完还是找不到 ninja（PATH=${PATH}）"
-  log "meson: $(meson --version 2>&1 | head -n 1)"
-  log "ninja: $(ninja --version 2>&1 | head -n 1)"
+  log "meson: $(meson --version 2>&1 | head -n 1) / ninja: $(ninja --version 2>&1 | head -n 1)"
 }
 ensure_build_tools
 
@@ -120,21 +114,20 @@ ISH_SRC="$VENDOR/ish-arm64"
 
 mkdir -p "$HEADERS"
 cp "$ISH_SRC/app/ISHShellExecutor.h" "$HEADERS/" || die "复制 ISHShellExecutor.h 失败"
-
-# 把同样的头放进桥 target 的 include/：CapISHBridge.m 靠
-# `__has_include("ISHShellExecutor.h")` 决定走真引擎还是桩，所以"头存在"必须与
-# "framework 存在"同时成立。这个复制出来的文件是生成物（见 .gitignore）。
 BRIDGE_INCLUDE="$PLUGIN_DIR/ios/Sources/CapISHBridge/include"
 mkdir -p "$BRIDGE_INCLUDE"
 cp "$HEADERS/ISHShellExecutor.h" "$BRIDGE_INCLUDE/" || die "复制头到 CapISHBridge/include 失败"
 
+# build_slice <sdk> <arch> <triple> -> 打印合并后的 .a 路径
 build_slice() {
-  local sdk="$1"
-  local triple="$2"
-  local sdkpath build_dir cross libs merged exec_obj a
+  local sdk="$1" arch="$2" triple="$3"
+  local sdkpath build_dir cross merged exec_obj libs=() a
+  local cpu_family="$arch"
+  [ "$arch" = "arm64" ] && cpu_family="aarch64"
+
   sdkpath="$(xcrun --sdk "$sdk" --show-sdk-path)" || die "找不到 $sdk SDK"
-  build_dir="$BUILD/meson-$sdk"
-  cross="$BUILD/cross-$sdk.txt"
+  build_dir="$BUILD/meson-$sdk-$arch"
+  cross="$BUILD/cross-$sdk-$arch.txt"
 
   {
     echo '[binaries]'
@@ -143,8 +136,8 @@ build_slice() {
     echo ''
     echo '[host_machine]'
     echo "system = 'darwin'"
-    echo "cpu_family = 'aarch64'"
-    echo "cpu = 'aarch64'"
+    echo "cpu_family = '${cpu_family}'"
+    echo "cpu = '${cpu_family}'"
     echo "endian = 'little'"
     echo ''
     echo '[built-in options]'
@@ -156,7 +149,7 @@ build_slice() {
   } > "$cross"
 
   rm -rf "$build_dir"
-  log "meson setup [$sdk]"
+  log "meson setup [$sdk/$arch]"
   (
     unset SDKROOT IPHONEOS_DEPLOYMENT_TARGET
     export CC_FOR_BUILD="clang"
@@ -164,78 +157,86 @@ build_slice() {
       --cross-file "$cross" \
       -Dguest_arch=arm64 \
       --buildtype=release
-  ) >>"$LOG" 2>&1 || { tail -n 40 "$LOG" >&2; die "meson setup 失败 [$sdk]（${LOG}）"; }
+  ) >>"$LOG" 2>&1 || { tail -n 40 "$LOG" >&2; die "meson setup 失败 [$sdk/$arch]（${LOG}）"; }
 
-  log "ninja [$sdk]"
+  log "ninja [$sdk/$arch]"
   ninja -C "$build_dir" >>"$LOG" 2>&1 || {
     tail -n 60 "$LOG" >&2
     grep -m 5 -E 'error:|fatal error|FAILED' "$LOG" | while IFS= read -r line; do
       echo "::error::[ish] $line" >&2
     done
-    die "ninja 失败 [$sdk]（${LOG}）"
+    die "ninja 失败 [$sdk/$arch]（${LOG}）"
   }
 
-  libs=()
   while IFS= read -r a; do
     libs+=("$a")
   done < <(find "$build_dir" -name '*.a' -type f | sort)
-  [[ ${#libs[@]} -gt 0 ]] || die "ninja 成功但没有 .a 产物（meson.build 变了？）"
-  log "静态库 [$sdk]: ${#libs[@]} 个（$(basename "${libs[0]}") ...）"
+  [[ ${#libs[@]} -gt 0 ]] || die "ninja 成功但没有 .a 产物 [$sdk/$arch]"
+  log "静态库 [$sdk/$arch]: ${#libs[@]} 个"
 
-  exec_obj="$BUILD/ISHShellExecutor-$sdk.o"
-  log "编译 ISHShellExecutor.m [$sdk]"
+  exec_obj="$BUILD/ISHShellExecutor-$sdk-$arch.o"
+  log "编译 ISHShellExecutor.m [$sdk/$arch]"
   xcrun --sdk "$sdk" clang \
     -target "$triple" -isysroot "$sdkpath" \
     -fobjc-arc -fblocks -O2 -DGUEST_ARM64=1 \
     -I"$ISH_SRC" -I"$ISH_SRC/app" -I"$ISH_SRC/deps/libarchive/libarchive" \
     -c "$ISH_SRC/app/ISHShellExecutor.m" -o "$exec_obj" >>"$LOG" 2>&1 \
-    || { tail -n 30 "$LOG" >&2; die "ISHShellExecutor.m 编译失败 [$sdk]"; }
+    || { tail -n 30 "$LOG" >&2; die "ISHShellExecutor.m 编译失败 [$sdk/$arch]"; }
 
-  merged="$BUILD/libcapish-$sdk.a"
+  merged="$BUILD/libcapish-$sdk-$arch.a"
   rm -f "$merged"
-  log "libtool 合并 [$sdk]"
+  log "libtool 合并 [$sdk/$arch]"
   xcrun --sdk "$sdk" libtool -static -o "$merged" "${libs[@]}" "$exec_obj" >>"$LOG" 2>&1 \
-    || { tail -n 30 "$LOG" >&2; die "libtool 合并失败 [$sdk]"; }
+    || { tail -n 30 "$LOG" >&2; die "libtool 合并失败 [$sdk/$arch]"; }
   printf '%s\n' "$merged"
 }
 
-DEVICE_LIB="$(build_slice iphoneos "arm64-apple-ios${IOS_MIN}" | tail -n 1)"
-SIM_LIB="$(build_slice iphonesimulator "arm64-apple-ios${IOS_MIN}-simulator" | tail -n 1)"
-[[ -f "$DEVICE_LIB" ]] || die "device 静态库没有产出"
-[[ -f "$SIM_LIB" ]] || die "simulator 静态库没有产出"
+DEVICE_LIB="$(build_slice iphoneos arm64 "arm64-apple-ios${IOS_MIN}" | tail -n 1)"
+SIM_ARM_LIB="$(build_slice iphonesimulator arm64 "arm64-apple-ios${IOS_MIN}-simulator" | tail -n 1)"
+SIM_X86_LIB="$(build_slice iphonesimulator x86_64 "x86_64-apple-ios${IOS_MIN}-simulator" | tail -n 1)"
+for f in "$DEVICE_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB"; do
+  [[ -f "$f" ]] || die "缺少切片产物：$f"
+done
+
+SIM_LIB="$BUILD/libcapish-iossim.a"
+log "lipo 合并模拟器切片 (arm64 + x86_64)"
+xcrun lipo -create -output "$SIM_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB" >>"$LOG" 2>&1 \
+  || die "lipo 合并失败"
+xcrun lipo -info "$SIM_LIB" >&2 || true
 
 log "组装 xcframework"
 rm -rf "$OUT"
-mkdir -p "$BUILD/xcf/ios-arm64/Headers" "$BUILD/xcf/iossim-arm64/Headers"
+mkdir -p "$BUILD/xcf/ios-arm64/Headers" "$BUILD/xcf/iossim/Headers"
 cp "$DEVICE_LIB" "$BUILD/xcf/ios-arm64/libcapish.a"
-cp "$SIM_LIB" "$BUILD/xcf/iossim-arm64/libcapish.a"
+cp "$SIM_LIB" "$BUILD/xcf/iossim/libcapish.a"
 cp "$HEADERS/ISHShellExecutor.h" "$BUILD/xcf/ios-arm64/Headers/"
-cp "$HEADERS/ISHShellExecutor.h" "$BUILD/xcf/iossim-arm64/Headers/"
+cp "$HEADERS/ISHShellExecutor.h" "$BUILD/xcf/iossim/Headers/"
 
 xcrun xcodebuild -create-xcframework \
   -library "$BUILD/xcf/ios-arm64/libcapish.a" -headers "$BUILD/xcf/ios-arm64/Headers" \
-  -library "$BUILD/xcf/iossim-arm64/libcapish.a" -headers "$BUILD/xcf/iossim-arm64/Headers" \
+  -library "$BUILD/xcf/iossim/libcapish.a" -headers "$BUILD/xcf/iossim/Headers" \
   -output "$OUT" >>"$LOG" 2>&1 || { tail -n 20 "$LOG" >&2; die "xcodebuild -create-xcframework 失败"; }
 
 log "完成：${OUT}（$(du -sh "$OUT" | cut -f1)）"
 
-# 校验产物是不是"真"的（只有 .a 里出现 iSH 的符号才算成功）。结果同时打到日志与
-# annotation（::notice::），不下载 artifact 也能从公开 API 看到。
+# 校验产物：.a 里必须同时有 ISHShellExecutor 类和 iSH 内核符号，且架构覆盖正确。
 verify_archive() {
-  local lib="$1" tag="$2" bytes members cls ishs
+  local lib="$1" tag="$2" bytes members cls ishs archs
   bytes=$(wc -c < "$lib" | tr -d ' ')
   members=$(ar t "$lib" 2>/dev/null | wc -l | tr -d ' ')
+  archs=$(xcrun lipo -archs "$lib" 2>/dev/null || echo '?')
   nm -g "$lib" > "$BUILD/syms-$tag.txt" 2>/dev/null || true
   cls=$(grep -c 'OBJC_CLASS_\$_ISHShellExecutor' "$BUILD/syms-$tag.txt" 2>/dev/null || true)
   ishs=$(grep -c ' T _do_execve\| T _task_start\| T _become_new_init_child' "$BUILD/syms-$tag.txt" 2>/dev/null || true)
-  log "校验 [$tag]: ${bytes} bytes, ${members} members, ISHShellExecutor 类=${cls}, iSH 内核符号=${ishs}"
-  printf '::notice::[ish] %s: %s bytes / %s members / ISHShellExecutor-class=%s / kernel-syms=%s\n' \
-    "$tag" "$bytes" "$members" "${cls:-0}" "${ishs:-0}"
+  log "校验 [$tag]: ${bytes} bytes, ${members} members, archs=${archs}, 类=${cls}, 内核符号=${ishs}"
+  printf '::notice::[ish] %s: %s bytes / %s members / archs=%s / class=%s / kernel=%s\n' \
+    "$tag" "$bytes" "$members" "$archs" "${cls:-0}" "${ishs:-0}"
 }
 verify_archive "$DEVICE_LIB" device
 verify_archive "$SIM_LIB" sim
+
 printf '\n下一步（一次性，改宿主 App 工程）：\n'
-printf '  1) 把 %s 链接进 App target（SPM: .binaryTarget(name: "CapISH", path: "...")）\n' "$OUT"
-printf '  2) App 的 HEADER_SEARCH_PATHS 加上 %s，__has_include("ISHShellExecutor.h") 才会走真引擎\n' "$HEADERS"
-printf '  3) 静态库里是 ObjC 类（ISHShellExecutor），链接时加 -ObjC 或 -force_load\n'
+printf '  1) 把 %s 链接进 App target（SPM: binaryTarget 指向该 xcframework）\n' "$OUT"
+printf '  2) 头文件 %s 需要能被桥看到（本脚本已复制一份到 CapISHBridge/include/）\n' "$HEADERS"
+printf '  3) 桥直接引用 ISHShellExecutor 类，所以不需要 -ObjC\n'
 printf '  4) npx cap sync ios 后正常构建\n'

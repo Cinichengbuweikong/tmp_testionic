@@ -47,14 +47,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=CapISH-xcframework" \
-                --jq '.artifacts[0].id // empty' || true)
-          if [ -z "${id}" ]; then
+          id=$(gh run list --workflow=ios-ish.yml --commit "${GITHUB_SHA}" --limit 1 \
+                 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)
+          if [ -n "${id:-}" ]; then
+            art=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/artifacts" \
+                    --jq '.artifacts[] | select(.name=="CapISH-xcframework") | .id' 2>/dev/null | head -1 || true)
+            echo "本 commit 的 ios-ish run=${id} artifact=${art:-none}"
+          fi
+          if [ -z "${art:-}" ]; then
+            art=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=CapISH-xcframework" \
+                    --jq '.artifacts[0].id // empty' 2>/dev/null || true)
+            echo "回退到最新 CapISH 工件 artifact=${art:-none}"
+          fi
+          if [ -z "${art:-}" ]; then
             echo "没有 CapISH-xcframework 工件 -> 走桩路径（支持 false）"
             exit 0
           fi
-          echo "下载 CapISH 工件 id=${id}"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > capish.zip
+          echo "下载 CapISH 工件 id=${art}"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${art}/zip" > capish.zip
           rm -rf capish-artifact && mkdir -p capish-artifact
           unzip -q -o capish.zip -d capish-artifact
           ls -R capish-artifact | head -30
