@@ -38,12 +38,23 @@ jobs:
       - name: Build local plugins
         run: npm run build:plugins
 
+      # iOS 上 iSH 需要一份**离线的 Alpine rootfs**：它本身就是 gzip 的 tar，
+      # 直接当 SPM 资源放好即可（插件里的 capish_extract_rootfs 会解到 fakefs 根目录）。
+      # 版本与 runtime.lock.json 对齐（3.23.8）。只有开启引擎时才需要。
+      - name: Fetch Alpine rootfs for iOS (optional)
+        if: vars.ENABLE_CAPISH_ENGINE == 'true'
+        run: |
+          set -euo pipefail
+          dest=plugins/capacitor-linux/ios/Sources/CapISHBridge/Resources/rootfs.tar
+          url=https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/alpine-minirootfs-3.23.8-aarch64.tar.gz
+          curl -fsSL --retry 3 "$url" -o "$dest"
+          ls -l "$dest"
+
       # iSH-ARM64 引擎（CapISH.xcframework，~2MB）是 macOS 产物、不入库：
       # 如果 ios-ish 那个 workflow 已经产出过工件，这里就下载并接进插件；
       # 没有的话走桩路径（getCapabilities().supported == false），CI 照样绿。
-      # 默认**不**接 iSH 引擎：引擎目前只做到"能编能链"，客户机内核还没 boot
-      # （ISHShellExecutor 不负责 boot，见 README 第 7 节），接上会让 App 卡在 exec 上。
-      # 等 boot 逻辑落地后，把仓库变量 ENABLE_CAPISH_ENGINE 设成 true 即可启用。
+      # 默认**不**接引擎：客户机 boot 逻辑刚落地，先在真机/模拟器上验证过再默认打开。
+      # 打开方式：仓库 Settings → Variables 加 ENABLE_CAPISH_ENGINE=true。
       - name: Fetch CapISH engine artifact (optional)
         if: vars.ENABLE_CAPISH_ENGINE == 'true'
         continue-on-error: true
