@@ -47,6 +47,21 @@ int capish_exec(const char *utf8_command,
 /** 给客户机进程发信号（默认 SIGKILL 由调用方传 9）。返回 1 表示找到了进程。 */
 int capish_kill(int pid, int signal_number);
 
+/**
+ * 启动客户机内核（iSH 的 boot 序列，实现在 scripts/vm/capish-boot-ios.c，编进
+ * libcapish.a）。`rootfs_root` 是 fakefs 根目录（客户机的 / 映射到它下面的 data/）。
+ *
+ * 异步：立即返回；结果用 `capish_boot_state()` 轮询（2 = ready）。
+ * 注意：**不 boot 就不能 `capish_exec`**（那样会永久阻塞）。
+ */
+int capish_boot(const char *rootfs_root);
+
+/** 0=idle 1=booting 2=ready 3=failed（配合 `capish_boot`）。 */
+int capish_boot_state(void);
+
+/** boot 失败原因（静态缓冲，不要释放）。 */
+const char *capish_boot_error(void);
+
 /** 引擎缺失时给调用方看的说明（静态字符串，不要释放）。 */
 const char *capish_unavailable_reason(void);
 

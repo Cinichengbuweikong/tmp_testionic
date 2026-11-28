@@ -1,3 +1,117 @@
+## 交接点（2026-11-28 20:00）：capacitor-linux —— iOS 引擎已能编译/链接，**还差"boot 客户机内核"**
+
+### 一句话现状
+
+- **Android**：完整可用（`8911e25` + `94f7216`）。离线 Alpine、流式 stdio、`sendKey`、
+  9p 共享、**整盘持久化**（`rootfsMode:'disk'`，`apk add` 的包重启还在）、崩溃隔离，
+  真机 autotest `ok:true`。
+- **iOS**：引擎 **iSH-ARM64** 已经能在 CI 里用 meson 编出 `CapISH.xcframework`
+  （device/simulator 各 arm64、87 成员、~1MB），并且**成功链接进 App**
+  （`ios.yml` 的 `Build app for simulator` 实测绿）。但**客户机还不会启动**，
+  所以 `exec()` 只能超时返回。默认 CI **不接引擎**（见下面 `ENABLE_CAPISH_ENGINE`），保持绿。
+
+### 最近提交（都在 main）
+
+```
+e887da9 fix(linux-ios): exec 放后台队列 + 默认不接引擎（否则 App 会因客户机未 boot 而冻住）
+d4e646e docs(linux): README 补绝对路径、锁文件位置、整机持久化现状，新增 FAQ（chroot/启动耗时/体积）
+6bdeb54 fix(linux-ios): 看门狗提前到 capish_exec 之前武装
+2af3405 docs(linux-ios): README 第 7 节改成「CI 已证明」与「还缺 boot 客户机内核」
+dd0c0b8 fix(linux-ios): exec 加超时看门狗
+90608ee fix(linux-ios): 补 ProcessExitedNotification 定义 + 链 sqlite3/z/bz2/lzma
+006a36d fix(ios-ish): 去掉 x86_64 切片（上游 gadget 只有 aarch64 宿主）
+9723185 fix(ios-ish): 补 x86_64 模拟器切片（后来证明不可行，已回退）
+```
+
+### iOS 构建/链接已经踩平的坑（别再踩）
+
+1. **构建方式必须用 meson**（不是 xcodebuild）：iSH 的 emulator 主体（kernel/fs/emu/asbestos）
+   是 `ish-arm64/meson.build` 编的（`default_library=static` → `libish.a`/`libish_emu.a`/`libfakefs.a`）；
+   xcodeproj 里的 `libish` 等 target 是 **0 源文件的壳**，真正编译在 Build Phase 里调
+   `app/xcode-meson.sh` + `app/xcode-ninja.sh`。脚本现在的做法：cross file（`-target
+   arm64-apple-ios15.0[-simulator]`、`-isysroot`）+ `meson setup -Dguest_arch=arm64 --buildtype=release`
+   + `ninja`，然后把 build 目录里所有 `.a` + 单独编的 `app/ISHShellExecutor.m` 用 `libtool -static` 合并。
+2. **x86_64 模拟器切片编不出来**：`meson.build:120` 要 `asbestos/guest-arm64/gadgets-x86_64/entry.S`，
+   上游没有这个目录（gadget 后端只有 aarch64 宿主汇编）。所以模拟器只能 arm64：
+   `ios.yml` 构建时加了 `ARCHS=arm64 EXCLUDED_ARCHS=x86_64`；Intel Mac 的 x86_64 模拟器不支持。
+3. **链接缺两个符号**：
+   - `_sqlite3_*`（`fs/fake-db.c` 用 sqlite 存 inode 表）→ `linkerSettings: [.linkedLibrary("sqlite3"), "z", "bz2", "lzma"]`；
+   - `_ProcessExitedNotification`（iSH App 层的全局变量，我们不编 App 层）→
+     `ios/Sources/CapISHBridge/CapISHGlobals.m` 里定义 `NSString *const ProcessExitedNotification = @"ProcessExitedNotification";`。
+4. **不需要 `-ObjC`**：桥里**直接引用** `[ISHShellExecutor class]`（不是 `NSClassFromString`），
+   链接器就不会把静态库里的 ObjC 类当死代码丢掉。
+5. **macOS bash 3.2 的雷**：`$var` 后紧跟中文全角字符（如 `）`）会被当成变量名的一部分 →
+   `unbound variable`。脚本里所有这种地方都必须写 `${var}`（有 8 处踩过）。
+6. **macOS runner 的 pip 是 PEP668**：`pip install --user` 会被拒 → 脚本改成建 venv 再装 meson/ninja。
+7. **CI 里看不到 job 日志**（公开 API 需要 token）→ 所有失败路径都把关键行
+   `echo "::error::..."`，我靠 `check-runs/<jobId>/annotations` 读错误。这个套路很好用，继续用。
+
+### ⚠️ 下一步（iOS 真正跑起来的唯一缺口）：boot 客户机内核
+
+`ISHShellExecutor` **只负责"在已 boot 的内核里 exec"**：
+`become_new_init_child()` → `do_execve()` → `task_start()`，全都假设 `current`（init 任务）已存在。
+**没有 boot 时 `become_new_init_child()` 会永久阻塞**（不是返回错误）—— 实测把 WebView 线程冻住、
+autotest 连结果都打不出来（这就是我把 `capish_exec` 挪到后台队列 + 默认不接引擎的原因）。
+
+iSH 的 boot 序列（已从 `ish-arm64/xX_main_Xx.h` + `main.c` 挖出来，照抄即可）：
+
+```c
+// argv0="ish"，-f <rootdir> 走 fakefs；xX_main_Xx 内部做的等价步骤：
+char root_realpath[MAX_PATH+1] = "/";
+realpath("<Documents>/linuxvm/ish-root", root_realpath);
+strcat(root_realpath, "/data");              // 注意 fakefs 的 / 映射到 <root>/data
+mount_root(&fakefs, root_realpath);
+become_first_process();
+current->thread = pthread_self();
+generic_mknodat(AT_PWD, "/dev/null",   S_IFCHR|0666, dev_make(MEM_MAJOR, DEV_NULL_MINOR));
+// 同样建 zero/full/random/urandom/tty/console/ptmx
+do_execve("/bin/sh", argc, argv, envp);      // 常驻 shell（我们后续 exec 的"父"）
+tty_drivers[TTY_CONSOLE_MAJOR] = &real_tty_driver;
+create_piped_stdio();                        // 或 create_stdio(console, TTY_CONSOLE_MAJOR, 1)
+exit_hook = 自己的回调;                        // ★ 不要用 CLI 的 exit_handler（它调 exit()/ _exit()）
+// main.c 在这之后还做：
+do_mount(&procfs, "proc", "/proc", "", 0);
+do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
+task_run_current();                          // ★ 进入客户机循环，永不返回
+```
+
+需要的头（`xX_main_Xx.h` 的 include 列表就是答案）：`kernel/init.h`、`kernel/fs.h`、
+`fs/devices.h`、`fs/dev.h`、`fs/path.h`、`fs/real.h`、`kernel/native_offload.h`，
+另外 `mount_root/become_first_process/create_piped_stdio/tty_drivers/real_tty_driver/exit_hook/
+task_run_current/procfs/devptsfs/do_mount` 的声明分散在 `kernel/*.h`、`fs/*.h` 里。
+
+**实现建议（最省事的落法）**：
+1. 在插件里放 `scripts/vm/capish-boot-ios.c`，导出 `int capish_boot(const char *rootdir)`；
+   **不要**编进 SPM target（它要 iSH 的头），而是让 `fetch-ish-ios-runtime.sh` 用
+   `-I$ISH_SRC -I$ISH_SRC/app ...` 把它编成 `.o` 塞进 `libcapish.a`（和 ISHShellExecutor.m 一样）；
+   桥里只声明 `int capish_boot(const char *);` 和 `int capish_boot_ready(void);`。
+2. rootfs 解包：iOS 上没有 `tar`，用 zlib（`gzopen/gzread`）+ 手写 512 字节 tar header 解析，
+   把 `rootfs.tar`（构建期已产出的那份 Alpine aarch64，见 Android 的 `runtime/android/assets/linux/rootfs.tar`）
+   解到 `<Documents>/linuxvm/ish-root/data/`。**注意 fakefs 需要 sqlite 的 fake-db 一致**，
+   如果解包后 iSH 起不来，改用 iSH 自己的 fakefs API 建 inode（`fs/fake-db.c` 的 `path_create` 等）。
+3. 用 `dispatch_async` 在专门的后台线程跑 `capish_boot()`（它会 block 在 `task_run_current()`），
+   boot 完成后 `capish_boot_ready()` 返回 1，`capish_available()` 才返回 1。
+4. `start()` 语义改成"boot 客户机"；`exec()` 继续走 `ISHShellExecutor`（它此时能工作了）。
+5. 之后再补：`write()/sendKey()`（要接 real tty：`create_stdio` + `real_tty_driver` 的输入路径）、
+   bind mount 版 `getShareDir()`。
+6. 打开引擎的开关：在 GitHub 仓库 **Settings → Variables** 里加 `ENABLE_CAPISH_ENGINE=true`
+   （`ios.yml` 用 `if: vars.ENABLE_CAPISH_ENGINE == 'true'` 控制是否下载并链接工件）。
+
+### 验证基线（真机 Android，2026-11-28）
+
+| 项 | 值 |
+|---|---|
+| 启动（ram / disk 首次 / disk 之后） | ~25s / ~61s / ~36–48s |
+| `exec` | `uname -m`=`aarch64`、`apk --version` 正常、`python3 -c "print(2**10)"`=1024 |
+| 交互 stdin | `read name` + `write()` → `HELLO-from-webview` |
+| 特殊键 | `sendKey({key:'ctrl+l'})` + `echo KEY-$((4+4))` → `KEY-8`（Ctrl-C 会打断前台程序，但之后控制台**偶尔**会卡住；`exec` 会 fail-fast 报 `CONSOLE_UNRESPONSIVE`，`restart()` 恢复） |
+| 共享目录 | 宿主 `…/files/linuxvm/share` ↔ 客户机 `/mnt/host`，双向 `SHARE-5` |
+| 持久化 | 重启后 `apk add file` 的 `file-5.46`、`/usr/bin/capinux-test` 都还在，`df -h /` → `/dev/vda 1.9G` |
+| 崩溃隔离 | `echo c > /proc/sysrq-trigger` → `vmExited{requested:false}` + `crashed`，App 存活 |
+| 体积 | runtime ≈85.5MB（QEMU 68.8 + 内核 10.4 + rootfs 6.3 + tar 6.3），`disk.img` 表观 2GB / 实占 ~30MB |
+
+---
+
 # 项目上下文存档（HANDOFF）
 
 

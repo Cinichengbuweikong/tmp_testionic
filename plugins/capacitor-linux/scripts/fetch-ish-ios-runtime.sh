@@ -197,8 +197,20 @@ build_slice() {
 
   merged="$BUILD/libcapish-$sdk-$arch.a"
   rm -f "$merged"
+
+  # 客户机内核的 boot 序列（照 iSH 的 xX_main_Xx 搬过来、去掉 exit()）。
+  # 它要 include iSH 的内部头文件，所以只能在这里编，不能放进 SPM target。
+  boot_obj="$BUILD/capish-boot-$sdk-$arch.o"
+  log "编译 capish-boot-ios.c [$sdk/$arch]"
+  xcrun --sdk "$sdk" clang \
+    -target "$triple" -isysroot "$sdkpath" \
+    -std=gnu11 -O2 -DGUEST_ARM64=1 \
+    -I"$ISH_SRC" -I"$ISH_SRC/app" -I"$ISH_SRC/deps/libarchive/libarchive" \
+    -c "$HERE/vm/capish-boot-ios.c" -o "$boot_obj" >>"$LOG" 2>&1 \
+    || { grep -m 6 -E 'error:' "$LOG" | while IFS= read -r line; do echo "::error::[ish] $line" >&2; done; die "capish-boot-ios.c 编译失败 [$sdk/$arch]"; }
+
   log "libtool 合并 [$sdk/$arch]"
-  xcrun --sdk "$sdk" libtool -static -o "$merged" "${libs[@]}" "$exec_obj" >>"$LOG" 2>&1 \
+  xcrun --sdk "$sdk" libtool -static -o "$merged" "${libs[@]}" "$exec_obj" "$boot_obj" >>"$LOG" 2>&1 \
     || { tail -n 30 "$LOG" >&2; die "libtool 合并失败 [$sdk/$arch]"; }
   printf '%s\n' "$merged"
 }
