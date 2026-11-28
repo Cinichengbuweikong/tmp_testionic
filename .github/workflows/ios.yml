@@ -41,7 +41,11 @@ jobs:
       # iSH-ARM64 引擎（CapISH.xcframework，~2MB）是 macOS 产物、不入库：
       # 如果 ios-ish 那个 workflow 已经产出过工件，这里就下载并接进插件；
       # 没有的话走桩路径（getCapabilities().supported == false），CI 照样绿。
+      # 默认**不**接 iSH 引擎：引擎目前只做到"能编能链"，客户机内核还没 boot
+      # （ISHShellExecutor 不负责 boot，见 README 第 7 节），接上会让 App 卡在 exec 上。
+      # 等 boot 逻辑落地后，把仓库变量 ENABLE_CAPISH_ENGINE 设成 true 即可启用。
       - name: Fetch CapISH engine artifact (optional)
+        if: vars.ENABLE_CAPISH_ENGINE == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

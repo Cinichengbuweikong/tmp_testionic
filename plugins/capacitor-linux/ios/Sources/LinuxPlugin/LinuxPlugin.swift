@@ -198,12 +198,16 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
         // （实测：模拟器里 autotest 就是因此拿不到结果）。
         box.armWatchdog()
         let user = Unmanaged.passRetained(box).toOpaque()
-        let pid = capish_exec(command, ishLineTrampoline, ishDoneTrampoline, user)
-        if pid > 0 {
+        // 必须放到后台队列：客户机内核没 boot 时 `become_new_init_child()` 可能**永久阻塞**
+        // （实测：模拟器里 WebView 整个冻住，autotest 连结果都打不出来）。
+        // 放后台后最坏情况是看门狗到点 resolve `{timedOut:true}`，UI/JS 不会死。
+        DispatchQueue.global(qos: .userInitiated).async {
+            let pid = capish_exec(command, ishLineTrampoline, ishDoneTrampoline, user)
+            guard pid > 0 else { return }   // pid<0：C 侧已经回调过 done
             box.pid = pid
-            runningPids.insert(pid)
-        } else {
-            // C 侧已经（或即将）回调 done，这里不重复处理。
+            DispatchQueue.main.async { [weak self] in
+                self?.runningPids.insert(pid)
+            }
         }
     }
 
