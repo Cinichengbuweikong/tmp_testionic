@@ -193,6 +193,10 @@ jobs:
             # 未定义符号压成一行（每 step 的 annotation 数量有限，这样一次能看全）
             undef=$(grep -E '^ *"_' build-ios.log | sed 's/^ *//; s/",.*//; s/"//g' | sort -u | tr '\n' ' ' | cut -c1-900)
             [ -n "$undef" ] && echo "::error::UNDEFINED: ${undef}"
+            # 兜底：有些失败没有 "error:" 前缀（SPM/签名/资源冲突），把最后 12 行也抛出来
+            tail -n 12 build-ios.log | sed 's/^ *//' | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::LOG|${line}"
+            done
             first_error=$(grep -m1 -E "error:" build-ios.log | sed 's/^ *//' || true)
             echo "::error::${first_error:-iOS build failed (see log)}"
             # 很多错误（尤其是 SPM 解析失败）真正的原因在 "error:" 之后的几行，逐行抛 annotation
