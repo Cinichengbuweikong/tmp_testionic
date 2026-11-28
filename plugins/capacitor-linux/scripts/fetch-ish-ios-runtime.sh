@@ -56,6 +56,21 @@ on_err() {
 }
 trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
+# 把日志里的错误行抛成 annotation：公开 API（check-runs/<jobId>/annotations）就能看到，
+# 不需要 token 下载 job 日志。GitHub 每个 step 最多保留 10 条左右，所以只挑关键的。
+dump_log_annotations() {
+  local label="$1" n=0 line
+  {
+    grep -E 'ERROR:|error:|fatal error|FAILED|Traceback|not found' "$LOG" 2>/dev/null | head -n 6
+    tail -n 6 "$LOG" 2>/dev/null
+  } | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    echo "::error::[${label}] ${line}" >&2
+  done
+  n=$(grep -cE 'ERROR:|error:|fatal error|FAILED' "$LOG" 2>/dev/null || true)
+  log "日志里像错误的行：${n:-0}；完整日志见 artifact / 本机 ${LOG}"
+}
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   die "只能在 macOS 上运行（当前 $(uname -s)）；iOS 静态库没有跨平台构建的办法"
 fi
@@ -157,14 +172,11 @@ build_slice() {
       --cross-file "$cross" \
       -Dguest_arch=arm64 \
       --buildtype=release
-  ) >>"$LOG" 2>&1 || { tail -n 40 "$LOG" >&2; die "meson setup 失败 [$sdk/$arch]（${LOG}）"; }
+  ) >>"$LOG" 2>&1 || { dump_log_annotations "meson-setup"; die "meson setup 失败 [$sdk/$arch]（${LOG}）"; }
 
   log "ninja [$sdk/$arch]"
   ninja -C "$build_dir" >>"$LOG" 2>&1 || {
-    tail -n 60 "$LOG" >&2
-    grep -m 5 -E 'error:|fatal error|FAILED' "$LOG" | while IFS= read -r line; do
-      echo "::error::[ish] $line" >&2
-    done
+    dump_log_annotations "ninja"
     die "ninja 失败 [$sdk/$arch]（${LOG}）"
   }
 
