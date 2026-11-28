@@ -445,24 +445,36 @@ fork，源码在 `dsh-ios` 仓库的 `ish-arm64/`）：Asbestos 线程码解释�
 | `scripts/fetch-ish-ios-runtime.sh` | ✅ **只能在 macOS 上跑**：sparse clone 固定 commit → 用 **meson**（iSH 自己的构建方式，`default_library=static`）分别编 iphoneos / iphonesimulator 的 `libish.a`+`libish_emu.a`+`libfakefs.a` → 再单独编 `app/ISHShellExecutor.m` → `libtool` 合并 → `xcodebuild -create-xcframework` 产出 `ios/CapISH.xcframework`。失败会把关键行抛成 `::error::` annotation |
 | `.github/workflows/ios-ish.yml` | ✅ **workflow_dispatch 手动触发**（90 分钟上限）：跑上面的脚本，把 xcframework 当 artifact 传上来 |
 
-### 还没做 / 下一步（按顺序）
+### 现在的状态（CI 已证明的部分）
 
-1. **真正跑一次构建**：`gh workflow run ios-ish.yml`（或网页 Actions 点 Run）。本会话没有 Mac，
-   这一步只能在 CI / 你本机的 Xcode 上迭代；脚本用 `ISH_DEBUG=1` 打印每条编译命令，失败会直接
-   `cat` 对应日志，第一处 `error:` 就是要修的地方。
-2. **链接进宿主 App**：把 `ios/CapISH.xcframework` 加进 App target，`HEADER_SEARCH_PATHS` 加上
-   `ios/ish-headers`（脚本末尾会打印精确步骤）。链接成功后 `getCapabilities().supported`
-   会自动变成 `true`（`ISHShellExecutor` 类存在了）。
-3. **交互式 stdin**：`ISHShellExecutor` 只有命令级执行，没有长驻 shell 的 stdin 通道，所以现在
-   iOS 的 `write()` / `sendKey()` 明确返回 `UNSUPPORTED_ON_IOS`。下一步接 iSH 的 real tty
-   （`ish-arm64/fs/dev.c` 的 tty 设备 + `openpty`）。
-4. **共享目录**：iSH 支持 bind mount，接上之后 `getShareDir()` 才能给出 `guestPath`。
-5. **崩溃隔离弱于 Android**：iSH 的客户机跑在 App 进程内（它自己模拟 fork），客户机里的段错误
-   有可能带走 App —— 最终文档不能照抄 Android 的"崩溃不连累 App"。
+- ✅ **引擎能编出来**：`.github/workflows/ios-ish.yml`（手动触发，~3 分钟）用 meson 编出
+  `CapISH.xcframework`：device/arm64 + simulator/arm64，各 87 个成员、~1 MB，
+  含 `ISHShellExecutor` 类和 `do_execve`/`task_start`/`become_new_init_child` 符号。
+  **没有 x86_64 模拟器切片**——iSH-ARM64 的 gadget 后端只有 aarch64 宿主的汇编
+  （`meson.build` 要 `asbestos/guest-arm64/gadgets-x86_64/entry.S`，上游没这个目录），
+  所以 Intel Mac 的 x86_64 模拟器不支持；宿主工程请设 `ARCHS=arm64` / `EXCLUDED_ARCHS=x86_64`。
+- ✅ **引擎能链进 App**：`Package.swift` 用 `#filePath` 探测 `ios/CapISH.xcframework` 是否存在，
+  存在就加 `binaryTarget` 并把 `CapISHBridge` 依赖它；`ios.yml` 会自动从最近一次
+  `ios-ish` 工件下载并接进来。真机/模拟器的 `Build app` 已经在 CI 里**链接成功**。
+- ✅ `exec` 语义：逐行 streaming、stdout/stderr 分流、退出码、**超时看门狗**
+  （`timedOut: true` + SIGKILL，和 Android 一致）。
 
-许可证：iSH 上游 **GPLv3**（`ish-arm64/LICENSE.md`，另有 `LICENSE.IOS` 附加条款），商用前要确认义务。
+### 还没做（iOS 真正跑起来的关键一步）
 
----
+1. **启动客户机内核**。`ISHShellExecutor` 只负责"在已经 boot 好的 iSH 内核里 exec"，
+   它自己不 boot（`become_new_init_child` / `do_execve` / `task_start` 都假设 `current` 任务已存在）。
+   iSH 的 boot 逻辑在 `ish-arm64/xX_main_Xx.h`（`static inline xX_main_Xx()`，只被 `main.c`
+   用到，而 `main.c` 只编进 CLI 的 `ish` 可执行文件）。所以要：
+   - 把 `xX_main_Xx` 那段搬进插件（或编 `main.c` 成对象塞进 archive），
+   - 去掉两处 `exit()`/`_exit()`（CLI 语义，App 里不能有），
+   - 从我们离线打包的 `rootfs.tar`（Alpine aarch64，构建期已产出）解包到 iSH 的 fakefs 根目录，
+     再用它 boot。
+2. 之后才有：`write()`/`sendKey()`（要接 iSH 的 real tty）、bind mount 版 `getShareDir()`。
+3. 隔离弱于 Android：客户机在 App 进程内，客户机段错误可能带走 App。
+
+在此之前，iOS 上的表现是：`getCapabilities().supported === true`（引擎已链接），
+`exec()` 会返回 `timedOut: true`（客户机没启动），`write()/sendKey()` 返回 `UNSUPPORTED_ON_IOS`。
+autotest 的 iOS 分支会把这段结果记进 `linuxIos`，不会让 CI 变红。
 
 ## 8. 已知限制
 

@@ -58,6 +58,11 @@ jobs:
               echo "ios-ish run ${id} 已完成"
               break
             fi
+            # 本 commit 根本没触发 ios-ish（只改了别的文件）就别干等 8 分钟
+            if [ -z "${id}" ] && [ "${i}" -ge 3 ]; then
+              echo "本 commit 没有 ios-ish run，直接用最新工件"
+              break
+            fi
             echo "等 ios-ish run（${i}/32，id=${id:-none} status=${st:-none}）"
             sleep 15
           done
