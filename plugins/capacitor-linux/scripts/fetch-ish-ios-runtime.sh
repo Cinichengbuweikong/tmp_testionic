@@ -209,8 +209,17 @@ build_slice() {
     -c "$HERE/vm/capish-boot-ios.c" -o "$boot_obj" >>"$LOG" 2>&1 \
     || { grep -m 6 -E 'error:' "$LOG" | while IFS= read -r line; do echo "::error::[ish] $line" >&2; done; die "capish-boot-ios.c 编译失败 [$sdk/$arch]"; }
 
+  # rootfs 解包（zlib + 最小 tar 解析器）：把离线 rootfs.tar 铺到 iSH 的 fakefs 根目录
+  rootfs_obj="$BUILD/capish-rootfs-$sdk-$arch.o"
+  log "编译 capish-rootfs-ios.c [$sdk/$arch]"
+  xcrun --sdk "$sdk" clang \
+    -target "$triple" -isysroot "$sdkpath" \
+    -std=gnu11 -O2 \
+    -c "$HERE/vm/capish-rootfs-ios.c" -o "$rootfs_obj" >>"$LOG" 2>&1 \
+    || { grep -m 6 -E 'error:' "$LOG" | while IFS= read -r line; do echo "::error::[ish] $line" >&2; done; die "capish-rootfs-ios.c 编译失败 [$sdk/$arch]"; }
+
   log "libtool 合并 [$sdk/$arch]"
-  xcrun --sdk "$sdk" libtool -static -o "$merged" "${libs[@]}" "$exec_obj" "$boot_obj" >>"$LOG" 2>&1 \
+  xcrun --sdk "$sdk" libtool -static -o "$merged" "${libs[@]}" "$exec_obj" "$boot_obj" "$rootfs_obj" >>"$LOG" 2>&1 \
     || { tail -n 30 "$LOG" >&2; die "libtool 合并失败 [$sdk/$arch]"; }
   printf '%s\n' "$merged"
 }

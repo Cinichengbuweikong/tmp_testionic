@@ -62,6 +62,23 @@ int capish_boot_state(void);
 /** boot 失败原因（静态缓冲，不要释放）。 */
 const char *capish_boot_error(void);
 
+/**
+ * 把离线的 `rootfs.tar`（gzip 的 tar，Alpine aarch64）解到 `dest_dir`。
+ * 实现在 scripts/vm/capish-rootfs-ios.c（zlib + 最小 tar 解析器，iOS 没有 tar 命令）。
+ * 返回 0 成功；失败原因用 `capish_rootfs_error()`。
+ *
+ * iSH 的 fakefs 约定：客户机的 `/` 映射到 `<root>/data`，所以一般这样用：
+ *   capish_extract_rootfs(tar, "<Documents>/linuxvm/ish-root/data");
+ *   capish_boot("<Documents>/linuxvm/ish-root");
+ */
+int capish_extract_rootfs(const char *tar_gz_path, const char *dest_dir);
+
+/** 最近一次解包失败的原因（静态缓冲，不要释放）。 */
+const char *capish_rootfs_error(void);
+
+/** 当前进程内是否成功解包过。 */
+int capish_rootfs_extracted(void);
+
 /** 引擎缺失时给调用方看的说明（静态字符串，不要释放）。 */
 const char *capish_unavailable_reason(void);
 
