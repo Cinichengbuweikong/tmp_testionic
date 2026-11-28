@@ -250,8 +250,25 @@ jobs:
           done
           if ! grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
             echo "::error::autotest marker not found in simulator console"
-            echo "----- sim-console.log (last 60 lines for diagnosis) -----"
-            tail -n 60 sim-console.log || true
+            # 带引擎时 App 可能**启动即崩**（连 stderr 都没有）：把崩溃报告与系统日志抛出来
+            echo "----- crash reports -----"
+            ls -lt ~/Library/Logs/DiagnosticReports 2>/dev/null | head -n 5 || true
+            newest=$(ls -t ~/Library/Logs/DiagnosticReports/*.ips 2>/dev/null | head -n 1 || true)
+            if [ -n "$newest" ]; then
+              echo "newest crash: $newest"
+              grep -m 4 -E '"(exception|termination|signal)"|dyld|Symbol not found' "$newest" | cut -c1-240 | while IFS= read -r line; do
+                echo "::error::CRASH|${line}"
+              done
+            else
+              echo "::error::CRASH|没有 .ips 崩溃报告"
+            fi
+            echo "----- sim app log (dyld / abort / capish) -----"
+            xcrun simctl spawn booted log show --last 6m --predicate 'process == "App"' 2>/dev/null \
+              | grep -a -m 8 -E 'dyld|abort|capish|Symbol not found|fatal|exception' | cut -c1-240 | while IFS= read -r line; do
+                echo "::error::APPLOG|${line}"
+              done
+            echo "----- sim-console.log (last 40 lines) -----"
+            tail -n 40 sim-console.log || true
             exit 1
           fi
           if ! grep -q '"ok":true' sim-console.log; then
