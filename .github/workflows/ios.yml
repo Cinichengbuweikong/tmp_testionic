@@ -135,6 +135,16 @@ jobs:
           if ! grep -q "BUILD SUCCEEDED" build-ios.log; then
             echo "----- compile errors -----"
             grep -E "error:" build-ios.log | head -n 20 || true
+            # 链接错误没有 "error:" 前缀，单独抓：未定义符号 / 找不到库
+            echo "----- linker detail -----"
+            grep -A20 -m1 "Undefined symbols" build-ios.log | head -n 24 || true
+            grep -m6 -E "^ld: |framework not found|library not found|duplicate symbol" build-ios.log || true
+            {
+              grep -A20 -m1 "Undefined symbols" build-ios.log | head -n 12
+              grep -m6 -E "^ld: |framework not found|library not found|duplicate symbol" build-ios.log
+            } | sed 's/^ *//' | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::LINK|${line}"
+            done
             first_error=$(grep -m1 -E "error:" build-ios.log | sed 's/^ *//' || true)
             echo "::error::${first_error:-iOS build failed (see log)}"
             # 很多错误（尤其是 SPM 解析失败）真正的原因在 "error:" 之后的几行，逐行抛 annotation
