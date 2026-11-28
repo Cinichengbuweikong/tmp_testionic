@@ -193,13 +193,15 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
         let timeoutMs = max(1000, call.getInt("timeoutMs", 30000))
         counter += 1
         let box = IshExecBox(plugin: self, call: call, timeoutMs: timeoutMs)
+        // 看门狗必须在调用 capish_exec **之前**武装：客户机内核没 boot 时
+        // become_new_init_child/do_execve 可能直接卡住不返回，那时就轮不到 pid>0 分支了
+        // （实测：模拟器里 autotest 就是因此拿不到结果）。
+        box.armWatchdog()
         let user = Unmanaged.passRetained(box).toOpaque()
         let pid = capish_exec(command, ishLineTrampoline, ishDoneTrampoline, user)
         if pid > 0 {
             box.pid = pid
             runningPids.insert(pid)
-            // 客户机进程起来了才需要看门狗；pid<0 时 C 侧已经回调过 done。
-            box.armWatchdog()
         } else {
             // C 侧已经（或即将）回调 done，这里不重复处理。
         }
