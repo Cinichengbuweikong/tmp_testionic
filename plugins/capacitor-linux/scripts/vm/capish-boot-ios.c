@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "kernel/init.h"
@@ -69,7 +70,7 @@ static void capish_exit_hook(struct task *task, int code) {
 }
 
 static void make_dev_node(const char *path, int major, int minor) {
-    int err = generic_mknodat(AT_PWD, path, S_IFCHR | 0666, dev_make(major, minor));
+    int err = generic_mknodat(AT_PWD, path, (mode_t_) (S_IFCHR | 0666), dev_make(major, minor));
     if (err < 0) {
         // 已存在就不算错（重复 boot 时会撞上）
         fprintf(stderr, "capish: mknod %s failed: %d\n", path, err);
