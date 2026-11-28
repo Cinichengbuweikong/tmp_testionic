@@ -45,7 +45,7 @@ jobs:
         if: vars.ENABLE_CAPISH_ENGINE == 'true'
         run: |
           set -euo pipefail
-          dest=plugins/capacitor-linux/ios/Sources/CapISHBridge/Resources/rootfs.tar
+          dest=plugins/capacitor-linux/ios/Sources/LinuxPlugin/Resources/rootfs.tar
           url=https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/alpine-minirootfs-3.23.8-aarch64.tar.gz
           curl -fsSL --retry 3 "$url" -o "$dest"
           ls -l "$dest"

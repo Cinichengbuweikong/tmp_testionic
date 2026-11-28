@@ -16,4 +16,4 @@ ios/CapISH.xcframework/
 # 复制进桥 target 的引擎头（有这个头 + 上面的 xcframework 才走真引擎）
 ios/Sources/CapISHBridge/include/ISHShellExecutor.h
 # 由 fetch-linux-runtime.py 拷进 SPM 资源目录的离线 rootfs（构建产物）
-ios/Sources/CapISHBridge/Resources/rootfs.tar
+ios/Sources/LinuxPlugin/Resources/rootfs.tar

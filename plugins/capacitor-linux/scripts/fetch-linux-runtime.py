@@ -578,7 +578,7 @@ def main() -> int:
 
     # iOS 侧要同一份 rootfs：把 tar 版本拷进 SPM target 的 Resources/，
     # 这样 Package.swift 会把它声明成资源，App 里的 Bundle.module 就能读到。
-    ios_res = os.path.join(HERE, "..", "ios", "Sources", "CapISHBridge", "Resources")
+    ios_res = os.path.join(HERE, "..", "ios", "Sources", "LinuxPlugin", "Resources")
     os.makedirs(ios_res, exist_ok=True)
     rootfs_out = os.path.join(OUT_ASSETS, "rootfs.cpio")
     # 同样避开 AAPT 去掉 .gz 的坑：文件叫 rootfs.tar，内容仍是 gzip
