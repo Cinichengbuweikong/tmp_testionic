@@ -246,8 +246,9 @@ jobs:
           sleep 2
 
           xcrun simctl io "$UDID" screenshot ios-launch.png || true
-          wait "$LAUNCH_PID" 2>/dev/null; LAUNCH_RC=$?; echo "simctl launch rc=$LAUNCH_RC"
+          # 不要 wait: simctl launch --console-pty 会一直挂着（App 还活着），wait 会把 step 拖到超时
           kill "$LAUNCH_PID" 2>/dev/null || true
+          sleep 1
 
           echo "----- simulator console (tail) -----"
           tail -n 100 sim-console.log || true
