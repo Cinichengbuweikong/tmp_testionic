@@ -47,8 +47,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          id=$(gh run list --workflow=ios-ish.yml --commit "${GITHUB_SHA}" --limit 1 \
-                 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)
+          # 等本 commit 的 ios-ish 跑完（最多 ~8 分钟），避免拿到旧工件
+          id=""
+          for i in $(seq 1 32); do
+            info=$(gh run list --workflow=ios-ish.yml --commit "${GITHUB_SHA}" --limit 1 \
+                     --json databaseId,status 2>/dev/null | jq -r '.[0] | "\(.databaseId // "") \(.status // "")"' || true)
+            id=${info%% *}
+            st=${info##* }
+            if [ -n "${id}" ] && [ "${st}" = "completed" ]; then
+              echo "ios-ish run ${id} 已完成"
+              break
+            fi
+            echo "等 ios-ish run（${i}/32，id=${id:-none} status=${st:-none}）"
+            sleep 15
+          done
           if [ -n "${id:-}" ]; then
             art=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/artifacts" \
                     --jq '.artifacts[] | select(.name=="CapISH-xcframework") | .id' 2>/dev/null | head -1 || true)
@@ -135,6 +147,9 @@ jobs:
             -scheme App \
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            EXCLUDED_ARCHS=x86_64 \
             -derivedDataPath build/ios \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \

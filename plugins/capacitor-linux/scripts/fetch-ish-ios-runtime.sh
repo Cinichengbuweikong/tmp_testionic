@@ -203,18 +203,16 @@ build_slice() {
   printf '%s\n' "$merged"
 }
 
+# 只有两个切片：device/arm64 与 simulator/arm64。
+# 为什么没有 x86_64 模拟器切片：iSH-ARM64 的 gadget 后端只有 aarch64 宿主的汇编
+# （meson.build 要求 asbestos/guest-arm64/gadgets-x86_64/entry.S，上游没有这个目录），
+# 所以 Intel Mac 的 x86_64 模拟器**不支持**；宿主工程请设 ARCHS=arm64 或
+# EXCLUDED_ARCHS=x86_64（真机 arm64 不受影响）。
 DEVICE_LIB="$(build_slice iphoneos arm64 "arm64-apple-ios${IOS_MIN}" | tail -n 1)"
-SIM_ARM_LIB="$(build_slice iphonesimulator arm64 "arm64-apple-ios${IOS_MIN}-simulator" | tail -n 1)"
-SIM_X86_LIB="$(build_slice iphonesimulator x86_64 "x86_64-apple-ios${IOS_MIN}-simulator" | tail -n 1)"
-for f in "$DEVICE_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB"; do
+SIM_LIB="$(build_slice iphonesimulator arm64 "arm64-apple-ios${IOS_MIN}-simulator" | tail -n 1)"
+for f in "$DEVICE_LIB" "$SIM_LIB"; do
   [[ -f "$f" ]] || die "缺少切片产物：$f"
 done
-
-SIM_LIB="$BUILD/libcapish-iossim.a"
-log "lipo 合并模拟器切片 (arm64 + x86_64)"
-xcrun lipo -create -output "$SIM_LIB" "$SIM_ARM_LIB" "$SIM_X86_LIB" >>"$LOG" 2>&1 \
-  || die "lipo 合并失败"
-xcrun lipo -info "$SIM_LIB" >&2 || true
 
 log "组装 xcframework"
 rm -rf "$OUT"
