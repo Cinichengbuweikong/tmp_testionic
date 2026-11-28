@@ -55,6 +55,18 @@ static void capish_fail(const char *fmt, ...) {
     g_capish_boot_state = 3;
 }
 
+// 打 stderr：iOS 上跑 autotest 时 stderr 会进 sim-console.log，CI 可以把带
+// "capish:" 前缀的行抛成 annotation —— 崩到一半时这是唯一能定位的手段。
+static void capish_log(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "capish: ");
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+    va_end(ap);
+}
+
 int capish_boot_state(void) {
     return g_capish_boot_state;
 }
@@ -83,13 +95,22 @@ static void *capish_boot_thread(void *arg) {
     int err;
 
     snprintf(source, sizeof(source), "%s/data", root);
+    capish_log("boot start, fakefs root=%s", source);
     err = mount_root(&fakefs, source);
+    capish_log("mount_root -> %d", err);
     if (err < 0) {
         capish_fail("mount_root(%s) failed: %d", source, err);
         goto out;
     }
-    if (become_first_process() < 0) {
-        capish_fail("become_first_process failed");
+    err = become_first_process();
+    capish_log("become_first_process -> %d", err);
+    if (err < 0) {
+        capish_fail("become_first_process failed: %d", err);
+        goto out;
+    }
+    if (current == NULL) {
+        // 理论上不会，但真崩过的话至少能定位到这里
+        capish_fail("current is NULL after become_first_process");
         goto out;
     }
     current->thread = pthread_self();
@@ -109,7 +130,9 @@ static void *capish_boot_thread(void *arg) {
         "HOME=/root\0"
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0"
         "TERM=xterm-256color\0";
+    capish_log("exec /bin/sh");
     err = do_execve("/bin/sh", 2, init_argv, init_envp);
+    capish_log("do_execve -> %d", err);
     if (err < 0) {
         capish_fail("do_execve(/bin/sh) failed: %d", err);
         goto out;
@@ -117,7 +140,9 @@ static void *capish_boot_thread(void *arg) {
 
     tty_drivers[TTY_CONSOLE_MAJOR] = &real_tty_driver;
     // exec 通道自带 pipe，所以 init shell 的 stdio 走 pipe 就够（不需要真终端）
+    capish_log("create_piped_stdio");
     err = create_piped_stdio();
+    capish_log("create_piped_stdio -> %d", err);
     if (err < 0) {
         capish_fail("create_piped_stdio failed: %d", err);
         goto out;
@@ -128,6 +153,7 @@ static void *capish_boot_thread(void *arg) {
     do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
 
     g_capish_boot_state = 2;
+    capish_log("boot ready, entering guest loop");
     // 进入客户机循环；只有客户机整个停掉才会返回
     task_run_current();
     capish_fail("guest loop returned");

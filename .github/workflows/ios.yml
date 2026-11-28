@@ -242,6 +242,12 @@ jobs:
           tail -n 100 sim-console.log || true
           echo "------------------------------------"
 
+          # iSH boot 的诊断：插件的 capish 日志走 stderr，会进 sim-console.log
+          echo "----- capish boot log -----"
+          grep -a "capish" sim-console.log | tail -n 25 || true
+          grep -a "capish" sim-console.log | tail -n 8 | sed 's/^ *//' | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::CAPISH|${line}"
+          done
           if ! grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
             echo "::error::autotest marker not found in simulator console"
             echo "----- sim-console.log (last 60 lines for diagnosis) -----"
