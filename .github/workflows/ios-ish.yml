@@ -15,10 +15,12 @@ on:
         description: 'dsh-ios 的 commit/tag（默认 HEAD）'
         required: false
         default: 'HEAD'
-  # 改构建脚本时自动重跑（迭代阶段省一次手动点击）；平时不会因普通提交触发。
+  # 改构建脚本或 boot 代码时自动重跑（迭代阶段省一次手动点击）；平时不会因普通提交触发。
   push:
     paths:
       - 'plugins/capacitor-linux/scripts/fetch-ish-ios-runtime.sh'
+      - 'plugins/capacitor-linux/scripts/vm/capish-boot-ios.c'
+      - 'plugins/capacitor-linux/ios/Sources/CapISHBridge/**'
       - '.github/workflows/ios-ish.yml'
 
 jobs:
