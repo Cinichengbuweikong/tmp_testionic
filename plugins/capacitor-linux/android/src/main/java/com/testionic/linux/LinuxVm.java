@@ -134,6 +134,8 @@ public class LinuxVm {
     private volatile int memoryMb = 1024;
     private volatile int cpus = 2;
     private volatile boolean persistent = false;
+    /** "ram" (initramfs root) or "disk" (whole rootfs on /dev/vda, persistent). */
+    private volatile String rootfsMode = "ram";
     private volatile int diskSizeMb = 1024;
     private volatile CountDownLatch readyLatch = new CountDownLatch(1);
 
@@ -162,6 +164,8 @@ public class LinuxVm {
      * for the timeout.
      */
     private volatile boolean execInterrupted = false;
+    /** Wall clock of the last Ctrl-C/Ctrl-\ we sent; used to tell "wedged" from "busy". */
+    private volatile long lastInterruptAt = 0L;
 
     public LinuxVm(Context context, Listener listener) {
         this.context = context.getApplicationContext();
@@ -214,7 +218,8 @@ public class LinuxVm {
     }
 
     /**
-     * Raw image backing the guest's persistent data disk (/dev/vda).
+     * Raw image backing the guest's persistent root (rootfsMode 'disk') or the
+     * legacy data disk (/dev/vda in both cases).
      *
      * <p>Created sparse (a full-size file of zeroes would cost real storage) and
      * formatted by the guest on first boot, which is why the rootfs carries
@@ -222,6 +227,60 @@ public class LinuxVm {
      */
     public File diskFile() {
         return new File(workDir(), "disk.img");
+    }
+
+    /** Read-only tar payload the guest unpacks into the disk on first boot. */
+    private File rootfsTarFile() {
+        return new File(rootfsDir(), "rootfs.tar");
+    }
+
+    /** Extracts assets/linux/rootfs.tar (only needed for rootfsMode 'disk'). */
+    private void ensureRootfsPayload() throws Exception {
+        String manifestJson = readAsset("linux/manifest.json");
+        JSONObject manifest = new JSONObject(manifestJson);
+        JSONObject disk = manifest.optJSONObject("rootfsDisk");
+        if (disk == null) {
+            throw new IllegalStateException("RUNTIME_MISSING: manifest has no rootfsDisk entry; "
+                    + "re-run scripts/fetch-linux-runtime.py");
+        }
+        String asset = disk.getString("asset");
+        String sha = disk.getString("sha256");
+        long bytes = disk.getLong("bytes");
+        File stamp = new File(rootfsDir(), "payload.stamp");
+        if (rootfsTarFile().isFile() && stamp.isFile() && sha.equals(readText(stamp))) {
+            return;
+        }
+        Log.i(TAG, "extracting disk rootfs payload (" + bytes / 1048576 + " MB)");
+        copyAsset(asset, rootfsTarFile(), bytes, sha);
+        try (FileOutputStream out = new FileOutputStream(stamp)) {
+            out.write(sha.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private String readAsset(String asset) throws IOException {
+        try (InputStream in = context.getAssets().open(asset)) {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+            }
+            return bos.toString("UTF-8");
+        }
+    }
+
+    private static String readText(File file) {
+        try (FileInputStream in = new FileInputStream(file)) {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[512];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+            }
+            return bos.toString("UTF-8").trim();
+        } catch (IOException e) {
+            return "";
+        }
     }
 
     /** Ensures the disk image exists with the requested (sparse) size. */
@@ -281,7 +340,8 @@ public class LinuxVm {
         ret.put("cpus", cpus);
         ret.put("consoleTty", "/dev/ttyAMA0");
         ret.put("stderrTty", "/dev/ttyAMA1");
-        ret.put("persistence", persistent ? "disk" : "none");
+        ret.put("persistence", "disk".equals(rootfsMode) ? "disk" : (persistent ? "data-disk" : "none"));
+        ret.put("rootfsMode", rootfsMode);
         ret.put("shareDir", shareDir().getAbsolutePath());
         ret.put("guestShareDir", GUEST_SHARE_DIR);
         if (persistent) {
@@ -303,7 +363,7 @@ public class LinuxVm {
         ret.put("distribution", "alpine");
         ret.put("engine", "qemu-tcg");
         ret.put("architecture", "aarch64");
-        ret.put("rootfsMode", "initramfs");
+        ret.put("rootfsMode", rootfsMode);
         ret.put("nativeExecution", false);
         ret.put("apkAvailable", true);
         ret.put("executable", qemuBinary().getAbsolutePath());
@@ -346,7 +406,7 @@ public class LinuxVm {
 
     /** Boots the VM. Blocking; call from a worker thread. */
     public void start(int memoryMb, int cpus, String extraKernelArgs, long bootTimeoutMs,
-                      boolean persistent, int diskSizeMb) throws Exception {
+                      boolean persistent, int diskSizeMb, String rootfsMode) throws Exception {
         if (isRunning()) {
             throw new IllegalStateException("ALREADY_RUNNING");
         }
@@ -361,6 +421,7 @@ public class LinuxVm {
         this.memoryMb = memoryMb;
         this.cpus = cpus;
         this.persistent = persistent;
+        this.rootfsMode = "disk".equalsIgnoreCase(rootfsMode) ? "disk" : "ram";
         this.diskSizeMb = diskSizeMb;
         this.stopRequested = false;
         this.exitCode = Integer.MIN_VALUE;
@@ -413,7 +474,21 @@ public class LinuxVm {
         cmd.add("-virtfs");
         cmd.add("local,path=" + shareDir().getAbsolutePath()
                 + ",mount_tag=hostshare,security_model=none,multidevs=remap");
-        if (persistent) {
+        if ("disk".equals(rootfsMode)) {
+            // Persistent root: /dev/vda is a raw ext4 image the guest formats on
+            // first boot, /dev/vdb is the read-only tar payload it unpacks once.
+            // Everything (including `apk add`) then lives on the disk.
+            ensureDisk(diskSizeMb);
+            ensureRootfsPayload();
+            cmd.add("-drive");
+            cmd.add("file=" + diskFile().getAbsolutePath()
+                    + ",format=raw,if=virtio,cache=writeback");
+            cmd.add("-drive");
+            cmd.add("file=" + rootfsTarFile().getAbsolutePath()
+                    + ",format=raw,if=virtio,readonly=on");
+        } else if (persistent) {
+            // Legacy "data disk only" mode: rootfs stays in RAM, /root & friends
+            // are bind-mounted onto the disk.
             ensureDisk(diskSizeMb);
             cmd.add("-drive");
             cmd.add("file=" + diskFile().getAbsolutePath()
@@ -423,7 +498,10 @@ public class LinuxVm {
         cmd.add(kernelFile().getAbsolutePath());
         cmd.add("-initrd");
         cmd.add(rootfsFile().getAbsolutePath());
-        StringBuilder args = new StringBuilder("console=ttyAMA0 rdinit=/init loglevel=6 panic=1");
+        // capinux.rootfs tells the bootstrap init whether to expect a disk
+        // (scripts/vm/init-bootstrap.sh): with "ram" it skips the /dev/vda wait.
+        StringBuilder args = new StringBuilder("console=ttyAMA0 rdinit=/init loglevel=6 panic=1 capinux.rootfs=")
+                .append(rootfsMode);
         if (extraKernelArgs != null && !extraKernelArgs.trim().isEmpty()) {
             args.append(' ').append(extraKernelArgs.trim());
         }
@@ -631,6 +709,7 @@ public class LinuxVm {
 
     /** Notes that the user pressed an interrupt key (see {@link #execInterrupted}). */
     public void markInterrupt() {
+        lastInterruptAt = System.currentTimeMillis();
         if (outCapture != null) {
             execInterrupted = true;
         }
@@ -700,8 +779,19 @@ public class LinuxVm {
                     // Never started: the guest console is wedged (seen after a signal
                     // hit a foreground job in busybox ash). Fail fast with a hint
                     // instead of burning the caller's whole timeout.
-                    throw new IllegalStateException("CONSOLE_UNRESPONSIVE: the guest shell did not "
-                            + "pick up the command line; call restart() to get a clean console");
+                    // No BEGIN marker after the retries. Two very different causes:
+                    //  * the console is wedged - seen right after a Ctrl-C hit a
+                    //    foreground job in busybox ash;
+                    //  * the shell is simply still busy with a previous (long)
+                    //    foreground command, and our line is queued behind it.
+                    // Only the first case is worth failing fast.
+                    boolean justInterrupted = System.currentTimeMillis() - lastInterruptAt < 30000;
+                    if (justInterrupted) {
+                        throw new IllegalStateException("CONSOLE_UNRESPONSIVE: the guest shell did "
+                                + "not pick up the command line after an interrupt; call restart() "
+                                + "to get a clean console");
+                    }
+                    Log.w(TAG, "exec line still queued (guest busy); waiting for the timeout");
                 }
 
                 long deadline = t0 + Math.max(1000, timeoutMs);
@@ -752,7 +842,9 @@ public class LinuxVm {
             return;
         }
         try {
-            write("poweroff -f\n".getBytes(StandardCharsets.UTF_8));
+            // `sync` first: with rootfsMode 'disk' an unclean poweroff leaves the ext4
+            // journal dirty and the next boot pays for a replay (measured ~20s).
+            write("sync; poweroff -f\n".getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             Log.w(TAG, "poweroff write failed: " + e.getMessage());
         }

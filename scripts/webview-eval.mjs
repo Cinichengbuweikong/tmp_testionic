@@ -14,6 +14,8 @@ const arg = (name, fallback) => {
 };
 
 const port = arg('port', '9222');
+// 默认 120s；autotest 之类的长任务可以用 --timeout 600000 放宽。
+const evalTimeoutMs = Number(arg('timeout', '120000'));
 let expression = arg('expr');
 const file = arg('file');
 if (!expression && file) {
@@ -68,7 +70,7 @@ const response = await Promise.race([
   new Promise((_, reject) => {
     // 防止 WebView 进程被杀 / 页面卡死时一直挂着（注意不要 unref，否则事件循环空了会提前退出）
     // 冒烟脚本（smoke-test.js）步骤越来越多，执行时间已超过 30s，这里放宽到 120s
-    setTimeout(() => reject(new Error('CDP evaluate timeout (120s)')), 120000);
+    setTimeout(() => reject(new Error('CDP evaluate timeout (' + evalTimeoutMs + 'ms)')), evalTimeoutMs);
   }),
 ]).catch((err) => {
   console.error(String(err && err.message ? err.message : err));

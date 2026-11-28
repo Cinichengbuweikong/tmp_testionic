@@ -55,7 +55,7 @@ await Linux.stop();
 | 需求 | 实现 |
 |---|---|
 | **和 rootfs 交换文件** | `getShareDir()`：宿主目录 ↔ 客户机 `/mnt/host`（9p over virtio，双向、实时、不是拷贝）。见 [API](#46-getsharedir) |
-| **rootfs 持久化** | `start({ persistent: true })`：挂一块 raw 镜像当 `/dev/vda`，客户机首次启动自己 `mkfs.ext4`（e2fsprogs 离线 bake 进 rootfs），然后把 `/root`、`/home`、`/opt`、`/usr/local` 绑到盘上 → 重启后数据还在。rootfs 本身仍在内存（`apk add` 的包重启需重装），见 [持久化](#47-持久化数据盘start-persistent-true) |
+| **rootfs 持久化** | `start({ rootfsMode: 'disk' })`：**整个 rootfs 落到一块 raw ext4 镜像**（App 私有目录里），客户机首次启动自己 `mkfs.ext4` + 从只读 tar 载荷解包 + `switch_root` 到磁盘 → `apk add` 的包、改过的文件、家目录全都保留（实测重启后 `file-5.46` 还在）。见 [rootfs 落盘](#47-rootfs-落盘--持久化start-rootfsmode-disk) |
 
 ### 为什么 Android 上"原生"只能是 QEMU 模拟
 
@@ -293,24 +293,40 @@ await Linux.exec({ command: 'echo hello > /mnt/host/out.txt' });
 > 如果 `/mnt/host` 是空的：客户机里 `mount | grep 9p` 看有没有挂载；没有就是 9p 模块没加载
 > （内核包和模块版本不匹配，见[升级 Alpine](#升级-alpine例如到-324x)）。
 
-### 4.7 持久化数据盘（`start({ persistent: true })`）
+### 4.7 rootfs 落盘 / 持久化（`start({ rootfsMode: 'disk' })`）
 
-rootfs 是 initramfs（内存），重启即还原。打开这个开关后插件会：
-
-1. 在 App 私有目录创建一个 **sparse raw 镜像**（`files/linuxvm/disk.img`，`diskSizeMb` 默认 1024MB）；
-2. QEMU 挂成 `-drive file=...,if=virtio` → 客户机 `/dev/vda`；
-3. `/init` 里首次启动 `mkfs.ext4`（**e2fsprogs 在构建期就 bake 进 rootfs**，仍然完全离线），
-   然后把 `/root`、`/home`、`/opt`、`/usr/local` 用 `mount -o bind` 绑到这块盘上。
+默认是 `rootfsMode: 'ram'`：内核把 `rootfs.cpio` 解到内存当根，启动快（实测 **~25s**），
+但重启即还原。改成 `'disk'`，**整个 rootfs 就落到一块磁盘镜像上**，`apk add` 的包也留得住：
 
 ```ts
-await Linux.start({ persistent: true, diskSizeMb: 512 });
-await Linux.exec({ command: 'echo hi > /root/keep.txt' });
-await Linux.restart({ persistent: true, diskSizeMb: 512 });
-await Linux.exec({ command: 'cat /root/keep.txt' }); // hi（真机实测通过）
+await Linux.start({ rootfsMode: 'disk', diskSizeMb: 2048 });   // 首次启动约 1 分钟
+await Linux.exec({ command: 'apk add --no-cache file' });       // 装到 /usr（在磁盘上）
+await Linux.stop();
+await Linux.start({ rootfsMode: 'disk', diskSizeMb: 2048 });   // 约 45s
+await Linux.exec({ command: 'file --version' });                // ✅ 还在（真机实测）
 ```
 
-边界：`apk add` 装到 `/usr`、`/lib`，**仍然在内存**，重启后要重装；要连包一起持久化，
-需要把整个 root 做成 overlay/pivot（见[可能想加的东西](#可能想加的东西按性价比)）。
+它是怎么做的（这也是"能不能把 rootfs 解压到 App 可写目录再启动"的答案）：
+
+1. App 在私有目录创建一个 **sparse raw 镜像**（`files/linuxvm/disk.img`，默认 2048MB）；
+2. QEMU 把它挂成 `/dev/vda`，另外把 `assets/linux/rootfs.tar`（**同一份离线 rootfs 的 tar 版**）
+   以只读方式挂成 `/dev/vdb`；
+3. initramfs 里的 `/init` 换成 **`init-bootstrap.sh`**：加载 virtio_blk + ext4 模块 →
+   已有文件系统就直接挂，没有就 `mkfs.ext4`（e2fsprogs 是构建期 bake 进 rootfs 的）→
+   `gzip -dc /dev/vdb | tar -x -C /mnt` → **`switch_root` 到磁盘**；
+4. 切过去之后跑的是磁盘里的 `/init`（就是 `scripts/vm/init.sh`），`/` 已经是 `/dev/vda`，
+   所以 `/usr`、`/lib`、`/etc`、`/root` 全都是持久的。
+
+实测（Redmi K30S）：首次启动 **~61s**（含 mkfs + 解包 15.7MB），之后 **~36–48s**；
+`df -h /` → `/dev/vda 1.9G ... /`；重启后 `apk add file` 装的 `file-5.46`、手写的
+`/usr/bin/capinux-test` 都还在。
+
+为什么是"块设备 + ext4"而不是"直接拿宿主目录当根"：客户机要的是一个**真实文件系统**，
+QEMU 通过 virtio-blk 提供；宿主目录那条路是 9p（见 [`getShareDir()`](#46-getsharedir)），
+可以做共享但作为根会很慢、也不支持完整的 POSIX 语义（设备节点、权限、hardlink 等）。
+
+`persistent: true` 是旧写法，等价于 `rootfsMode: 'disk'`（早期版本只把 `/root`、`/home`、
+`/opt`、`/usr/local` bind 到数据盘上，包不持久；现在被整盘模式取代）。
 
 ### 4.8 事件
 
@@ -452,7 +468,7 @@ fork，源码在 `dsh-ios` 仓库的 `ish-arm64/`）：Asbestos 线程码解释�
 
 | 限制 | 说明 / 影响 | 缓解 |
 |---|---|---|
-| **rootfs 在内存里** | rootfs 本身重启还原；`start({persistent:true})` 只保住 `/root`、`/home`、`/opt`、`/usr/local`，`apk add` 装的包（`/usr`、`/lib`）**重启要重装** | 需要连包一起持久化 → 把 root 做成 overlay + `switch_root`（见 [6.4](#可能想加的东西按性价比)） |
+| **默认 rootfs 在内存里** | `rootfsMode:\\'ram\\'`（默认）重启还原；想连包一起持久化就用 **`rootfsMode:\\'disk\\'`**（整盘落盘，实测有效），代价是首次启动 ~61s、之后 ~40s、占 `diskSizeMb` 存储 | 见 [4.7](#47-rootfs-落盘--持久化start-rootfsmode-disk) |
 | **没有 job control** | 客户机交互 shell 关了 `set +m`（否则 Ctrl-C 之后 tty 的前台进程组会指向已死的作业，shell 卡在读输入，控制台像死了） | 代价是**没有 Ctrl-Z / `fg` / `bg`**；`Ctrl-C`、`Ctrl-D`、`Ctrl-L` 都正常 |
 | **速度** | QEMU TCG 纯模拟，CPU 约慢 3~5 倍（与 Linxr 论文报的 ~3× 一致）；`apk add python3` 约 2 分钟 | 交互式 shell/脚本够用；重 CPU 任务别放进来 |
 | **内存** | 客户机默认 1GB，QEMU 自己的 RSS 也在这个量级；低端机可能被系统杀 | `memoryMb: 512`；真机建议 2GB 以上空闲内存 |

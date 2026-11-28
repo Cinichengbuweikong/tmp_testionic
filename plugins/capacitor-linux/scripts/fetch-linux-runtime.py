@@ -575,16 +575,31 @@ def main() -> int:
     installed = install_alpine_packages(al.get("persist", {}).get("packages", []), extra_root)
     log(f"  extra files: {installed}")
     rootfs_out = os.path.join(OUT_ASSETS, "rootfs.cpio")
+    # 同样避开 AAPT 去掉 .gz 的坑：文件叫 rootfs.tar，内容仍是 gzip
+    # （内核/客户机里的 busybox tar 都按 magic 识别，不看扩展名）。
+    rootfs_tar = os.path.join(OUT_ASSETS, "rootfs.tar")
     mini = os.path.join(CACHE, os.path.basename(al["artifacts"]["minirootfs"]["path"]))
     cmd = [args.python, os.path.join(HERE, "build-initramfs.py"),
            "--rootfs", mini, "--out", rootfs_out,
            "--init", os.path.join(HERE, "vm", "init.sh"),
+           # 磁盘启动时 initramfs 里的 /init 换成 bootstrap（mkfs + 解包 + switch_root）
+           "--bootstrap-init", os.path.join(HERE, "vm", "init-bootstrap.sh"),
+           # 同一棵树再导出一份 tar.gz：持久化磁盘镜像的初始内容
+           "--tar-out", rootfs_tar,
            "--udhcpc", os.path.join(HERE, "vm", "udhcpc.sh"),
            "--extra-rootfs", extra_root,
            "--modules-dir", moddir,
            # build-initramfs copies modules by file name; the package lists them
            # by in-tree path (kernel/fs/9p/9p.ko), so pass the basenames.
            "--modules", " ".join(os.path.basename(m) for m in al["modules"]),
+           # 磁盘栈必须同步加载（mount 之前）；net/9p 放到后台（TCG 下 insmod 很慢）
+           "--disk-modules", " ".join(
+               os.path.basename(m) for m in al["modules"]
+               if any(k in m for k in ("/ext4", "/jbd2", "/mbcache", "/crc16",
+                                       "virtio_mmio", "virtio_blk"))),
+           "--background-modules", " ".join(
+               os.path.basename(m) for m in al["modules"]
+               if any(k in m for k in ("/9p/", "/netfs", "virtio_net", "failover"))),
            "--version", al["version"], "--kernel", al["kernel"]["release"]]
     subprocess.run(cmd, check=True)
     lint = subprocess.run([args.python, os.path.join(HERE, "cpio-lint.py"), rootfs_out],
@@ -639,6 +654,9 @@ def main() -> int:
         "kernelRelease": al["kernel"]["release"],
         "kernel": {"asset": "linux/kernel", "package": al["kernel"]["package"] + " " + al["kernel"]["version"], **digest(kernel_out)},
         "rootfs": {"asset": "linux/rootfs.cpio", "compression": "gzip", **digest(rootfs_out)},
+        "rootfsDisk": {"asset": "linux/rootfs.tar", "compression": "gzip",
+                       "note": "persistent disk payload (ext4 image is created by the guest)",
+                       **digest(rootfs_tar)},
         "qemu": {
             "provider": lock["qemu"]["provider"],
             "version": lock["qemu"]["version"],

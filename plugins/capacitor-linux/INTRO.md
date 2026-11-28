@@ -28,7 +28,9 @@ const caps = await Linux.getCapabilities();
 if (!caps.supported) return console.log(caps.reasons);
 
 await Linux.addListener('consoleOutput', (e) => term.write(e.data)); // 流式 stdout
-await Linux.start({ persistent: true });            // 引导，真机 17~26 秒
+await Linux.start({ rootfsMode: 'ram' });            // 内存 rootfs：真机 ~25 秒
+// 或整盘落盘（apk add 的包也持久）：首次 ~61s，之后 ~40s，占 2GB
+// await Linux.start({ rootfsMode: 'disk', diskSizeMb: 2048 });
 await Linux.write({ data: 'apk add python3\n' });   // 像在终端里敲键盘
 await Linux.sendKey({ key: 'ctrl+c' });             // 特殊键：中断前台程序
 const r = await Linux.exec({ command: 'python3 -V' }); // stdout/stderr 分开返回
@@ -44,8 +46,8 @@ await Linux.exec({ command: 'cp /mnt/host/a.txt /root/' });
 | 交互式 shell、跑 `apk`/`python3`/`node`/`vi` | 图形界面（没有 GPU/X11） |
 | 流式 stdin/stdout/stderr，stdout 与 stderr 分开 | 从 App 外部连进客户机端口（只有 SLIRP 出网） |
 | 特殊键（Ctrl-C/D/Z、方向键、F1~F12） | Ctrl-Z / `fg` / `bg`（为保住控制台关了 job control） |
-| 宿主 ↔ 客户机共享目录（9p，实时双向） | 把 `/usr` 装的包一起持久化（只有 `/root` 等目录持久） |
-| 持久化数据盘（重启后 `/root`、`/home`、`/opt`、`/usr/local` 还在） | 在 32 位（armeabi-v7a）设备上跑 |
+| 宿主 ↔ 客户机共享目录（9p，实时双向） | 图形界面（没有 GPU/X11） |
+| **整盘 rootfs 持久化**（`rootfsMode:'disk'`：`apk add` 的包重启后还在） | 在 32 位（armeabi-v7a）设备上跑 |
 | Linux kernel panic 后 App 存活、可重新启动 | 与 QEMU 原生速度持平（TCG 慢 3~5 倍） |
 
 ## 为什么值得这么选

@@ -33,55 +33,22 @@ mount -t tmpfs -o size=32m,mode=755 tmpfs /run 2>/dev/null
 echo capinux > /proc/sys/kernel/hostname 2>/dev/null || hostname capinux
 echo capinux > /etc/hostname
 
-# --- kernel modules: plain insmod in dependency order, no modprobe/depmod ----
-if [ -r /etc/capinux/modules.list ]; then
-    while IFS= read -r m; do
-        [ -n "$m" ] || continue
-        case "$m" in /*) p="$m" ;; *) p="/$m" ;; esac
-        [ -f "$p" ] || continue
-        insmod "$p" 2>/dev/null
-    done < /etc/capinux/modules.list
-fi
-
-# --- host <-> guest file share (9p over virtio) -----------------------------
-# QEMU exposes the app-side directory with -virtfs; the modules above provide
-# 9pnet_virtio + 9p. If the mount fails (no 9p support) the VM still boots, just
-# without /mnt/host.
-SHARE=/mnt/host
-mkdir -p "$SHARE"
-if mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,access=any \
-    hostshare "$SHARE" 2>/dev/null; then
-    mkdir -p /run/capinux
-    : > /run/capinux/hostshare-mounted
-fi
-
-# --- optional persistent data disk -----------------------------------------
-# start({ persistent: true }) makes the app attach a raw image as /dev/vda. The
-# first boot formats it ("mkfs.ext4" comes from the e2fsprogs package baked into
-# this rootfs); afterwards the user-facing directories are bind-mounted onto it,
-# so /root, /home, /opt and /usr/local survive a VM restart. `apk add` still
-# installs into the RAM rootfs, so packages are not persisted this way.
-PERSIST=/mnt/persist
-if [ -b /dev/vda ]; then
-    mkdir -p "$PERSIST"
-    mount -t ext4 /dev/vda "$PERSIST" 2>/dev/null || {
-        mkfs.ext4 -q -F -L capinux /dev/vda >/dev/null 2>&1 &&
-            mount -t ext4 /dev/vda "$PERSIST" 2>/dev/null
-    }
-    if mountpoint -q "$PERSIST" 2>/dev/null; then
-        for d in root home opt usr-local; do mkdir -p "$PERSIST/$d"; done
-        mount -o bind "$PERSIST/root" /root 2>/dev/null
-        mkdir -p /home && mount -o bind "$PERSIST/home" /home 2>/dev/null
-        mkdir -p /opt && mount -o bind "$PERSIST/opt" /opt 2>/dev/null
-        mkdir -p /usr/local && mount -o bind "$PERSIST/usr-local" /usr/local 2>/dev/null
-        mkdir -p /run/capinux
-        : > /run/capinux/persist-mounted
-    fi
-fi
-
-# --- networking (background: never delay the shell) -------------------------
-# QEMU's virtio-net probes asynchronously, so poll briefly for the interface.
+# --- kernel modules + network + host share (background) ---------------------
+# Loading kernel modules under TCG is expensive (netfs alone is 517KB) and the
+# shell does not need any of them to be usable. So everything that is not needed
+# to reach the console happens here, off the boot path: insmod the network/9p
+# stack, bring the SLIRP NIC up, then mount the 9p share.
 (
+    if [ -r /etc/capinux/modules-bg.list ]; then
+        while IFS= read -r m; do
+            [ -n "$m" ] || continue
+            case "$m" in /*) p="$m" ;; *) p="/$m" ;; esac
+            [ -f "$p" ] || continue
+            insmod "$p" 2>/dev/null
+        done < /etc/capinux/modules-bg.list
+    fi
+
+    # networking: QEMU user-mode (SLIRP) NIC, guest 10.0.2.15/24
     i=0
     iface=
     while [ $i -lt 60 ]; do
@@ -99,21 +66,57 @@ fi
     ip link set lo up 2>/dev/null
     if [ -n "$iface" ]; then
         ip link set "$iface" up 2>/dev/null
-        # QEMU user-mode networking (SLIRP) always uses this fixed layout, so
-        # configure it directly: deterministic, and no DHCP round trip needed.
         ip addr add 10.0.2.15/24 dev "$iface" 2>/dev/null
         ip route add default via 10.0.2.2 dev "$iface" 2>/dev/null
-        # slirp's built-in resolver (10.0.2.3) does not answer on QEMU 11, so
-        # point at public resolvers: slirp NATs the UDP traffic to the host.
         printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 10.0.2.3\n' > /etc/resolv.conf
-        # Fall back to DHCP only if the fixed layout did not take.
         if ! ip addr show dev "$iface" 2>/dev/null | grep -q 'inet 10\.0\.2\.'; then
             udhcpc -q -n -t 6 -T 2 -i "$iface" -s /etc/capinux/udhcpc.sh >/dev/null 2>&1
         fi
     fi
+
+    # host <-> guest file share (9p over virtio, mounted at /mnt/host)
+    SHARE=/mnt/host
+    mkdir -p "$SHARE"
+    if mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,access=any \
+        hostshare "$SHARE" 2>/dev/null; then
+        mkdir -p /run/capinux
+        : > /run/capinux/hostshare-mounted
+    fi
 ) >/dev/null 2>&1 &
-# Fallback resolver so DNS resolves even while the NIC is still coming up.
+
+# Fallback resolver so DNS resolves before the background setup finishes.
 [ -s /etc/resolv.conf ] || printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+
+# --- optional persistent data disk -----------------------------------------
+# Two persistence modes exist (see LinuxVm.java):
+#   rootfsMode 'disk' (推荐): 整个 root 就在 /dev/vda 上，这个 /init 是从磁盘
+#       启动的（init-bootstrap.sh 已经 mkfs + 解包 + switch_root），所以这里
+#       什么都不用挂 —— /usr、/lib、/root 全都是持久的，`apk add` 也会留下。
+#   rootfsMode 'ram' + persistent:true（旧模式）: root 在内存里，只把
+#       /root /home /opt /usr/local bind 到数据盘上；包仍然不持久。
+PERSIST=/mnt/persist
+ROOT_ON_DISK=
+[ "$(cat /etc/capinux/rootfs-mode 2>/dev/null)" = "disk" ] && ROOT_ON_DISK=1
+if [ -b /dev/vda ] && [ -z "$ROOT_ON_DISK" ]; then
+    mkdir -p "$PERSIST"
+    mount -t ext4 /dev/vda "$PERSIST" 2>/dev/null || {
+        mkfs.ext4 -q -F -L capinux /dev/vda >/dev/null 2>&1 &&
+            mount -t ext4 /dev/vda "$PERSIST" 2>/dev/null
+    }
+    if mountpoint -q "$PERSIST" 2>/dev/null; then
+        for d in root home opt usr-local; do mkdir -p "$PERSIST/$d"; done
+        mount -o bind "$PERSIST/root" /root 2>/dev/null
+        mkdir -p /home && mount -o bind "$PERSIST/home" /home 2>/dev/null
+        mkdir -p /opt && mount -o bind "$PERSIST/opt" /opt 2>/dev/null
+        mkdir -p /usr/local && mount -o bind "$PERSIST/usr-local" /usr/local 2>/dev/null
+        mkdir -p /run/capinux
+        : > /run/capinux/persist-mounted
+    fi
+fi
+
+# --- networking -------------------------------------------------------------
+# Already handled by the background block above (modules + NIC + 9p), so nothing
+# to do here: it keeps the boot path short.
 
 . /etc/capinux/release 2>/dev/null
 

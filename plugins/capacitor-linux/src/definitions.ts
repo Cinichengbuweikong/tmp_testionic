@@ -110,17 +110,23 @@ export interface LinuxStartOptions {
    */
   bootTimeoutMs?: number;
   /**
-   * 是否挂一块**持久化数据盘**（默认 false）。
+   * rootfs 的形态：
+   * - `'ram'`（默认）：内核把 `rootfs.cpio` 解压进内存当根，启动快、不占存储；
+   *   重启即还原（`apk add` 的包不保留）。
+   * - `'disk'`：**整个 rootfs 落到一块 raw ext4 镜像上**——首次启动由客户机自己
+   *   `mkfs.ext4` 并从只读的 tar 载荷（`rootfs.tar`，作为 /dev/vdb 挂进去）解包，
+   *   之后 `switch_root` 到磁盘。**整块盘都是持久的**：`apk add` 的包、改过的文件、
+   *   家目录全部保留；代价是首次启动多花约 1 分钟、占 `diskSizeMb` 存储。
    *
-   * rootfs 本身永远在内存里（重启还原）；打开这个开关后，App 会在私有目录里
-   * 创建一个 raw 镜像挂给客户机当 `/dev/vda`，第一次启动时由客户机自己
-   * `mkfs.ext4`（e2fsprogs 已离线打进 rootfs），然后把 `/root`、`/home`、
-   * `/opt`、`/usr/local` 绑定到这块盘上——这些目录里的东西重启后还在。
-   *
-   * 注意：`apk add` 装到 `/usr`、`/lib`，仍然在内存里，重启后要重装。
+   * 这就是"为什么不能把 rootfs 解压到 App 可写目录再启动"的答案：**能**，
+   * 而且 `'disk'` 就是这么做的——注意客户机要的是**块设备/ext4**（QEMU 用 virtio-blk
+   * 提供），不是宿主目录；宿主目录那种方案是 9p（可以直接 `getShareDir()` 看到）。
    */
-  persistent?: boolean;
-  /** 持久化数据盘大小（MB），默认 1024，范围 64..8192。只在 `persistent:true` 时生效。 */
+  rootfsMode?: 'ram' | 'disk';
+  /**
+   * 持久化数据盘大小（MB），默认：`rootfsMode:'disk'` 时 2048，否则 1024。
+   * 范围 64..8192。`'ram'` 模式下只有 `persistent:true` 才会用到。
+   */
   diskSizeMb?: number;
 }
 

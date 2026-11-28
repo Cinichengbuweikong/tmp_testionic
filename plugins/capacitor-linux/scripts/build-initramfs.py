@@ -82,6 +82,15 @@ class Tree:
         self.nodes[name] = {"kind": "chardev", "mode": mode, "mtime": FIXED_MTIME, "uid": 0,
                             "gid": 0, "rdev": (major, minor)}
 
+    def clone(self):
+        other = Tree()
+        other.nodes = {k: dict(v) for k, v in self.nodes.items()}
+        return other
+
+    def replace_file(self, name, mode, mtime, data):
+        self.nodes.pop(name, None)
+        self.add_file(name, mode, mtime, data)
+
     # --- symlink-aware relayout ------------------------------------------------
     def resolve(self, name, _depth=0):
         """Resolve a path whose *ancestor* components may be symlinks.
@@ -159,6 +168,50 @@ class Tree:
         fh.write(cpio_entry("TRAILER!!!", 0, 0, 0, 0, 1, 0, 0))
         return entries, payload
 
+    def emit_tar(self, fh):
+        """Write the tree as a gzipped-tar payload (rootfs for a disk image).
+
+        Device nodes are skipped: the guest mounts devtmpfs over /dev anyway, and
+        busybox tar cannot create them without privileges.
+        """
+        entries = 0
+        payload = 0
+        dirs = sorted((n for n, v in self.nodes.items() if v["kind"] == "dir"),
+                      key=lambda n: (n.count("/"), n))
+        symlinks = sorted(n for n, v in self.nodes.items() if v["kind"] == "symlink")
+        others = sorted(n for n, v in self.nodes.items() if v["kind"] == "file")
+
+        def info(name, mode, size=0):
+            ti = tarfile.TarInfo(name)
+            ti.mode = mode
+            ti.uid = 0
+            ti.gid = 0
+            ti.uname = "root"
+            ti.gname = "root"
+            ti.mtime = FIXED_MTIME
+            ti.size = size
+            return ti
+
+        for name in dirs:
+            fh.write(info(name + "/", self.nodes[name]["mode"]).tobuf())
+            entries += 1
+        for name in symlinks:
+            ti = info(name, 0o777)
+            ti.type = tarfile.SYMTYPE
+            ti.linkname = self.nodes[name]["data"].decode()
+            fh.write(ti.tobuf())
+            entries += 1
+        for name in others:
+            v = self.nodes[name]
+            data = v["data"]
+            fh.write(info(name, v["mode"], len(data)).tobuf())
+            fh.write(data)
+            fh.write(b"\0" * ((512 - len(data) % 512) % 512))
+            entries += 1
+            payload += len(data)
+        fh.write(b"\0" * 1024)   # two zero blocks terminate a tar archive
+        return entries, payload
+
 
 def add_extra_rootfs(t, root):
     """Merge a directory tree into the build tree (used for extra Alpine packages).
@@ -212,7 +265,15 @@ def main():
     ap.add_argument("--udhcpc", help="udhcpc hook script to install")
     ap.add_argument("--modules-dir", help="directory holding .ko files")
     ap.add_argument("--modules", default="", help="space separated .ko names, load order")
+    ap.add_argument("--disk-modules", default="",
+                    help="modules loaded by the bootstrap before mounting the disk (virtio_blk + ext4 stack)")
+    ap.add_argument("--background-modules", default="",
+                    help="modules loaded by the runtime init in the background (network + 9p)")
     ap.add_argument("--extra-rootfs", help="extra directory tree to merge into the rootfs")
+    ap.add_argument("--bootstrap-init",
+                    help="init installed as /init of the initramfs (disk-boot mode)")
+    ap.add_argument("--tar-out",
+                    help="also write a .tar.gz of the runtime rootfs (persistent disk image payload)")
     ap.add_argument("--version", default="unknown", help="Alpine version string")
     ap.add_argument("--kernel", default="", help="kernel release string (banner only)")
     args = ap.parse_args()
@@ -264,14 +325,55 @@ def main():
                 t.add_file(MODULE_DIR + "/" + mod, 0o644, FIXED_MTIME, fh.read())
     t.add_file("etc/capinux/modules.list", 0o644, FIXED_MTIME,
                ("\n".join(MODULE_DIR + "/" + m for m in mods) + "\n").encode())
+    # Two subsets so the boot path stays short: the disk stack must be loaded
+    # before /dev/vda can be mounted, while everything else (network + 9p, incl.
+    # the 517KB netfs) is loaded by the runtime init in the background after the
+    # shell is already usable.
+    disk_mods = set(args.disk_modules.split())
+    bg_mods = set(args.background_modules.split())
+    t.add_file("etc/capinux/modules-disk.list", 0o644, FIXED_MTIME,
+               ("\n".join(MODULE_DIR + "/" + m for m in mods if m in disk_mods) + "\n").encode())
+    t.add_file("etc/capinux/modules-bg.list", 0o644, FIXED_MTIME,
+               ("\n".join(MODULE_DIR + "/" + m for m in mods if m in bg_mods) + "\n").encode())
 
     release = (f'NAME="capinux"\nDISTRO="alpine"\nVERSION="{args.version}"\n'
                f'KERNEL="{args.kernel}"\n')
     t.add_file("etc/capinux/release", 0o644, FIXED_MTIME, release.encode())
 
+    # --- outputs -----------------------------------------------------------
+    # Same tree, two artifacts:
+    #   * disk payload (tar.gz): rootfs for a persistent ext4 image; /init is the
+    #     runtime init and etc/capinux/rootfs-mode says "disk";
+    #   * initramfs (cpio.gz): RAM-boot rootfs; when --bootstrap-init is given its
+    #     /init is the bootstrap script that formats/unpacks/switch_roots into the
+    #     disk, so the same kernel cmdline works for both modes.
+    if args.tar_out:
+        disk_tree = t.clone()
+        disk_tree.add_file("etc/capinux/rootfs-mode", 0o644, FIXED_MTIME, b"disk\n")
+        tariff = io.BytesIO()
+        with gzip.GzipFile(fileobj=tariff, mode="wb", compresslevel=6, mtime=0, filename="") as gz:
+            entries, payload = disk_tree.emit_tar(gz)
+        data = tariff.getvalue()
+        with open(args.tar_out, "wb") as fh:
+            fh.write(data)
+        print(f"{args.tar_out}: {len(data) / 1e6:.2f} MB gz / {payload / 1e6:.2f} MB payload "
+              f"({entries} entries, persistent-disk rootfs)")
+
+    cpio_tree = t
+    if args.bootstrap_init:
+        cpio_tree = t.clone()
+        # The initramfs gets two inits: the bootstrap one at /init (decides disk vs
+        # RAM), and the runtime one next to it so RAM-mode can exec into it when no
+        # disk is attached. The disk payload keeps the runtime one at /init.
+        with open(args.bootstrap_init, "r", encoding="utf-8") as fh:
+            cpio_tree.replace_file("init", 0o755, FIXED_MTIME, fh.read().encode())
+        with open(args.init, "r", encoding="utf-8") as fh:
+            cpio_tree.add_file("etc/capinux/init-root.sh", 0o755, FIXED_MTIME,
+                               fh.read().encode())
+
     raw = io.BytesIO()
     with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=6, mtime=0, filename="") as gz:
-        entries, payload = t.emit(gz)
+        entries, payload = cpio_tree.emit(gz)
     data = raw.getvalue()
     with open(args.out, "wb") as fh:
         fh.write(data)

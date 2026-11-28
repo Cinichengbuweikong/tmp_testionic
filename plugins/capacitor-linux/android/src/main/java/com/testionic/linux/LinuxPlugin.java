@@ -175,8 +175,15 @@ public class LinuxPlugin extends Plugin implements LinuxVm.Listener {
         final int cpus = call.getInt("cpus", 2);
         final String kernelArgs = call.getString("kernelCmdline");
         final long bootTimeoutMs = call.getInt("bootTimeoutMs", 180000);
-        final boolean persistent = call.getBoolean("persistent", false);
-        final int diskSizeMb = call.getInt("diskSizeMb", 1024);
+        // rootfsMode: "ram"（默认，root 在内存）或 "disk"（整个 root 落盘，持久化）
+        // persistent:true 是旧写法，等价于 rootfsMode:"disk"。
+        String mode = call.getString("rootfsMode");
+        if (mode == null) {
+            mode = call.getBoolean("persistent", false) ? "disk" : "ram";
+        }
+        final String rootfsMode = mode;
+        final boolean persistent = "disk".equalsIgnoreCase(rootfsMode) || call.getBoolean("persistent", false);
+        final int diskSizeMb = call.getInt("diskSizeMb", "disk".equalsIgnoreCase(rootfsMode) ? 2048 : 1024);
         if (memoryMb < 256 || memoryMb > 4096) {
             call.reject("INVALID_OPTION: memoryMb must be 256..4096", "INVALID_OPTION");
             return;
@@ -191,7 +198,7 @@ public class LinuxPlugin extends Plugin implements LinuxVm.Listener {
         }
         vm.worker().execute(() -> {
             try {
-                vm.start(memoryMb, cpus, kernelArgs, bootTimeoutMs, persistent, diskSizeMb);
+                vm.start(memoryMb, cpus, kernelArgs, bootTimeoutMs, persistent, diskSizeMb, rootfsMode);
                 JSObject ret = vm.status();
                 ret.put("booted", true);
                 call.resolve(ret);
@@ -230,8 +237,15 @@ public class LinuxPlugin extends Plugin implements LinuxVm.Listener {
         final int cpus = call.getInt("cpus", 2);
         final String kernelArgs = call.getString("kernelCmdline");
         final long bootTimeoutMs = call.getInt("bootTimeoutMs", 180000);
-        final boolean persistent = call.getBoolean("persistent", false);
-        final int diskSizeMb = call.getInt("diskSizeMb", 1024);
+        // rootfsMode: "ram"（默认，root 在内存）或 "disk"（整个 root 落盘，持久化）
+        // persistent:true 是旧写法，等价于 rootfsMode:"disk"。
+        String mode = call.getString("rootfsMode");
+        if (mode == null) {
+            mode = call.getBoolean("persistent", false) ? "disk" : "ram";
+        }
+        final String rootfsMode = mode;
+        final boolean persistent = "disk".equalsIgnoreCase(rootfsMode) || call.getBoolean("persistent", false);
+        final int diskSizeMb = call.getInt("diskSizeMb", "disk".equalsIgnoreCase(rootfsMode) ? 2048 : 1024);
         vm.worker().execute(() -> {
             try {
                 if (vm.isRunning()) {
@@ -240,7 +254,7 @@ public class LinuxPlugin extends Plugin implements LinuxVm.Listener {
                         Thread.sleep(50);
                     }
                 }
-                vm.start(memoryMb, cpus, kernelArgs, bootTimeoutMs, persistent, diskSizeMb);
+                vm.start(memoryMb, cpus, kernelArgs, bootTimeoutMs, persistent, diskSizeMb, rootfsMode);
                 call.resolve(vm.status());
             } catch (Exception e) {
                 call.reject(e.getMessage() == null ? e.toString() : e.getMessage(), "RESTART_FAILED");

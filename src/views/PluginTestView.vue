@@ -343,8 +343,11 @@
         <button @click="linShowInfo">运行时信息</button>
         <button @click="linShareDir">共享目录</button>
         <label class="hint">
-          <input v-model="linPersistent" type="checkbox" />
-          持久化数据盘（512MB，重启后 /root /home /opt /usr/local 保留）
+          rootfs：
+          <select v-model="linRootfsMode">
+            <option value="ram">内存（快，重启还原）</option>
+            <option value="disk">磁盘 2GB（整盘持久化，首次启动约 1 分钟）</option>
+          </select>
         </label>
         <button @click="linClearOutput">清空输出</button>
         <span class="hint">状态：{{ linState }}</span>
@@ -467,7 +470,7 @@ export default {
       linInfo: null,
       linHandles: [],
       linKeys: LINUX_COMMON_KEYS,
-      linPersistent: false,
+      linRootfsMode: 'ram',
       pySample: [
         'import sys',
         '',
@@ -614,8 +617,8 @@ export default {
         const status = await Linux.start({
           memoryMb: 1024,
           cpus: 2,
-          persistent: this.linPersistent,
-          diskSizeMb: 512,
+          rootfsMode: this.linRootfsMode,
+          diskSizeMb: 2048,
         });
         this.linState = status.state;
         this.linOutput += '[VM 就绪] 可以直接敲命令（at bottom）或点「执行」\n';
@@ -641,8 +644,8 @@ export default {
         const status = await Linux.restart({
           memoryMb: 1024,
           cpus: 2,
-          persistent: this.linPersistent,
-          diskSizeMb: 512,
+          rootfsMode: this.linRootfsMode,
+          diskSizeMb: 2048,
         });
         this.linState = status.state;
         this.linOutput += '\n[VM 已重启]\n';
@@ -2093,10 +2096,21 @@ export default {
             // 共享目录（9p）：客户机里读写 /mnt/host（放在 Ctrl-C 之前：控制台被信号
             // 搅过之后 busybox 偶尔会卡住，会把后面的 exec 一起拖成超时）
             const shareDir = await Linux.getShareDir();
-            const shareTest = await Linux.exec({
-              command: 'echo SHARE-$((2+3)) > /mnt/host/.autotest && cat /mnt/host/.autotest',
-              timeoutMs: 20000,
-            });
+            // /mnt/host 是在后台挂的（9p 模块在 TCG 下 insmod 很慢），所以这里轮询等待，
+            // 别把"还没挂上"当成失败。
+            let shareTest = { code: -1, stdout: '' };
+            for (let i = 0; i < 30; i += 1) {
+              try {
+                shareTest = await Linux.exec({
+                  command: 'echo SHARE-$((2+3)) > /mnt/host/.autotest && cat /mnt/host/.autotest',
+                  timeoutMs: 20000,
+                });
+              } catch (err) {
+                shareTest = { code: -1, stdout: '' };
+              }
+              if (shareTest.code === 0 && shareTest.stdout.includes('SHARE-5')) break;
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+            }
 
             // 特殊键：先测一个**非破坏性**的（Ctrl-L 清屏 + 回车），再确认控制台仍可用。
             // Ctrl-C 不放进 autotest：客户机 busybox ash 在前台作业被 SIGINT 打断后

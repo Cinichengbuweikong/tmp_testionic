@@ -23,6 +23,14 @@
 >   → **stop + start 后 `/root/keep.txt` 还在**
 > - **崩溃隔离**：`echo c > /proc/sysrq-trigger` → kernel panic → QEMU 退出 →
 >   `vmExited{requested:false}` + 状态 `crashed`，**App 存活**，再 `start()` 立刻恢复
+> - **整盘 rootfs 落盘（`rootfsMode:'disk'`）**：raw 镜像 `/dev/vda` + 只读 tar 载荷 `/dev/vdb`；
+>   initramfs 里的 `/init` 是 bootstrap（加载 virtio_blk+ext4 → 有盘就挂、没盘就 `mkfs.ext4` +
+>   解包 → `switch_root`），之后 `/init` 来自磁盘。**实测：首次 61s（含 mkfs+解包 15.7MB）、
+>   之后 36~48s；重启后 `apk add file` 装的 `file-5.46` 和手写 `/usr/bin/capinux-test` 都还在**。
+>   默认 `rootfsMode:'ram'` 走内存 rootfs（~25s）。`persistent:true` 保留为别名。
+> - **启动时间的坑（重要）**：`insmod` 在 TCG 下非常贵（netfs 517KB + 9p 栈 ≈ 40~50s）。
+>   所以**磁盘栈同步加载**（mount 之前必须）、**net/9p 栈 + 网络放到后台**（`modules-disk.list`
+>   与 `modules-bg.list`），banner/shell 立刻可用，`/mnt/host` 几十秒后出现（autotest 用轮询等它）。
 > - 测试页新增「Linux 实验台」（启停/重启/状态/运行时信息/共享目录/持久化开关/命令执行/
 >   stdin 输入/特殊键键盘条/流式终端），autotest 增加 linux 段（启动/exec/交互 stdin/Ctrl-C/共享目录/崩溃）
 >
@@ -58,7 +66,8 @@
 >    `HEADER_SEARCH_PATHS` 加 `ios/ish-headers` → `getCapabilities().supported` 自动变 true。
 >    还没做：交互式 stdin（iSH 只有命令级执行，需要 real tty/openpty）、bind mount 共享目录；
 >    隔离弱于 Android（客户机在 App 进程内）。GPLv3。
-> 2. **`apk add` 的包不持久**（只保 `/root` 等四个目录）→ 下一步做 overlay/`switch_root` 全盘持久化
+> 2. **整盘落盘已做**（`rootfsMode:'disk'`）；还没做的：`stop()` 目前是 `sync; poweroff -f`（不做 umount），
+>    ext4 journal 偶发 replay 会慢 ~10s；`switch_root` 后 `/proc` 等挂载沿用 bootstrap 的（能用，但不够干净）
 > 3. **API 24/25 未真机验证**（代码已避开 API 26+ 的 `Process#isAlive/waitFor(long)/destroyForcibly`）
 > 4. 体积可裁：自编 `--disable-*` 的 QEMU 能到 ~15MB；端口转发（hostfwd）、多控制台、恢复 job control
 >    都是可加的
