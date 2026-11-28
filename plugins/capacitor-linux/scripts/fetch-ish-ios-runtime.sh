@@ -63,21 +63,42 @@ command -v python3 >/dev/null 2>&1 || die "找不到 python3（装 meson 用）"
 log "xcodebuild: $(xcodebuild -version 2>/dev/null | head -n 1)"
 log "pwd=$PWD"
 
-ensure_tool() {
-  local tool="$1"
-  local pyver userbin
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    log "安装 ${tool}（python3 -m pip --user）"
-    python3 -m pip install --user --quiet "$tool" >>"$LOG" 2>&1 || die "装不上 $tool"
-    pyver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-    userbin="$HOME/Library/Python/$pyver/bin"
-    export PATH="$userbin:$PATH"
-    command -v "$tool" >/dev/null 2>&1 || die "装完还是找不到 ${tool}（PATH=${PATH}）"
+# meson + ninja。macOS runner 的 Homebrew python 是 PEP 668（externally-managed），
+# `pip install --user` 会被拒绝，所以统一装进一个 venv 再把它的 bin 放到 PATH 前面。
+ensure_build_tools() {
+  local venv="$BUILD/venv"
+  local missing=0 t
+  for t in meson ninja; do
+    command -v "$t" >/dev/null 2>&1 || missing=1
+  done
+  if [ "$missing" -eq 0 ]; then
+    log "meson: $(meson --version 2>&1 | head -n 1)"
+    log "ninja: $(ninja --version 2>&1 | head -n 1)"
+    return 0
   fi
-  log "$tool: $("$tool" --version 2>&1 | head -n 1)"
+
+  log "安装 meson + ninja（venv: $venv）"
+  if [ ! -x "$venv/bin/python3" ]; then
+    python3 -m venv "$venv" >>"$LOG" 2>&1 || {
+      tail -n 8 "$LOG" >&2
+      die "创建 venv 失败（${LOG}）"
+    }
+  fi
+  "$venv/bin/python3" -m pip install --quiet --disable-pip-version-check \
+    --upgrade pip meson ninja >>"$LOG" 2>&1 || {
+    tail -n 12 "$LOG" >&2
+    grep -m 3 -E 'ERROR|error:' "$LOG" | while IFS= read -r line; do
+      echo "::error::PIP|$line" >&2
+    done
+    die "venv 里装不上 meson/ninja（${LOG}）"
+  }
+  export PATH="$venv/bin:$PATH"
+  command -v meson >/dev/null 2>&1 || die "装完还是找不到 meson（PATH=${PATH}）"
+  command -v ninja >/dev/null 2>&1 || die "装完还是找不到 ninja（PATH=${PATH}）"
+  log "meson: $(meson --version 2>&1 | head -n 1)"
+  log "ninja: $(ninja --version 2>&1 | head -n 1)"
 }
-ensure_tool meson
-ensure_tool ninja
+ensure_build_tools
 
 if [[ ! -d "$VENDOR/ish-arm64" ]]; then
   log "clone $ISH_REPO @ ${ISH_COMMIT}（sparse，只要 ish-arm64）"
