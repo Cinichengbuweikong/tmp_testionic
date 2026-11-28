@@ -54,6 +54,14 @@ int capish_exec(const char *utf8_command,
     }
 
 #if CAPISH_HAS_ENGINE
+    // 客户机没 boot 时**绝对不能**进引擎：become_new_init_child 里是
+    // `assert(init != NULL)`，会直接 abort 把整个 App 杀掉（实测 exit 56）。
+    if (capish_boot_state() != 2) {
+        if (on_done) {
+            on_done(-1, 0, 0.0, user);
+        }
+        return -1;
+    }
     NSString *command = [NSString stringWithUTF8String:utf8_command];
     if (command == nil) {
         if (on_done) {

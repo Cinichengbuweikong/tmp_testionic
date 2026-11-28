@@ -286,6 +286,12 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject(String(cString: capish_unavailable_reason()), "ENGINE_MISSING")
             return
         }
+        // 没 boot 就 exec 会让引擎里的 assert(init != NULL) 直接 abort（杀 App），
+        // 所以这里先挡住，给 JS 一个明确的错误码。
+        guard capish_start_state() == 2 else {
+            call.reject("BOOT_REQUIRED: 先 start() 启动客户机再 exec（当前未 boot）", "BOOT_REQUIRED")
+            return
+        }
         let timeoutMs = max(1000, call.getInt("timeoutMs", 30000))
         counter += 1
         let box = IshExecBox(plugin: self, call: call, timeoutMs: timeoutMs)

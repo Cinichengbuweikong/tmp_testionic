@@ -2077,7 +2077,13 @@ export default {
               out.infoError = String((err && err.message) || err);
             }
             try {
-              out.exec = await Linux.exec({ command: 'uname -m; cat /etc/alpine-release 2>/dev/null; echo IOS-$((3+4))', timeoutMs: 15000 });
+              // 必须先 start()（解包 rootfs + boot 客户机内核），否则 exec 会 abort
+              out.start = await Linux.start({ bootTimeoutMs: 180000 });
+            } catch (err) {
+              out.startError = String((err && err.message) || err);
+            }
+            try {
+              out.exec = await Linux.exec({ command: 'uname -m; cat /etc/alpine-release 2>/dev/null; echo IOS-$((3+4))', timeoutMs: 60000 });
             } catch (err) {
               out.execError = String((err && err.message) || err);
             }
