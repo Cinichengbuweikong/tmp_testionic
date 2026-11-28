@@ -109,9 +109,15 @@ final class PythonEngine {
         if (session == null) {
             return;
         }
+        boolean wasRunning = session.state == PythonSession.State.RUNNING;
         session.terminated = true;
         session.state = PythonSession.State.TERMINATED;
         PythonBridge.unregisterSession(sessionId);
+        if (wasRunning) {
+            // 会话正在跑用户代码：此时 callAttr 会排在它后面（死循环就永远回不来），
+            // 所以只做记账；它的 globals 会留在 Python 的 _sessions 里直到进程结束（已知取舍）。
+            return;
+        }
         try {
             runtimeModule.callAttr("reset_session", sessionId);
         } catch (Exception ignored) {

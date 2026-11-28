@@ -259,6 +259,7 @@ class PythonFacade {
     this.handles.delete(sessionId);
     if (this.isNative) {
       await PythonNative.terminateSession({ sessionId });
+      this.nativeEmit('sessionState', { sessionId, state: 'terminated' });
       return;
     }
     this.web.terminateSession(sessionId);

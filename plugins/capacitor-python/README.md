@@ -233,7 +233,7 @@ await Python.createSession({
 | 方法 | 参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
 | `listSessions()` | — | `Promise<PythonSessionInfo[]>` | 所有会话的信息（字段见 3.3） |
-| `exec(sessionId, code, timeoutMs?)` | `string, string, number?` | `Promise<PythonExecResult>` | 执行并等待；超时会终止该会话 |
+| `exec(sessionId, code, timeoutMs?)` | `string, string, number?` | `Promise<PythonExecResult>` | 执行并等待；超时会终止该会话**记录**并把调用方 reject（线程不会立刻停，见「多会话」里的警告） |
 | `run(sessionId, code)` | `string, string` | `PythonRunResult` | 触发执行立即返回，输出走事件 |
 | `writeStdin(sessionId, data)` | `string, string` | `Promise<void>` | 写一行到 stdin（自动补 `\n`） |
 | `installPackages(sessionId, packages, options?)` | `string, string[], { indexUrls?: string[] }?` | `Promise<PythonInstallResult>` | 安装包（平台差异见 pip 章节） |
@@ -379,6 +379,8 @@ s.run('name = input("Name? ")');
 await s.writeStdin('Alice');              // 之后继续执行
 ```
 
+> 原生端的 `input()` 最多等 **30s**（`PythonBridge.readLine` / `PythonEngineIOS.readLine`），超时按 EOF 处理（抛 `EOFError`）。
+>
 > Web 上要"边跑边打字"需要本地 HTTP 服务 + Worker 同步 XHR（路线图，未实现）。
 
 ---
@@ -397,13 +399,15 @@ const t0 = Date.now();
 await Promise.all([a.exec('import time; time.sleep(1)'), b.exec('import time; time.sleep(1)')]);
 console.log(Date.now() - t0);              // 实测 ~1010ms，而不是 2000ms
 
-// 死循环：超时只丢弃该会话
+// 死循环：timeout 只能让"调用方"不再等待，并把该会话标记为 terminated
 try {
   await a.exec('while True: pass', 3000);
 } catch (error) {
   console.log(error.message);              // EXEC_TIMEOUT...
 }
-await b.exec('"still alive"');             // b 不受影响
+// ⚠️ 注意：那个 Python 线程还在跑、并且一直占着 GIL ——
+//     此时**其它会话的 Python 调用也会被饿死**（b.exec 会一直等），只能重启 App 恢复。
+//     所以：不要执行不受信任的无限循环；timeout 只是保护调用方，不是"硬 kill"。
 ```
 
 状态流转：`loading → idle → running → idle`；安装包时 `installing`；终止后 `terminated`。

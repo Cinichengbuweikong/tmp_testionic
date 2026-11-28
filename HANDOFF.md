@@ -1,5 +1,19 @@
 # 项目上下文存档（HANDOFF）
 
+
+> ## 🆕 2026-11-28 第二轮审查 + 清理打包
+>
+> 1. **terminate 一个正在死循环的会话会挂死**：`PythonEngine.terminateSession` 会
+>    `callAttr(reset_session)`，而这个调用排在用户死循环后面（同一解释器、GIL）→ 永远回不来，
+>    Capacitor 插件线程也被堵住。修：会话 `state == RUNNING` 时**只做记账**，不调 Python；
+>    globals 留在 `_sessions` 里直到进程结束（已知取舍）。实测：死循环中 terminate 16ms 返回。
+> 2. 删掉从未使用的 `PythonSession.queue` / `Execution` 死代码。
+> 3. 门面 `terminateSession` 补发 `sessionState=terminated`（句柄 state 不再停在 idle）。
+> 4. README 修正错误说法：以前写死循环超时后其它会话仍能用，实际那个线程一直占着 GIL，
+>    其它会话会被饿死，只能重启 App；`timeoutMs` 只是不让调用方等待，不是硬 kill。
+> 5. README 补：原生 `input()` 最多等 30s，超时按 EOF（EOFError）。
+> 6. 清理规则：删除 node_modules/dist/android build/.gradle/ios 生成的 xcframework+stdlib+headers+json；
+>    保留源码/package-lock/requirements/runtime.py/worker.mjs/scripts/README。
 > ## 🆕 2026-11-27（深夜 3）测试视角代码审查：10 个问题 + 修复
 >
 > 用户要求"从测试角度查 bug/隐患并修"。这一轮实际发现并修掉的：
