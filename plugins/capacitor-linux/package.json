@@ -1,0 +1,56 @@
+{
+  "name": "capacitor-linux",
+  "version": "0.1.0",
+  "description": "Capacitor 插件：在 App 内运行真正的 Alpine Linux 虚拟机（Android QEMU + 离线 rootfs），提供流式 stdin/stdout/stderr、可交互的 shell、apk 包管理，崩溃与 App 隔离。",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "default": "./dist/esm/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "runtime/",
+    "scripts/",
+    "dist/"
+  ],
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "linux",
+    "alpine",
+    "qemu",
+    "vm",
+    "shell",
+    "terminal",
+    "apk"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "fetch-runtime": "python3 scripts/fetch-linux-runtime.py",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+node_modules
+dist
+android/build
+android/.gradle
+android/local.properties
+*.log
+
+# 运行时资源（scripts/fetch-linux-runtime.py 生成：Alpine kernel/rootfs + QEMU 二进制与依赖库）
+runtime/

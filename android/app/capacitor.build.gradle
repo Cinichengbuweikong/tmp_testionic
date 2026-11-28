@@ -17,6 +17,7 @@ dependencies {
     implementation project(':capacitor-foreground-state')
     implementation project(':capacitor-fullscreen')
     implementation project(':capacitor-keyboard-avoiding')
+    implementation project(':capacitor-linux')
     implementation project(':capacitor-live-update')
     implementation project(':capacitor-my-plugin')
     implementation project(':capacitor-native-basics')

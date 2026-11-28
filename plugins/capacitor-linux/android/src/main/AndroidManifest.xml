@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      插件不需要任何危险权限：
+      - QEMU 在 App 沙箱里运行，客户机的网络走 QEMU 自带 SLIRP（NAT），
+        复用宿主 App 的 INTERNET 权限即可；
+      - rootfs 放在 App 私有目录（filesDir），不需要存储权限。
+      宿主 App 唯一需要配置的是：android.packaging.jniLibs.useLegacyPackaging = true
+      （否则 nativeLibraryDir 里没有 QEMU 可执行文件，见 README）。
+    -->
+</manifest>

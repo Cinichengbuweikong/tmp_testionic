@@ -22,6 +22,14 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    packaging {
+        jniLibs {
+            // capacitor-linux 需要从 nativeLibraryDir 直接 exec QEMU：
+            // Android 10+ 的 SELinux 只允许 execve apk_data_file，而只有「安装时解压」
+            // 的原生库才会落在 nativeLibraryDir 里（不再是从 APK 里 mmap）。
+            useLegacyPackaging = true
+        }
+    }
 }
 
 repositories {

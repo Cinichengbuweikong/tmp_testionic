@@ -1,0 +1,116 @@
+{
+  "$comment": [
+    "固定在离线 VM 运行时里用到的第三方产物。改这里的版本号，然后跑",
+    "`python3 scripts/fetch-linux-runtime.py` 重新生成 runtime/（不入库）。",
+    "所有 sha256 都会在下载后校验；校验失败会直接退出，不会产出半成品。"
+  ],
+  "alpine": {
+    "version": "3.23.8",
+    "releaseBase": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64",
+    "$kernelComment": [
+      "内核和内核模块必须来自**同一个包**：Alpine 的模块带 vermagic，跨内核版本 insmod 会失败",
+      "（表现：客户机没有网卡 / 挂不上共享目录）。所以内核不再用 netboot 的 vmlinuz-virt，",
+      "而是从 linux-virt 包里取 boot/vmlinuz-virt，模块也从同一个包取，版本天然一致。",
+      "包版本一旦更新，Alpine 的 main 仓库就不再保留旧版本，所以 sha256 校验失败就是在提醒你升级这一条。"
+    ],
+    "kernel": {
+      "package": "linux-virt",
+      "version": "6.18.65-r0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/linux-virt-6.18.65-r0.apk",
+      "bytes": 39425992,
+      "sha256": "859ad147c29bf3c6d84a3ff84280aa5c94d890dc37ada31b072d099a8437f8e0",
+      "image": "boot/vmlinuz-virt",
+      "release": "6.18.65-0-virt"
+    },
+    "artifacts": {
+      "minirootfs": {
+        "path": "alpine-minirootfs-3.23.8-aarch64.tar.gz",
+        "bytes": 4027855,
+        "sha256": "3f1bd6811370264cc363bb991ff15ac67621b239ea6e25ff2eb22af3d0641473"
+      }
+    },
+    "$modulesComment": [
+      "要打进 initramfs 的内核模块，路径相对于 lib/modules/<release>/（脚本会自动补 .gz）。",
+      "顺序就是 /init 里的 insmod 顺序：依赖在前。",
+      "  virtio_*      → QEMU virt 机的网卡/磁盘；",
+      "  netfs + 9p*   → 宿主共享目录（-virtfs），客户机挂到 /mnt/host；",
+      "  缺一个都会在启动日志里表现为『没有网卡』或『/mnt/host 为空』。"
+    ],
+    "modules": [
+      "kernel/drivers/virtio/virtio_mmio.ko",
+      "kernel/net/core/failover.ko",
+      "kernel/drivers/net/net_failover.ko",
+      "kernel/drivers/net/virtio_net.ko",
+      "kernel/drivers/block/virtio_blk.ko",
+      "kernel/fs/netfs/netfs.ko",
+      "kernel/net/9p/9pnet.ko",
+      "kernel/net/9p/9pnet_virtio.ko",
+      "kernel/fs/9p/9p.ko",
+      "kernel/lib/crc/crc16.ko",
+      "kernel/fs/mbcache.ko",
+      "kernel/fs/jbd2/jbd2.ko",
+      "kernel/fs/ext4/ext4.ko"
+    ],
+    "$persistComment": [
+      "持久化数据盘（start({ persistent: true })）需要客户机自己能 mkfs.ext4：",
+      "minirootfs 里没有 e2fsprogs，所以在构建期把这几个 .apk 解包、合并进 rootfs。",
+      "mke2fs 依赖 libe2p/libext2fs/libcom_err/libuuid/libblkid/libeconf，缺一个都会在",
+      "客户机里报 'Error relocating mkfs.ext4: undefined symbol'。"
+    ],
+    "persist": {
+      "packages": [
+        {
+          "name": "e2fsprogs",
+          "version": "1.47.3-r0",
+          "file": "e2fsprogs-1.47.3-r0.apk",
+          "bytes": 184776,
+          "sha256": "101d03fd57d77d2b27d9c0fa0e9566c68d4a5660680b61cbede193c6c6a23bd7"
+        },
+        {
+          "name": "e2fsprogs-libs",
+          "version": "1.47.3-r0",
+          "file": "e2fsprogs-libs-1.47.3-r0.apk",
+          "bytes": 216557,
+          "sha256": "ae92909526785fc72515e248d2ab37ff1df08c4d1442ac4ccc40a71604e218f0"
+        },
+        {
+          "name": "libblkid",
+          "version": "2.41.6-r1",
+          "file": "libblkid-2.41.6-r1.apk",
+          "bytes": 93551,
+          "sha256": "0372923ddcaa28ec8f97992d2a03338ab6dde89686727c6ee54c210725e84724"
+        },
+        {
+          "name": "libuuid",
+          "version": "2.41.6-r1",
+          "file": "libuuid-2.41.6-r1.apk",
+          "bytes": 15375,
+          "sha256": "4dd5ed2791104a0043c4f27e433200117a36421a9bcd65906ce4b5c79284e478"
+        },
+        {
+          "name": "libeconf",
+          "version": "0.8.3-r0",
+          "file": "libeconf-0.8.3-r0.apk",
+          "bytes": 27249,
+          "sha256": "d450d85a7ee3b9940639c0f6ea2f8b7feea821bbc3828256ec784437082aefde"
+        },
+        {
+          "name": "libcom_err",
+          "version": "1.47.3-r0",
+          "file": "libcom_err-1.47.3-r0.apk",
+          "bytes": 6583,
+          "sha256": "d47a976ac1c3480b420b2ab48d3cf8585b0283bd7f1fdd0be544c61fbda05713"
+        }
+      ]
+    }
+  },
+  "qemu": {
+    "$comment": "Android arm64 上没有官方 QEMU 构建，这里用 Termux 的 bionic 构建（GPLv2），连同依赖库一起打进 APK。",
+    "provider": "termux",
+    "index": "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.gz",
+    "package": "qemu-system-aarch64-headless",
+    "version": "1:11.1.3",
+    "binary": "usr/bin/qemu-system-aarch64",
+    "$jniLibComment": "qemu 可执行文件必须以 lib*.so 的形式进 jniLibs：Android 10+ 的 SELinux 只允许 execve apk_data_file（即 nativeLibraryDir）。"
+  }
+}

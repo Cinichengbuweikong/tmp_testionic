@@ -334,6 +334,49 @@
     </section>
 
     <section class="card">
+      <h2>Linux 实验台（QEMU + 离线 Alpine Linux）</h2>
+      <div class="actions">
+        <button @click="linStart">启动 VM</button>
+        <button @click="linStop">停止</button>
+        <button @click="linRestart">重启</button>
+        <button @click="linShowStatus">状态</button>
+        <button @click="linShowInfo">运行时信息</button>
+        <button @click="linShareDir">共享目录</button>
+        <label class="hint">
+          <input v-model="linPersistent" type="checkbox" />
+          持久化数据盘（512MB，重启后 /root /home /opt /usr/local 保留）
+        </label>
+        <button @click="linClearOutput">清空输出</button>
+        <span class="hint">状态：{{ linState }}</span>
+      </div>
+      <div class="py-stdin">
+        <input
+          v-model="linCommand"
+          @keyup.enter="linExec"
+          placeholder="在 Linux 里执行的命令（exec：stdout/stderr 分开返回）"
+        />
+        <button @click="linExec">执行</button>
+      </div>
+      <div class="py-stdin">
+        <input
+          v-model="linStdinText"
+          @keyup.enter="linSendStdin"
+          placeholder="stdin：写进客户机控制台（相当于在终端里敲键盘）"
+        />
+        <button @click="linSendStdin">发送</button>
+      </div>
+      <div class="actions">
+        <button v-for="key in linKeys" :key="key" @click="linSendKey(key)">{{ key }}</button>
+      </div>
+      <pre class="py-output">{{ linOutput }}</pre>
+      <p class="hint">
+        Alpine Linux 3.23 + 内核 6.18（QEMU TCG 模拟，arm64），kernel/rootfs/QEMU 全部随 APK
+        离线分发，启动不需要网络。客户机是独立进程：Linux 崩溃（kernel panic / OOM）只杀
+        QEMU，App 不受影响。`apk add &lt;pkg&gt;` 需要 VM 网络（QEMU SLIRP，走宿主网络）。
+      </p>
+    </section>
+
+    <section class="card">
       <h2>配色样例（用来看 forceDark 是否把颜色搞坏）</h2>
       <div class="swatches">
         <div class="swatch" style="background: #f44336">#F44336</div>
@@ -379,6 +422,7 @@ import { BackgroundKeepalive } from 'capacitor-background-keepalive';
 import { LiveUpdate } from 'capacitor-live-update';
 import { Python, PythonNative, checkPythonSupport } from 'capacitor-python';
 import { destroyEditor, getEditorValue, initEditor } from 'capacitor-python/editor';
+import { Linux, LINUX_COMMON_KEYS } from 'capacitor-linux';
 import { LIVE_UPDATE_FIXTURE } from '../plugin-test-fixtures';
 
 /**
@@ -415,6 +459,15 @@ export default {
       pyOutput: '',
       pyStdinText: '',
       pyState: '未启动',
+      // Linux 实验台（QEMU + Alpine）
+      linState: '未启动',
+      linOutput: '',
+      linStdinText: '',
+      linCommand: 'uname -a; cat /etc/alpine-release; apk --version',
+      linInfo: null,
+      linHandles: [],
+      linKeys: LINUX_COMMON_KEYS,
+      linPersistent: false,
       pySample: [
         'import sys',
         '',
@@ -455,6 +508,16 @@ export default {
     }
     this.pySession = null;
     this.pyEditor = null;
+
+    // Linux：只摘掉监听器，VM 继续在后台跑（下次进页面用「状态」看它还活着）
+    for (const handle of this.linHandles) {
+      try {
+        void handle.remove();
+      } catch (error) {
+        /* ignore */
+      }
+    }
+    this.linHandles = [];
   },
 
   async mounted() {
@@ -462,6 +525,8 @@ export default {
 
     // 调试/自动化入口：CDP 里可以直接驱动 Python 运行时与编辑器
     window.__py = { Python, PythonNative, initEditor, getEditorValue, destroyEditor };
+    // 调试/自动化入口：CDP 里直接操作 Linux VM（boot / exec / write / stop）
+    window.__linux = { Linux };
 
     // Python 实验台：编辑器先建好（会话懒创建，避免每次进页面都启动解释器）
     try {
@@ -482,6 +547,155 @@ export default {
 
     error(label, err) {
       this.print(`${label} 失败`, { message: String((err && err.message) || err) });
+    },
+
+    // ---------- Linux VM（QEMU + 离线 Alpine rootfs）----------
+
+    async linEnsureListeners() {
+      if (this.linHandles.length) return;
+      this.linHandles.push(
+        await Linux.addListener('consoleOutput', (ev) => {
+          this.linOutput += ev.data;
+          this.linTrimOutput();
+        }),
+      );
+      this.linHandles.push(
+        await Linux.addListener('vmState', (ev) => {
+          this.linState = ev.detail ? `${ev.state} (${ev.detail})` : ev.state;
+        }),
+      );
+      this.linHandles.push(
+        await Linux.addListener('vmExited', (ev) => {
+          this.linOutput += `\n[VM 退出] code=${ev.code} uptime=${ev.uptimeMs}ms requested=${ev.requested} reason=${ev.reason}\n`;
+        }),
+      );
+      this.linHandles.push(
+        await Linux.addListener('engineLog', (ev) => {
+          this.linOutput += `[qemu] ${ev.line}\n`;
+        }),
+      );
+    },
+
+    linTrimOutput() {
+      // 控制台会一直涨：超过 60KB 就只留最后 50KB（终端语义本来也是滚动缓冲）
+      if (this.linOutput.length > 60000) this.linOutput = this.linOutput.slice(-50000);
+    },
+
+    async linShowInfo() {
+      try {
+        this.linInfo = await Linux.getInfo();
+        this.print('Linux 运行时信息', this.linInfo);
+      } catch (error) {
+        this.error('Linux.getInfo', error);
+      }
+    },
+
+    async linShowStatus() {
+      try {
+        const [status, caps] = await Promise.all([Linux.getStatus(), Linux.getCapabilities()]);
+        this.print('Linux 状态', { status, caps });
+      } catch (error) {
+        this.error('Linux.getStatus', error);
+      }
+    },
+
+    async linStart() {
+      try {
+        await this.linEnsureListeners();
+        const caps = await Linux.getCapabilities();
+        if (!caps.supported) {
+          this.linOutput += `\n[不支持] ${(caps.reasons || []).join('; ')}\n`;
+          return;
+        }
+        this.linState = '启动中…';
+        this.linOutput +=
+          '\n[启动 VM] 首次启动会先把 kernel/rootfs 解压到 App 私有目录（约 15MB），' +
+          '然后 QEMU 用 TCG 引导 Alpine，真机约 10–20 秒…\n';
+        const status = await Linux.start({
+          memoryMb: 1024,
+          cpus: 2,
+          persistent: this.linPersistent,
+          diskSizeMb: 512,
+        });
+        this.linState = status.state;
+        this.linOutput += '[VM 就绪] 可以直接敲命令（at bottom）或点「执行」\n';
+      } catch (error) {
+        this.linOutput += `\n[启动失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async linStop() {
+      try {
+        const status = await Linux.stop({ force: false });
+        this.linState = status.state;
+        this.linOutput += '\n[已停止]\n';
+      } catch (error) {
+        this.linOutput += `\n[停止失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async linRestart() {
+      try {
+        await this.linEnsureListeners();
+        this.linState = '重启中…';
+        const status = await Linux.restart({
+          memoryMb: 1024,
+          cpus: 2,
+          persistent: this.linPersistent,
+          diskSizeMb: 512,
+        });
+        this.linState = status.state;
+        this.linOutput += '\n[VM 已重启]\n';
+      } catch (error) {
+        this.linOutput += `\n[重启失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async linSendStdin() {
+      const text = this.linStdinText;
+      if (!text) return;
+      this.linStdinText = '';
+      try {
+        await Linux.write({ data: `${text}\n` });
+      } catch (error) {
+        this.linOutput += `\n[stdin 失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async linShareDir() {
+      try {
+        const share = await Linux.getShareDir();
+        this.linInfo = share;
+        this.print('Linux 共享目录', share);
+        this.linOutput += `\n[共享目录] 宿主 ${share.hostPath}  <->  客户机 ${share.guestPath}\n`;
+      } catch (error) {
+        this.error('Linux.getShareDir', error);
+      }
+    },
+
+    async linSendKey(key) {
+      try {
+        await Linux.sendKey({ key });
+      } catch (error) {
+        this.linOutput += `\n[sendKey ${key} 失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    async linExec() {
+      const command = this.linCommand;
+      if (!command) return;
+      try {
+        const result = await Linux.exec({ command, timeoutMs: 180000 });
+        let summary = `\n[exec code=${result.code} ${result.durationMs}ms${result.timedOut ? ' TIMEOUT' : ''}]`;
+        if (result.stderr) summary += `\n[exec stderr]\n${result.stderr}`;
+        this.linOutput += `${summary}\n`;
+      } catch (error) {
+        this.linOutput += `\n[exec 失败] ${String((error && error.message) || error)}\n`;
+      }
+    },
+
+    linClearOutput() {
+      this.linOutput = '';
     },
 
     // ---------- Python 实验台：编辑器 + 流式 stdout/stderr + 阻塞 stdin ----------
@@ -1839,6 +2053,119 @@ export default {
       } catch (err) {
         results.ok = false;
         results.pythonError = String((err && err.message) || err);
+      }
+
+      window.__autotestStage = 'linux';
+      // ---- Linux VM（QEMU + 离线 Alpine）：启动 + exec + 交互 stdin + 崩溃隔离 ----
+      try {
+        const caps = await Linux.getCapabilities();
+        if (!caps.supported) {
+          results.linux = { skipped: true, reason: (caps.reasons || []).join('; ') };
+        } else {
+          results.linux = await withTimeout(async () => {
+            const info = await Linux.getInfo();
+            let exitEvent = null;
+            const consoleChunks = [];
+            const exitHandle = await Linux.addListener('vmExited', (ev) => {
+              exitEvent = ev;
+            });
+            const consoleHandle = await Linux.addListener('consoleOutput', (ev) => {
+              if (consoleChunks.length < 400) consoleChunks.push(ev.data);
+            });
+
+            await Linux.start({ memoryMb: 1024, cpus: 2 });
+
+            const probe = await Linux.exec({
+              command: 'uname -m; cat /etc/alpine-release; apk --version | head -1',
+              timeoutMs: 90000,
+            });
+
+            // 交互式 stdin：exec 里跑一个正在等输入的程序，再从 JS 写进去
+            // （验证「运行中的进程能收到 WebView 写入的内容」）
+            const interactive = Linux.exec({
+              command: 'read name; echo "HELLO-$name"',
+              timeoutMs: 45000,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+            await Linux.write({ data: 'from-webview\n' });
+            const interactiveResult = await interactive;
+
+            // 共享目录（9p）：客户机里读写 /mnt/host（放在 Ctrl-C 之前：控制台被信号
+            // 搅过之后 busybox 偶尔会卡住，会把后面的 exec 一起拖成超时）
+            const shareDir = await Linux.getShareDir();
+            const shareTest = await Linux.exec({
+              command: 'echo SHARE-$((2+3)) > /mnt/host/.autotest && cat /mnt/host/.autotest',
+              timeoutMs: 20000,
+            });
+
+            // 特殊键：先测一个**非破坏性**的（Ctrl-L 清屏 + 回车），再确认控制台仍可用。
+            // Ctrl-C 不放进 autotest：客户机 busybox ash 在前台作业被 SIGINT 打断后
+            // 偶尔会把控制台卡住（见 README「已知限制」），会让后续用例连锁超时；
+            // 它由测试页的键盘条 + 真机手动验证（suspend/中断行为见 README 实测记录）。
+            await Linux.sendKey({ key: 'ctrl+l' });
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            const keyTest = await Linux.exec({
+              command: 'echo KEY-$((4+4))',
+              timeoutMs: 20000,
+            });
+
+            // 崩溃隔离：让客户机内核 panic（sysrq crash）-> QEMU 进程退出，App 必须活着。
+            // 注意 PID 1 的 SIGKILL 会被内核忽略，所以不能用 kill -9 1。
+            Linux.exec({ command: 'echo c > /proc/sysrq-trigger', timeoutMs: 8000 }).catch(() => null);
+            for (let i = 0; i < 100 && !exitEvent; i += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 200));
+            }
+            const afterCrash = await Linux.getStatus();
+            await consoleHandle.remove();
+            await exitHandle.remove();
+
+            return {
+              runtime: {
+                distributionVersion: info.distributionVersion,
+                kernelRelease: info.kernelRelease,
+                qemuVersion: info.qemuVersion,
+                engine: info.engine,
+                rootfsBytes: info.rootfsBytes,
+              },
+              probe: { code: probe.code, stdout: probe.stdout.trim(), stderr: probe.stderr.trim() },
+              interactive: { code: interactiveResult.code, stdout: interactiveResult.stdout.trim() },
+              specialKey: { code: keyTest.code, stdout: keyTest.stdout.trim() },
+              share: {
+                hostPath: shareDir.hostPath,
+                guestPath: shareDir.guestPath,
+                code: shareTest.code,
+                stdout: shareTest.stdout.trim(),
+              },
+              crash: {
+                exited: !!exitEvent,
+                code: exitEvent && exitEvent.code,
+                requested: exitEvent && exitEvent.requested,
+                stateAfter: afterCrash.state,
+              },
+              consoleSeen: consoleChunks.join('').includes('capinux'),
+            };
+          }, 420000);
+
+          const linuxOk =
+            results.linux.probe.code === 0 &&
+            /aarch64/.test(results.linux.probe.stdout) &&
+            /apk-tools/.test(results.linux.probe.stdout) &&
+            results.linux.interactive.stdout.includes('HELLO-from-webview') &&
+            results.linux.specialKey.code === 0 &&
+            results.linux.specialKey.stdout.includes('KEY-8') &&
+            results.linux.share.code === 0 &&
+            results.linux.share.stdout.includes('SHARE-5') &&
+            results.linux.crash.exited === true &&
+            results.linux.crash.requested === false &&
+            results.linux.crash.stateAfter === 'crashed';
+          if (!linuxOk) {
+            results.ok = false;
+            results.reason = `linux 校验失败: ${JSON.stringify(results.linux)}`;
+          }
+        }
+      } catch (err) {
+        results.ok = false;
+        results.linuxError = String((err && err.message) || err);
       }
 
       window.__autotestStage = 'done';

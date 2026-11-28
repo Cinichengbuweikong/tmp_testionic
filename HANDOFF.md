@@ -1,6 +1,70 @@
 # 项目上下文存档（HANDOFF）
 
 
+> ## 🧭 交接点（2026-11-28 15:45）：新插件 `capacitor-linux`（离线 Alpine Linux 虚拟机）
+>
+> **一句话**：`plugins/capacitor-linux/` 在 App 里跑**真的 Alpine Linux 虚拟机**
+> （QEMU TCG + 官方 kernel/rootfs，全离线、无 root、Android 7.0+/arm64），
+> 客户机是独立进程 → **Linux 崩了 App 不死**。20 个插件，`audit:plugins` / `verify:ios` 通过。
+>
+> ### 交付内容（都已在真机 Redmi K30S / Android 10 验证）
+>
+> - 引导：`start()` → `capinux: ready` **17~26 秒**（2 vCPU / 1GB）；Alpine **3.23.8**、
+>   内核 **6.18.65-0-virt**、QEMU **11.1.3**（Termux bionic 构建，从 `nativeLibraryDir` exec）
+> - 流式 stdio：`consoleOutput {data, stream:'stdout'|'stderr'}`；**stdout/stderr 分成两条流**
+>   （第二条串口 `/dev/ttyAMA1` + unix-socket chardev）
+> - 交互：`write()` 敲键盘；`exec()` 返回 `{code, stdout, stderr, timedOut, interrupted}`；
+>   `sendKey({key})` 支持 Ctrl-C/D/Z、方向键、F1~F12（Ctrl-C 真的发 SIGINT）
+> - `apk` 可用：`apk update` → 27445 包；`apk add python3` → 33 包/50.2MiB；`python3 -c` 正常
+> - **共享目录** `getShareDir()`：宿主 `<files>/linuxvm/share` ↔ 客户机 `/mnt/host`
+>   （9p over virtio，双向实时；真机双向读写验证）
+> - **持久化数据盘** `start({persistent:true, diskSizeMb})`：raw 镜像 → `/dev/vda`，
+>   客户机首次启动自己 `mkfs.ext4`（e2fsprogs 离线 bake），`/root /home /opt /usr/local` 绑上去
+>   → **stop + start 后 `/root/keep.txt` 还在**
+> - **崩溃隔离**：`echo c > /proc/sysrq-trigger` → kernel panic → QEMU 退出 →
+>   `vmExited{requested:false}` + 状态 `crashed`，**App 存活**，再 `start()` 立刻恢复
+> - 测试页新增「Linux 实验台」（启停/重启/状态/运行时信息/共享目录/持久化开关/命令执行/
+>   stdin 输入/特殊键键盘条/流式终端），autotest 增加 linux 段（启动/exec/交互 stdin/Ctrl-C/共享目录/崩溃）
+>
+> ### 体积（≈85MB，APK 压缩后约 +60MB）
+>
+> QEMU 29.5 + 依赖库 37.8 + 内核 10.4 + rootfs 6.3（minirootfs + 13 个 .ko + e2fsprogs）
+>
+> ### 关键实现（改之前先看 README）
+>
+> - `runtime.lock.json` 固定所有第三方版本 + sha256；`scripts/fetch-linux-runtime.py` 是唯一构建入口
+>   （下载 → 校验 → 取 kernel/模块 → 建 initramfs → 解析 QEMU 的 ELF 闭包 → 写 runtime/）
+> - **内核和模块必须来自同一个 `linux-virt` apk**（vermagic），否则客户机没网卡/挂不上 9p/持久盘
+> - **jniLibs 只打包 `lib*.so`**：`libz.so.1` 这类名字会被 AGP 静默丢掉 →
+>   `jni_name()` 同长度改名成 `libz_1.so` + `elf_rename_deps()` 就地改写 `DT_NEEDED`/`SONAME`
+> - **AAPT 会把 assets 里的 `*.gz` 改名** → 产物叫 `rootfs.cpio`（内容仍 gzip），Java 从 manifest 读资产名
+> - **cpio 顺序**：内核解包器不跟符号链接，必须先目录后符号链接再文件（`cpio-lint.py` 每次构建都跑）
+> - **宿主 App 必须 `packaging { jniLibs { useLegacyPackaging = true } }`**（否则 nativeLibraryDir 里没有 QEMU）
+> - 客户机交互 shell **关了 job control**（`set +m` + `/init` 看门狗），否则 Ctrl-C 后 tty 前台进程组
+>   留在死作业上、shell SIGTTIN 挂起、控制台像死了（代价：没有 Ctrl-Z/fg/bg）
+> - 线程模型：`start/exec` 走串行 worker，`write/sendKey/stop` 走独立 I/O worker
+>   （否则 exec 阻塞时 stdin 写不进去）
+>
+> ### 已知边界 / 下一步
+>
+> 1. **iOS 未实现**，但引擎已定：**iSH-ARM64**（`everettjf/dsh-ios` 的 `ish-arm64/`，Asbestos
+>    线程码解释器，AArch64 客户机，能跑 Node/Go/Rust，已在 OpenMinis 上线）。要点：GPLv3、
+>    必须在 macOS 构建、客户机在 App 进程内 → 隔离弱于 Android。README 第 7 节有落地步骤。
+> 2. **`apk add` 的包不持久**（只保 `/root` 等四个目录）→ 下一步做 overlay/`switch_root` 全盘持久化
+> 3. **API 24/25 未真机验证**（代码已避开 API 26+ 的 `Process#isAlive/waitFor(long)/destroyForcibly`）
+> 4. 体积可裁：自编 `--disable-*` 的 QEMU 能到 ~15MB；端口转发（hostfwd）、多控制台、恢复 job control
+>    都是可加的
+>
+> ### 环境（本轮顺带踩到的）
+>
+> - 本轮开始时工作区目录权限坏了（`SetNamedSecurityInfoW failed ... grantWrite`），
+>   用 DSH 的 `diagnose-windows-sandbox-acl` 脚本修好（备份+回滚命令在 `D:\projs\testionic-acl-recovery`）
+> - 验证：`npm run audit:plugins`（20 插件 0 问题）、`npm run verify:ios` 通过、真机 autotest
+>   （见 `PLUGIN_AUTOTEST_RESULT`）、真机定向探针（9p/持久化/Ctrl-C 都有记录）
+> - ⚠️ `plugins/capacitor-linux/runtime/` 是**不入库**的构建产物（≈85MB），新克隆仓库要先
+>   `python3 plugins/capacitor-linux/scripts/fetch-linux-runtime.py`（约 140MB 下载）再 `npm run build:plugins`
+>
+>
 > ## 🧭 交接点（2026-11-28 13:20）：capacitor-python 0.3.0 已完成并清理
 >
 > **新对话第一句**：读 `HANDOFF.md`（就是这份文件），然后按下面「当前状态」继续。

@@ -26,6 +26,8 @@
 | [capacitor-background-keepalive](./capacitor-background-keepalive/) | ✅ 已验证（真机 + 模拟器） | ✅ CI 通过 | ❌（浏览器无后台执行） | **后台保活**：Android 前台服务 + 常驻通知（`specialUse`/`mediaPlayback`/`dataSync`，处理 Android 14+ 类型与 15+ 超时）+ 电池优化豁免；iOS 提供 `audio`/`location`/`backgroundTask` 三种**明确标注限制**的尽力模式（README 有 App Store 2.5.4 风险说明） |
 | [capacitor-live-update](./capacitor-live-update/) | ✅ 已验证（真机，含端到端 OTA） | ✅ CI 通过 | ❌（只能 check） | **热更新（OTA）**：从后端拉 zip → **SHA-256 + ECDSA P-256 验签** → 解压到私有目录 → 切换 Capacitor 的 WebView 根路径；**原子安装 + 启动自愈（未确认自动回滚）+ 原生升级丢弃 OTA**；iOS 自带 ZipArchive（Compression 框架，无第三方依赖） |
 | [capacitor-permissions](./capacitor-permissions/) | ✅ 已验证（真机 + 模拟器） | ✅ CI 通过 | ✅（Permissions API） | **权限检查/申请**：统一 id（camera/microphone/location/notifications/photos/storage/contacts/calendar/reminders/bluetooth/motion/activityRecognition/bodySensors/tracking/speech），Android 走 Capacitor `@Permission` 别名，iOS 逐框架映射并串行请求 |
+| [capacitor-python](./capacitor-python/) | ✅ 已验证（真机） | ✅ CI 通过 | ✅（Pyodide） | **原生 CPython 3.11**：Android=Chaquopy、iOS=Python-Apple-support、Web=Pyodide；会话句柄 + 流式 stdio + 阻塞 stdin + 编辑器 |
+| [capacitor-linux](./capacitor-linux/) | ✅ 已验证（真机，Android 7.0+/arm64） | ⏳ 未实现（引擎选定 iSH-ARM64） | ❌（明确不支持） | **离线 Alpine Linux 虚拟机**：QEMU TCG + 官方 kernel/rootfs 全随 APK，流式 shell、`apk`、特殊键、9p 共享目录、持久化数据盘、崩溃不连累 App（≈+85MB） |
 
 ## 新增插件的标准流程
 

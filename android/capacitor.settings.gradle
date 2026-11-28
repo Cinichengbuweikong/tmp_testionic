@@ -26,6 +26,9 @@ project(':capacitor-fullscreen').projectDir = new File('../plugins/capacitor-ful
 include ':capacitor-keyboard-avoiding'
 project(':capacitor-keyboard-avoiding').projectDir = new File('../plugins/capacitor-keyboard-avoiding/android')
 
+include ':capacitor-linux'
+project(':capacitor-linux').projectDir = new File('../plugins/capacitor-linux/android')
+
 include ':capacitor-live-update'
 project(':capacitor-live-update').projectDir = new File('../plugins/capacitor-live-update/android')
 

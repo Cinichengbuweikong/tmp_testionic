@@ -25,6 +25,7 @@
     "capacitor-foreground-state": "file:plugins/capacitor-foreground-state",
     "capacitor-fullscreen": "file:plugins/capacitor-fullscreen",
     "capacitor-keyboard-avoiding": "file:plugins/capacitor-keyboard-avoiding",
+    "capacitor-linux": "file:plugins/capacitor-linux",
     "capacitor-live-update": "file:plugins/capacitor-live-update",
     "capacitor-my-plugin": "file:plugins/capacitor-my-plugin",
     "capacitor-native-basics": "file:plugins/capacitor-native-basics",
