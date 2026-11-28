@@ -77,7 +77,7 @@ ensure_build_tools() {
     return 0
   fi
 
-  log "安装 meson + ninja（venv: $venv）"
+  log "安装 meson + ninja（venv: ${venv}）"
   if [ ! -x "$venv/bin/python3" ]; then
     python3 -m venv "$venv" >>"$LOG" 2>&1 || {
       tail -n 8 "$LOG" >&2
