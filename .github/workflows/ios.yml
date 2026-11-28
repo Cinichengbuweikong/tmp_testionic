@@ -220,11 +220,21 @@ jobs:
 
           APP=$(find build/ios/Build/Products -name "App.app" -maxdepth 3 | head -n 1)
           echo "App bundle: $APP"
-          xcrun simctl install "$UDID" "$APP"
+          # 安装/启动失败时**不要**让 set -e 把脚本顶掉（那样一行诊断都看不到）
+          set +e
+          xcrun simctl install "$UDID" "$APP" > sim-install.log 2>&1
+          INSTALL_RC=$?
+          echo "simctl install rc=$INSTALL_RC"
+          if [ "$INSTALL_RC" -ne 0 ]; then
+            tail -n 6 sim-install.log | sed 's/^ *//' | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::INSTALL|${line}"
+            done
+          fi
 
           # --console-pty 会接管 App 的 stdout，Capacitor 把 JS console.log 转发到原生 print
           xcrun simctl launch --console-pty "$UDID" com.myapp.testionic > sim-console.log 2>&1 &
           LAUNCH_PID=$!
+          set -e
           # 轮询等待 autotest 结果（最长 300s）：Python 用例要编译 ~13MB wasm，慢机器上更久
           for i in $(seq 1 60); do
             if grep -q "PLUGIN_AUTOTEST_RESULT" sim-console.log; then
@@ -236,6 +246,7 @@ jobs:
           sleep 2
 
           xcrun simctl io "$UDID" screenshot ios-launch.png || true
+          wait "$LAUNCH_PID" 2>/dev/null; LAUNCH_RC=$?; echo "simctl launch rc=$LAUNCH_RC"
           kill "$LAUNCH_PID" 2>/dev/null || true
 
           echo "----- simulator console (tail) -----"
