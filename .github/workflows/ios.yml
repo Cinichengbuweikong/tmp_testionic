@@ -185,6 +185,9 @@ jobs:
           fi
 
       - name: Run app in simulator and verify plugin (fail on error)
+        # iSH 引擎接上之后，Linux 用例真的会在模拟器里跑；万一客户机起不来，
+        # 这一步最多给 15 分钟，避免把 job 拖到 90 分钟上限。
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available --json \

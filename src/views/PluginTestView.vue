@@ -2077,12 +2077,12 @@ export default {
               out.infoError = String((err && err.message) || err);
             }
             try {
-              out.exec = await Linux.exec({ command: 'uname -m; cat /etc/alpine-release 2>/dev/null; echo IOS-$((3+4))', timeoutMs: 60000 });
+              out.exec = await Linux.exec({ command: 'uname -m; cat /etc/alpine-release 2>/dev/null; echo IOS-$((3+4))', timeoutMs: 15000 });
             } catch (err) {
               out.execError = String((err && err.message) || err);
             }
             return out;
-          }, 180000);
+          }, 60000);
         } else {
           results.linux = await withTimeout(async () => {
             const info = await Linux.getInfo();

@@ -198,6 +198,8 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
         if pid > 0 {
             box.pid = pid
             runningPids.insert(pid)
+            // 客户机进程起来了才需要看门狗；pid<0 时 C 侧已经回调过 done。
+            box.armWatchdog()
         } else {
             // C 侧已经（或即将）回调 done，这里不重复处理。
         }
@@ -226,11 +228,30 @@ final class IshExecBox {
     var stderr = ""
     var pid: Int32 = 0
     var finished = false
+    private var watchdog: DispatchWorkItem?
 
     init(plugin: LinuxPlugin, call: CAPPluginCall, timeoutMs: Int) {
         self.plugin = plugin
         self.call = call
         self.timeoutMs = timeoutMs
+    }
+
+    /// 超时看门狗：iSH 的 completion 只有在客户机进程真的退出时才回调，引擎没装 rootfs
+    /// 时可能永远不回调 —— 那样 JS 侧就会一直等。这里到点就 SIGKILL 并 resolve
+    /// (`timedOut: true`)，语义与 Android 侧一致。
+    func armWatchdog() {
+        let item = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.finished else { return }
+            capish_kill(self.pid, 9)
+            self.complete(code: -3, duration: Date().timeIntervalSince(self.startedAt))
+        }
+        watchdog = item
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: item)
+    }
+
+    func cancelWatchdog() {
+        watchdog?.cancel()
+        watchdog = nil
     }
 
     func append(line: String, isStderr: Bool) {
@@ -246,6 +267,7 @@ final class IshExecBox {
     func complete(code: Int32, duration: Double) {
         if finished { return }
         finished = true
+        cancelWatchdog()
         plugin.finish(pid: pid)
         var payload: [String: Any] = [
             "code": Int(code),
