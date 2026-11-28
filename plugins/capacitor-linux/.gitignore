@@ -7,3 +7,9 @@ android/local.properties
 
 # 运行时资源（scripts/fetch-linux-runtime.py 生成：Alpine kernel/rootfs + QEMU 二进制与依赖库）
 runtime/
+
+# iOS 引擎 iSH-ARM64 的构建产物（scripts/fetch-ish-ios-runtime.sh 生成，需 macOS）
+ios/ish-vendor/
+ios/ish-build/
+ios/ish-headers/
+ios/CapISH.xcframework/

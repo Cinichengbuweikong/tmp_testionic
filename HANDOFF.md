@@ -47,13 +47,24 @@
 >
 > ### 已知边界 / 下一步
 >
-> 1. **iOS 未实现**，但引擎已定：**iSH-ARM64**（`everettjf/dsh-ios` 的 `ish-arm64/`，Asbestos
->    线程码解释器，AArch64 客户机，能跑 Node/Go/Rust，已在 OpenMinis 上线）。要点：GPLv3、
->    必须在 macOS 构建、客户机在 App 进程内 → 隔离弱于 Android。README 第 7 节有落地步骤。
+> 1. **iOS：第 1 步已落地，等 macOS 编译**。引擎选 **iSH-ARM64**（`everettjf/dsh-ios` 的
+>    `ish-arm64/`，Asbestos 线程码解释器 + AArch64 客户机，和 Android 同一份 Alpine aarch64）。
+>    已写：`ios/Sources/CapISHBridge/`（C 桥，`__has_include` 两路编译 → 没引擎也能编译）、
+>    `LinuxPlugin.swift`（capabilities/start/stop/restart/exec/getShareDir，exec 走
+>    `ISHShellExecutor` 逐行回调）、`scripts/fetch-ish-ios-runtime.sh`（clone→clang→libtool→
+>    `xcodebuild -create-xcframework`，**只能 macOS**）、`.github/workflows/ios-ish.yml`
+>    （workflow_dispatch，产出 `CapISH.xcframework` artifact）。
+>    **下一步**：`gh workflow run ios-ish.yml` → 修编译错误 → 把 xcframework 链进 App +
+>    `HEADER_SEARCH_PATHS` 加 `ios/ish-headers` → `getCapabilities().supported` 自动变 true。
+>    还没做：交互式 stdin（iSH 只有命令级执行，需要 real tty/openpty）、bind mount 共享目录；
+>    隔离弱于 Android（客户机在 App 进程内）。GPLv3。
 > 2. **`apk add` 的包不持久**（只保 `/root` 等四个目录）→ 下一步做 overlay/`switch_root` 全盘持久化
 > 3. **API 24/25 未真机验证**（代码已避开 API 26+ 的 `Process#isAlive/waitFor(long)/destroyForcibly`）
 > 4. 体积可裁：自编 `--disable-*` 的 QEMU 能到 ~15MB；端口转发（hostfwd）、多控制台、恢复 job control
 >    都是可加的
+> 5. **Ctrl-C 的已知行为**：`sendKey('ctrl+c')` 发的是真 0x03，SIGINT 会打断前台程序；但客户机
+>    busybox ash 在被信号打断后**偶尔**会把控制台卡住（后续 exec 拿不到输入 → 插件现在会 fail-fast
+>    返回 `CONSOLE_UNRESPONSIVE`）。恢复办法 `restart()`。autotest 里改用非破坏性的 Ctrl-L 验证。
 >
 > ### 环境（本轮顺带踩到的）
 >

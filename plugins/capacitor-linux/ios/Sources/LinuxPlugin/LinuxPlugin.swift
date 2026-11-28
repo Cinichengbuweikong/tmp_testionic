@@ -1,20 +1,22 @@
 import Foundation
 import Capacitor
+import CapISHBridge
 
 /**
- * iOS 侧的 capacitor-linux。
+ * iOS 侧的 capacitor-linux：引擎是 **iSH-ARM64**（AArch64 用户态 Linux 模拟器）。
  *
- * 为什么现在不支持（而不是"没做"）：
- * - Apple 不允许 JIT，也不允许 fork/exec 子进程（`An iOS app cannot use any form
- *   of subprocessing`），所以 QEMU 的 TCG JIT、chroot/proot 在 iOS 上都不成立；
- * - 能跑真 Linux 的成熟方案只有两类：
- *   1) 解释器级内核（iSH：x86 解释器 + 自己实现 Linux 系统调用，App Store 上架多年）；
- *   2) QEMU 的 TCI 解释器（UTM SE）。
- *   两者都需要把一个几十万行 C/C++ 的工程编成 iOS framework，且必须在 macOS 上构建；
- *   本仓库目前没有 Mac，只能在 CI 上迭代，属于独立的一个大工程（见 README「iOS 路线」）。
+ * 现状（第 1 步）：
+ * - `ISHShellExecutor` 提供的是**命令级**执行：`executeCommand:lineCallback:completion:`
+ *   逐行回调（stdout / stderr 分开）+ 退出码 + pid，正好映射到 `exec()` 与
+ *   `consoleOutput` 事件；
+ * - 它**没有**交互式 stdin（没有长驻 shell + 写 stdin 的接口），所以 `write()` /
+ *   `sendKey()` 这一步先明确拒绝，下一步用 iSH 的 real tty（`fs/dev.c` 的 tty 设备）
+ *   或 `openpty` 接一个长驻 shell；
+ * - 引擎本身要用 `scripts/fetch-ish-ios-runtime.sh` 在 macOS 上构建成 xcframework
+ *   并链接进宿主 App；没链接时 `CapISHBridge` 是桩，这里会返回明确错误。
  *
- * 这一版把 API 面完整实现（返回明确错误 + 能力描述），这样 JS 侧代码在两端可以
- * 完全一致，将来换引擎只改这个文件。
+ * 与 Android 的差异要如实反映在 `getCapabilities()` 里：隔离级别是 `none`
+ * （iSH 的客户机跑在 App 进程内），不是 `process`。
  */
 @objc(LinuxPlugin)
 public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -33,88 +35,247 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "exec", returnType: CAPPluginReturnPromise)
     ]
 
-    private static let reason =
-        "iOS 不支持：Apple 禁止 JIT 和 fork/exec 子进程，跑真 Linux 需要移植解释器级内核" +
-        "（iSH 或 QEMU TCI），这需要 macOS 构建环境，属于独立的后续版本。Android 侧可用。"
+    /// 没有交互式 stdin 的统一说明（下一步用 real tty 实现）。
+    private static let noStdinReason =
+        "iOS 暂不支持交互式 stdin：iSH-ARM64 目前只暴露命令级执行（ISHShellExecutor），" +
+        "下一步要接 iSH 的 real tty / openpty 才能做长驻 shell 的 write()。现在请用 exec()。"
+
+    private var engineReady = false
+    private var state = "stopped"
+    private var startedAt: Date?
+    private var runningPids: Set<Int32> = []
+    private var counter = 0
+
+    // ------------------------------------------------------------ capabilities
 
     @objc func getCapabilities(_ call: CAPPluginCall) {
+        let available = capish_available() != 0
+        var reasons: [String] = []
+        if !available {
+            reasons.append(String(cString: capish_unavailable_reason()))
+        }
         call.resolve([
             "platform": "ios",
-            "supported": false,
-            "engine": "none",
-            "architecture": "unknown",
+            "supported": available,
+            "engine": available ? "ish-arm64" : "none",
+            "architecture": "aarch64",
             "nativeExecution": false,
             "isolation": "none",
-            "apkAvailable": false,
+            "apkAvailable": available,
             "persistence": "none",
             "minimum": [
                 "iosVersion": "15.0"
             ],
-            "reasons": [LinuxPlugin.reason]
+            "reasons": reasons
         ])
     }
 
     @objc func getInfo(_ call: CAPPluginCall) {
+        let available = capish_available() != 0
         call.resolve([
-            "supported": false,
+            "supported": available,
             "distribution": "alpine",
-            "engine": "none",
-            "architecture": "unknown",
-            "rootfsMode": "initramfs",
+            "engine": available ? "ish-arm64" : "none",
+            "architecture": "aarch64",
+            "rootfsMode": "disk",
             "nativeExecution": false,
-            "apkAvailable": false,
-            "executable": "",
-            "executablePresent": false,
-            "runtimeExtracted": false,
-            "runtimeBundled": false,
-            "runtimeError": LinuxPlugin.reason,
-            "state": "stopped"
+            "apkAvailable": available,
+            "executable": "ISHShellExecutor",
+            "executablePresent": available,
+            "runtimeExtracted": available,
+            "runtimeBundled": available,
+            "runtimeError": available ? "" : String(cString: capish_unavailable_reason()),
+            "state": state
         ])
     }
 
     @objc func getStatus(_ call: CAPPluginCall) {
-        call.resolve([
-            "state": "stopped",
-            "running": false,
+        var payload: [String: Any] = [
+            "state": state,
+            "running": state == "running",
             "memoryMb": 0,
             "cpus": 0,
             "consoleTty": "",
             "stderrTty": "",
-            "lastError": LinuxPlugin.reason
-        ])
+            "persistence": "none"
+        ]
+        if let startedAt = startedAt {
+            payload["startedAt"] = Int(startedAt.timeIntervalSince1970 * 1000)
+            payload["uptimeMs"] = Int(Date().timeIntervalSince(startedAt) * 1000)
+        }
+        if capish_available() == 0 {
+            payload["lastError"] = String(cString: capish_unavailable_reason())
+        }
+        call.resolve(payload)
     }
 
+    // --------------------------------------------------------------- lifecycle
+
     @objc func start(_ call: CAPPluginCall) {
-        call.reject(LinuxPlugin.reason, "UNSUPPORTED_PLATFORM")
+        guard capish_available() != 0 else {
+            call.reject(String(cString: capish_unavailable_reason()), "ENGINE_MISSING")
+            return
+        }
+        engineReady = true
+        state = "running"
+        startedAt = Date()
+        call.resolve([
+            "state": state,
+            "running": true,
+            "memoryMb": 0,
+            "cpus": 0,
+            "consoleTty": "",
+            "stderrTty": "",
+            "persistence": "none",
+            "booted": true
+        ])
     }
 
     @objc func stop(_ call: CAPPluginCall) {
-        call.reject(LinuxPlugin.reason, "UNSUPPORTED_PLATFORM")
+        // iSH 不需要"关机"：把还在跑的客户机进程杀掉即可。
+        for pid in runningPids {
+            _ = capish_kill(pid, 9)
+        }
+        runningPids.removeAll()
+        engineReady = false
+        state = "stopped"
+        startedAt = nil
+        call.resolve(["state": state, "running": false])
     }
 
     @objc func restart(_ call: CAPPluginCall) {
-        call.reject(LinuxPlugin.reason, "UNSUPPORTED_PLATFORM")
+        for pid in runningPids {
+            _ = capish_kill(pid, 9)
+        }
+        runningPids.removeAll()
+        engineReady = capish_available() != 0
+        state = engineReady ? "running" : "stopped"
+        startedAt = engineReady ? Date() : nil
+        call.resolve(["state": state, "running": engineReady])
     }
 
+    // ------------------------------------------------------------------- stdin
+
     @objc func write(_ call: CAPPluginCall) {
-        call.reject(LinuxPlugin.reason, "UNSUPPORTED_PLATFORM")
+        call.reject(LinuxPlugin.noStdinReason, "UNSUPPORTED_ON_IOS")
     }
 
     @objc func sendKey(_ call: CAPPluginCall) {
-        call.reject(LinuxPlugin.reason, "UNSUPPORTED_PLATFORM")
+        call.reject(LinuxPlugin.noStdinReason, "UNSUPPORTED_ON_IOS")
     }
 
+    // ------------------------------------------------------------------- share
+
     @objc func getShareDir(_ call: CAPPluginCall) {
+        // iSH 的客户机是进程内的，宿主目录通过它的 bind mount 映射；这一步先返回 App 的
+        // Documents 目录（用户可在"文件"App 里看到），等接入 real tty / bind mount 后再补 guestPath。
+        let documents = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? ""
         call.resolve([
-            "hostPath": "",
-            "guestPath": "/mnt/host",
-            "exists": false,
-            "available": false,
-            "note": LinuxPlugin.reason
+            "hostPath": documents,
+            "guestPath": "",
+            "exists": FileManager.default.fileExists(atPath: documents),
+            "available": capish_available() != 0,
+            "note": "iOS 侧共享目录待接入 iSH 的 bind mount；现在可用宿主 Documents 目录"
         ])
     }
 
+    // -------------------------------------------------------------------- exec
+
     @objc func exec(_ call: CAPPluginCall) {
-        call.reject(LinuxPlugin.reason, "UNSUPPORTED_PLATFORM")
+        guard let command = call.getString("command"), !command.isEmpty else {
+            call.reject("INVALID_ARGUMENT: command is required", "INVALID_ARGUMENT")
+            return
+        }
+        guard capish_available() != 0 else {
+            call.reject(String(cString: capish_unavailable_reason()), "ENGINE_MISSING")
+            return
+        }
+        let timeoutMs = max(1000, call.getInt("timeoutMs", 30000))
+        counter += 1
+        let box = IshExecBox(plugin: self, call: call, timeoutMs: timeoutMs)
+        let user = Unmanaged.passRetained(box).toOpaque()
+        let pid = capish_exec(command, ishLineTrampoline, ishDoneTrampoline, user)
+        if pid > 0 {
+            box.pid = pid
+            runningPids.insert(pid)
+        } else {
+            // C 侧已经（或即将）回调 done，这里不重复处理。
+        }
     }
+
+    fileprivate func emit(line: String, isStderr: Bool) {
+        notifyListeners("consoleOutput", [
+            "data": line + "\n",
+            "stream": isStderr ? "stderr" : "stdout"
+        ])
+    }
+
+    fileprivate func finish(pid: Int32) {
+        runningPids.remove(pid)
+    }
+}
+
+/// 一次 exec 的状态：C 回调不能捕获上下文，所以用它当 `user` 指针。
+final class IshExecBox {
+    let plugin: LinuxPlugin
+    let call: CAPPluginCall
+    let timeoutMs: Int
+    let startedAt = Date()
+    var stdout = ""
+    var stderr = ""
+    var pid: Int32 = 0
+    var finished = false
+
+    init(plugin: LinuxPlugin, call: CAPPluginCall, timeoutMs: Int) {
+        self.plugin = plugin
+        self.call = call
+        self.timeoutMs = timeoutMs
+    }
+
+    func append(line: String, isStderr: Bool) {
+        if isStderr {
+            stderr += line + "\n"
+        } else {
+            stdout += line + "\n"
+        }
+        plugin.emit(line: line, isStderr: isStderr)
+    }
+
+    /// 必须只执行一次（C 侧保证 done 只回调一次；这是额外保险）。
+    func complete(code: Int32, duration: Double) {
+        if finished { return }
+        finished = true
+        plugin.finish(pid: pid)
+        var payload: [String: Any] = [
+            "code": Int(code),
+            "stdout": stdout,
+            "stderr": stderr,
+            "durationMs": Int((duration > 0 ? duration : Date().timeIntervalSince(startedAt)) * 1000),
+            "timedOut": false,
+            "interrupted": false
+        ]
+        if code == -3 {
+            payload["timedOut"] = true
+        }
+        call.resolve(payload)
+    }
+}
+
+/// C -> Swift 的逐行回调（全局函数指针，不能捕获上下文）。
+private let ishLineTrampoline: @convention(c) (UnsafePointer<CChar>?, Int32, UnsafeMutableRawPointer?) -> Void = {
+    cLine, isStderr, user in
+    guard let user = user else { return }
+    guard let cLine = cLine else { return }
+    let box = Unmanaged<IshExecBox>.fromOpaque(user).takeUnretainedValue()
+    box.append(line: String(cString: cLine), isStderr: isStderr != 0)
+}
+
+/// C -> Swift 的完成回调。
+private let ishDoneTrampoline: @convention(c) (Int32, Int32, Double, UnsafeMutableRawPointer?) -> Void = {
+    code, _pid, duration, user in
+    guard let user = user else { return }
+    let box = Unmanaged<IshExecBox>.fromOpaque(user).takeUnretainedValue()
+    box.complete(code: code, duration: duration)
+    // 与 passRetained 配对；C 侧保证 done 只会被调用一次。
+    Unmanaged<IshExecBox>.fromOpaque(user).release()
 }

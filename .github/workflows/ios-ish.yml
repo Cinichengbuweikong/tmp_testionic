@@ -1,0 +1,59 @@
+name: build iSH-ARM64 engine (iOS)
+
+# 只在手动触发：这个 job 会 clone 并编译 iSH-ARM64（几十万行 C + ObjC），
+# 要 20~40 分钟，不适合每次 push 都跑。
+#
+# 用途：给 capacitor-linux 的 iOS 侧产出 ios/CapISH.xcframework。
+# 产物会作为 artifact 上传，下载后放进插件目录即可（见脚本末尾的说明）。
+on:
+  workflow_dispatch:
+    inputs:
+      ish_commit:
+        description: 'dsh-ios 的 commit/tag（默认 HEAD）'
+        required: false
+        default: 'HEAD'
+
+jobs:
+  build-ish:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          ruby -v
+
+      - name: Ensure xcodeproj gem
+        run: gem install xcodeproj --no-document
+
+      - name: Build CapISH.xcframework
+        env:
+          ISH_COMMIT: ${{ inputs.ish_commit }}
+          ISH_DEBUG: '1'
+        run: bash plugins/capacitor-linux/scripts/fetch-ish-ios-runtime.sh
+
+      - name: Summarise artifact
+        if: always()
+        run: |
+          echo "## iSH-ARM64 build" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d plugins/capacitor-linux/ios/CapISH.xcframework ]; then
+            echo "✅ xcframework 生成成功" >> "$GITHUB_STEP_SUMMARY"
+            du -sh plugins/capacitor-linux/ios/CapISH.xcframework >> "$GITHUB_STEP_SUMMARY"
+            find plugins/capacitor-linux/ios/CapISH.xcframework -maxdepth 2 >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ 没有产物：看上面的编译日志（第一处 error 通常在 Build 阶段）" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload xcframework
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CapISH-xcframework
+          path: |
+            plugins/capacitor-linux/ios/CapISH.xcframework
+            plugins/capacitor-linux/ios/ish-headers
+          if-no-files-found: warn
+          retention-days: 14

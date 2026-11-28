@@ -412,37 +412,39 @@ Debian/Ubuntu 的 rootfs 会从 4MB 涨到 60~120MB，APK 相应变大，其余�
 
 ---
 
-## 7. iOS 路线（iSH-ARM64，目前不做但方案已经明确）
+## 7. iOS 路线（iSH-ARM64）—— 第 1 步已落地
 
-Apple 不允许 JIT，也不允许 `fork`/`exec` 子进程（审核 + 平台双重约束），所以 Android 那套
-"QEMU 解释执行 + 独立进程"在 iOS 上不成立。但 iOS 侧的可行引擎已经找到并验证过可行性：
+Apple 不允许 JIT，也不允许 `fork`/`exec` 子进程，所以 Android 那套"QEMU + 独立进程"在 iOS 上
+不成立。iOS 的引擎选的是 **[iSH-ARM64](https://github.com/everettjf/dsh-ios)**（`ish-app/ish` 的
+fork，源码在 `dsh-ios` 仓库的 `ish-arm64/`）：Asbestos 线程码解释器（不生成机器码）+ **AArch64
+客户机后端**，所以客户机和 Android 一样是 **arm64 Alpine**；48 位地址空间、NEON、futex/epoll
+都有，已经在 OpenMinis 里以"Agent Shell Sandbox"上线。
 
-**[iSH-ARM64](https://github.com/everettjf/dsh-ios)**（`ish-app/ish` 的 fork，源码在
-`dsh-ios` 仓库的 `ish-arm64/` 目录里），关键点：
+### 已经做好的部分
 
-- 它用的是 **Asbestos 线程码解释器**（不是 JIT）：每个基本块由预编译的 gadget 函数尾调用组成，
-  不生成机器码 → 符合 App Store 规则；
-- 这个 fork 新增了 **AArch64 客户机后端**（同架构 gadget 派发），所以客户机是
-  **arm64 Linux**，和 Android 侧**同一份 Alpine aarch64 rootfs**；
-- 48 位地址空间（Node.js / Go / Rust 能跑）、NEON、futex/epoll 都实现了；
-- 已经在 OpenMinis 里作为"Agent Shell Sandbox"上线，号称 1 万+ 用户；
-- 自带 `ISHShellExecutor`（命令执行）、`DebugServer`（JSON-RPC）、**bind mounts**，
-  正是我们 `getShareDir()` 需要的挂载能力。
+| 部分 | 状态 |
+|---|---|
+| 引擎桥 `ios/Sources/CapISHBridge/` | ✅ C 接口（`capish_exec` / `capish_kill` / `capish_available`），用 `__has_include("ISHShellExecutor.h")` **两路编译**：有引擎调 `ISHShellExecutor`，没有就编成桩 → **没引擎也能编译**，iOS CI 不会红 |
+| `LinuxPlugin.swift` | ✅ `getCapabilities`（`engine: ish-arm64`、`isolation: none`）、`start/stop/restart`、`exec`（逐行 streaming + stdout/stderr 分流 + 退出码）、`getShareDir`（暂时返回宿主 Documents） |
+| `scripts/fetch-ish-ios-runtime.sh` | ✅ **只能在 macOS 上跑**：clone 固定 commit → `ish-extract-sources.rb` 从它的 xcodeproj 抽 source list / header 路径 → 逐文件 clang → `libtool` 成 `libish.a`（device + simulator）→ `xcodebuild -create-xcframework` 产出 `ios/CapISH.xcframework` |
+| `.github/workflows/ios-ish.yml` | ✅ **workflow_dispatch 手动触发**（90 分钟上限）：跑上面的脚本，把 xcframework 当 artifact 传上来 |
 
-落地步骤（评估过，是一个独立的 1~2 天工程，主要在 macOS/CI 上迭代）：
+### 还没做 / 下一步（按顺序）
 
-1. 把 `ish-arm64` 作为 SPM target 或静态库 vendor 进本插件（C 源码 + 一堆第三方依赖，
-   参考它自己的 Makefile/xcconfig）；
-2. 写一个薄桥（C 或 Swift）：`capinux_launch(rootfs_path, argv)`，stdin/stdout 用
-   `socketpair`/`pipe` + 读线程，喂给现有的 `consoleOutput` 事件模型；
-3. 复用同一份 `runtime/` 里的 Alpine rootfs（`rootfs.cpio` 直接解包成 iSH 的 rootfs 目录，
-   或者打成一个 tar 让它自己解）；
-4. 崩溃隔离会**弱于** Android：iSH 的客户机跑在 App 进程内（它自己模拟 fork），
-   所以客户机里的段错误有可能带走 App；这点必须在文档里写清；
-5. 许可证：iSH 是 **GPLv3**（仓库里有 `LICENSE.IOS` 附加条款），商用前要确认义务。
+1. **真正跑一次构建**：`gh workflow run ios-ish.yml`（或网页 Actions 点 Run）。本会话没有 Mac，
+   这一步只能在 CI / 你本机的 Xcode 上迭代；脚本用 `ISH_DEBUG=1` 打印每条编译命令，失败会直接
+   `cat` 对应日志，第一处 `error:` 就是要修的地方。
+2. **链接进宿主 App**：把 `ios/CapISH.xcframework` 加进 App target，`HEADER_SEARCH_PATHS` 加上
+   `ios/ish-headers`（脚本末尾会打印精确步骤）。链接成功后 `getCapabilities().supported`
+   会自动变成 `true`（`ISHShellExecutor` 类存在了）。
+3. **交互式 stdin**：`ISHShellExecutor` 只有命令级执行，没有长驻 shell 的 stdin 通道，所以现在
+   iOS 的 `write()` / `sendKey()` 明确返回 `UNSUPPORTED_ON_IOS`。下一步接 iSH 的 real tty
+   （`ish-arm64/fs/dev.c` 的 tty 设备 + `openpty`）。
+4. **共享目录**：iSH 支持 bind mount，接上之后 `getShareDir()` 才能给出 `guestPath`。
+5. **崩溃隔离弱于 Android**：iSH 的客户机跑在 App 进程内（它自己模拟 fork），客户机里的段错误
+   有可能带走 App —— 最终文档不能照抄 Android 的"崩溃不连累 App"。
 
-这一版 iOS 侧的 Swift 实现把 API 面写全了（9 个方法，都返回 `UNSUPPORTED_PLATFORM` + 原因），
-JS 代码在两端可以完全一致；将来只需要改 `LinuxPlugin.swift` 和 `Package.swift`。
+许可证：iSH 上游 **GPLv3**（`ish-arm64/LICENSE.md`，另有 `LICENSE.IOS` 附加条款），商用前要确认义务。
 
 ---
 
@@ -457,7 +459,7 @@ JS 代码在两端可以完全一致；将来只需要改 `LinuxPlugin.swift` �
 | **包体积** | QEMU 二进制 29.5MB + 依赖库 37.8MB + kernel 10.4MB + rootfs 6.3MB ≈ **85MB**（APK 压缩后增加约 60MB） | 见 [6.4](#可能想加的东西按性价比) 的裁剪方案 |
 | **网络** | 客户机只有 SLIRP：能出网（NAT）、能 DNS；**外部不能直连客户机端口**（要 `hostfwd`，暂未暴露 API） | 需要就加 `-netdev user,hostfwd=...` 参数（在 `LinuxVm.start()` 里） |
 | **没有 GPU / X11** | 只能跑命令行程序 | 要图形得加 virtio-gpu + 远端桌面，工作量大 |
-| **iOS** | 不支持 | 见第 7 节（引擎 iSH-ARM64） |
+| **iOS** | 引擎桥 + 构建脚本 + CI 任务已就绪，但**还没在 macOS 上编译过**，`write()/sendKey()` 未实现（iSH 没有长驻 shell stdin） | 见第 7 节；先跑 `ios-ish.yml` 产出 xcframework |
 | **Web** | 不支持（返回明确原因） | 需要 wasm 版 QEMU/v86，不在本插件范围 |
 | **API 24/25 未真机验证** | minSdk 是 24、相关 API 26+ 方法都换成了兼容实现，但手头只有 Android 10 的机器 | 需要一台 7.x 机器跑一次 autotest；CI 里没有 Android 设备 |
 | **PID 1 不回收孤儿子进程** | `/init` 用 `wait` 只等直接子进程；客户机里 daemonize 出来的进程退出后会留僵尸 | 长期跑 daemon 的场景需要 `init` 换成 openrc/tini |
