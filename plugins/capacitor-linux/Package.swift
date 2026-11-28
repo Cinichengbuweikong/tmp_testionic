@@ -46,7 +46,15 @@ func linuxTargets() -> [Target] {
             name: "CapISHBridge",
             dependencies: hasISH ? ["CapISH"] : [],
             path: "ios/Sources/CapISHBridge",
-            publicHeadersPath: "include"
+            publicHeadersPath: "include",
+            // iSH 的 fakefs 用 sqlite3 存 inode 表（fs/fake-db.c），另外压缩/归档相关
+            // 代码会用到 z/bz2/lzma —— 这些在 iOS SDK 里都有系统库，直接链即可。
+            linkerSettings: hasISH ? [
+                .linkedLibrary("sqlite3"),
+                .linkedLibrary("z"),
+                .linkedLibrary("bz2"),
+                .linkedLibrary("lzma")
+            ] : []
         )
     )
     list.append(
