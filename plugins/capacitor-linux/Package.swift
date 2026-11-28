@@ -41,7 +41,7 @@ func linuxTargets() -> [Target] {
     //   - Resources/rootfs.tar 由 fetch-ish-ios-runtime.sh 或 fetch-linux-runtime.py 拷进来，
     //     有它才会被声明成资源（没它时 start() 会回退到 Documents 里的路径并报 ROOTFS_MISSING）。
     let resourcesDir = packageDir.appendingPathComponent("ios/Sources/LinuxPlugin/Resources")
-    var capishResources: [Resource] = [.copy("Resources/.keep")]
+    var capishResources: [Resource] = []
     if FileManager.default.fileExists(atPath: resourcesDir.appendingPathComponent("rootfs.tar").path) {
         capishResources.append(.copy("Resources/rootfs.tar"))
     }

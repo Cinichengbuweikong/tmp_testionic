@@ -46,6 +46,28 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
     private var runningPids: Set<Int32> = []
     private var counter = 0
 
+
+    /// 找到打进 App 的 `rootfs.tar`。
+    ///
+    /// 不能用 `Bundle.module`：Capacitor 的 iOS 工程是**用 Xcode 集成 SPM 包**的方式构建的，
+    /// 那种情况下 SwiftPM 不会生成 `Bundle.module`（实测报 "type 'Bundle' has no member 'module'"）。
+    /// 所以按可能性从高到低找：主 bundle 根目录 → 主 bundle/Resources → 本类所在 bundle。
+    static func findBundledRootfs() -> URL? {
+        let names = [
+            Bundle.main.bundleURL.appendingPathComponent("rootfs.tar"),
+            Bundle.main.bundleURL.appendingPathComponent("Resources/rootfs.tar"),
+            Bundle.main.bundleURL.appendingPathComponent("CapacitorLinux_LinuxPlugin.bundle/rootfs.tar"),
+        ]
+        for url in names where FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+        let classBundle = Bundle(for: LinuxPlugin.self)
+        if let url = classBundle.url(forResource: "rootfs", withExtension: "tar") {
+            return url
+        }
+        return nil
+    }
+
     // ------------------------------------------------------------ capabilities
 
     @objc func getCapabilities(_ call: CAPPluginCall) {
@@ -124,7 +146,7 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
         let dataDir = rootfsRoot + "/data"
         // rootfs 来源优先级：显式参数 > SPM 资源（打进 App 的 rootfs.tar）> Documents 里的文件
         var archive = call.getString("rootfsArchivePath")
-        if archive == nil, let bundled = Bundle.module.url(forResource: "rootfs", withExtension: "tar") {
+        if archive == nil, let bundled = LinuxPlugin.findBundledRootfs() {
             archive = bundled.path
         }
         let archivePath = archive ?? linuxDir.appendingPathComponent("rootfs.tar").path
