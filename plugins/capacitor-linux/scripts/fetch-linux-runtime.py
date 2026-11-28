@@ -39,6 +39,7 @@ import tarfile
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = os.path.dirname(HERE)
 PLUGIN = os.path.dirname(HERE)
 LOCK = os.path.join(PLUGIN, "runtime.lock.json")
 RUNTIME = os.path.join(PLUGIN, "runtime")
@@ -574,6 +575,11 @@ def main() -> int:
     extra_root = os.path.join(CACHE, "extra-rootfs")
     installed = install_alpine_packages(al.get("persist", {}).get("packages", []), extra_root)
     log(f"  extra files: {installed}")
+
+    # iOS 侧要同一份 rootfs：把 tar 版本拷进 SPM target 的 Resources/，
+    # 这样 Package.swift 会把它声明成资源，App 里的 Bundle.module 就能读到。
+    ios_res = os.path.join(HERE, "..", "ios", "Sources", "CapISHBridge", "Resources")
+    os.makedirs(ios_res, exist_ok=True)
     rootfs_out = os.path.join(OUT_ASSETS, "rootfs.cpio")
     # 同样避开 AAPT 去掉 .gz 的坑：文件叫 rootfs.tar，内容仍是 gzip
     # （内核/客户机里的 busybox tar 都按 magic 识别，不看扩展名）。
@@ -602,6 +608,9 @@ def main() -> int:
                if any(k in m for k in ("/9p/", "/netfs", "virtio_net", "failover"))),
            "--version", al["version"], "--kernel", al["kernel"]["release"]]
     subprocess.run(cmd, check=True)
+    ios_tar = os.path.join(ios_res, "rootfs.tar")
+    shutil.copyfile(rootfs_tar, ios_tar)
+    log(f"  iOS rootfs resource: {ios_tar} ({os.path.getsize(ios_tar) / 1e6:.2f} MB)")
     lint = subprocess.run([args.python, os.path.join(HERE, "cpio-lint.py"), rootfs_out],
                           capture_output=True, text=True)
     log("  " + lint.stdout.strip().replace("\n", "\n  "))

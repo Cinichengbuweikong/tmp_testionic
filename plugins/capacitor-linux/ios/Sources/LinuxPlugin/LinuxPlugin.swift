@@ -122,8 +122,12 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
         // iSH 的 fakefs 约定：客户机的 `/` 映射到 `<root>/data`
         let rootfsRoot = linuxDir.appendingPathComponent("ish-root").path
         let dataDir = rootfsRoot + "/data"
-        let archive = call.getString("rootfsArchivePath")
-            ?? linuxDir.appendingPathComponent("rootfs.tar").path
+        // rootfs 来源优先级：显式参数 > SPM 资源（打进 App 的 rootfs.tar）> Documents 里的文件
+        var archive = call.getString("rootfsArchivePath")
+        if archive == nil, let bundled = Bundle.module.url(forResource: "rootfs", withExtension: "tar") {
+            archive = bundled.path
+        }
+        let archivePath = archive ?? linuxDir.appendingPathComponent("rootfs.tar").path
 
         state = "starting"
         // 解包 + boot 都是阻塞操作（boot 会一直跑到客户机循环），放后台
@@ -132,15 +136,15 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
 
             // 1) 首次启动：把离线 rootfs 解到 fakefs 根目录
             if !FileManager.default.fileExists(atPath: dataDir + "/bin/sh") {
-                guard FileManager.default.fileExists(atPath: archive) else {
+                guard FileManager.default.fileExists(atPath: archivePath) else {
                     DispatchQueue.main.async {
                         self.state = "stopped"
-                        call.reject("ROOTFS_MISSING: 需要把 rootfs.tar 放到 \(archive)"
+                        call.reject("ROOTFS_MISSING: 需要把 rootfs.tar 放到 \(archivePath)"
                                     + "（或用 start({ rootfsArchivePath }) 指定）", "ROOTFS_MISSING")
                     }
                     return
                 }
-                let rc = capish_rootfs_install(archive, dataDir)
+                let rc = capish_rootfs_install(archivePath, dataDir)
                 if rc != 0 {
                     let reason = String(cString: capish_rootfs_install_error())
                     DispatchQueue.main.async {

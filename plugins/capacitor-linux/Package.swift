@@ -36,6 +36,16 @@ func linuxTargets() -> [Target] {
     let frameworkPath = packageDir.appendingPathComponent("ios/CapISH.xcframework").path
     let hasISH = FileManager.default.fileExists(atPath: frameworkPath)
 
+    // 离线 rootfs（Alpine aarch64 的 tar）作为 SPM 资源打进 App：
+    //   - Resources/.keep 永远在（保证 Bundle.module 一定生成）；
+    //   - Resources/rootfs.tar 由 fetch-ish-ios-runtime.sh 或 fetch-linux-runtime.py 拷进来，
+    //     有它才会被声明成资源（没它时 start() 会回退到 Documents 里的路径并报 ROOTFS_MISSING）。
+    let resourcesDir = packageDir.appendingPathComponent("ios/Sources/CapISHBridge/Resources")
+    var capishResources: [Resource] = [.copy("Resources/.keep")]
+    if FileManager.default.fileExists(atPath: resourcesDir.appendingPathComponent("rootfs.tar").path) {
+        capishResources.append(.copy("Resources/rootfs.tar"))
+    }
+
     var list: [Target] = []
     if hasISH {
         list.append(.binaryTarget(name: "CapISH", path: "ios/CapISH.xcframework"))
@@ -47,6 +57,7 @@ func linuxTargets() -> [Target] {
             dependencies: hasISH ? ["CapISH"] : [],
             path: "ios/Sources/CapISHBridge",
             publicHeadersPath: "include",
+            resources: capishResources,
             // iSH 的 fakefs 用 sqlite3 存 inode 表（fs/fake-db.c），另外压缩/归档相关
             // 代码会用到 z/bz2/lzma —— 这些在 iOS SDK 里都有系统库，直接链即可。
             linkerSettings: hasISH ? [
