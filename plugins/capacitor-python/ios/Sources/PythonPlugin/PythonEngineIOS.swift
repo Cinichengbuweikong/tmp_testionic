@@ -137,16 +137,25 @@ public final class PythonEngineIOS {
         return version
     }
 
-    /// 从资源里的 PythonRuntime.json 读取 Python 版本系列（如 "3.11"），读不到时退回 "3.11"。
+    /// 读取 Python 版本系列（如 "3.11"）。
+    ///
+    /// 优先 `PythonRuntime.json`（fetch 脚本生成，SPM 资源布局）；如果宿主用 `install_python`
+    /// 生成了 `App.app/python`（没有 JSON），就从 `lib/` 目录名里推（`python3.12` → `3.12`），
+    /// 这样升级 Python 不需要改 Swift 代码。
     private static func series(from resourceURL: URL) -> String {
         let metaURL = resourceURL.appendingPathComponent("PythonRuntime.json")
-        guard let data = try? Data(contentsOf: metaURL),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let series = object["series"] as? String,
-              !series.isEmpty else {
-            return "3.11"
+        if let data = try? Data(contentsOf: metaURL),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let series = object["series"] as? String,
+           !series.isEmpty {
+            return series
         }
-        return series
+        let libDir = resourceURL.appendingPathComponent("lib", isDirectory: true)
+        if let entries = try? FileManager.default.contentsOfDirectory(atPath: libDir.path),
+           let match = entries.first(where: { $0.hasPrefix("python3.") }) {
+            return String(match.dropFirst("python".count))
+        }
+        return "3.11"
     }
 
     // MARK: - 会话
