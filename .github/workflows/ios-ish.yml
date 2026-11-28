@@ -44,13 +44,22 @@ jobs:
           set +e
           bash plugins/capacitor-linux/scripts/fetch-ish-ios-runtime.sh 2>&1 | tee build-ish.log
           rc=${PIPESTATUS[0]}
+          echo "build rc=$rc  log-lines=$(wc -l < build-ish.log)"
           if [ "$rc" -ne 0 ]; then
-            echo "== 失败：把关键行抛成 annotation =="
-            grep -m8 -E ':error:|error:|fatal error|::error::' build-ish.log | while IFS= read -r line; do
-              echo "::error::$line"
+            # 关键：把日志塞进 annotation，这样公开 API（check-runs/<jobId>/annotations）
+            # 就能读到，不需要 token 拉 job 日志。
+            echo "::error::rc=$rc pwd=$(pwd) scripts=$(ls plugins/capacitor-linux/scripts | tr '\n' ' ')"
+            echo "::error::bash=$(bash --version | head -1)"
+            n=0
+            while IFS= read -r line; do
+              n=$((n+1))
+              [ "$n" -gt 8 ] && break
+              echo "::error::HEAD|$line"
+            done < build-ish.log
+            n=0
+            tail -n 8 build-ish.log | while IFS= read -r line; do
+              echo "::error::TAIL|$line"
             done
-            echo "== 最后 40 行 =="
-            tail -n 40 build-ish.log
           fi
           exit "$rc"
 
