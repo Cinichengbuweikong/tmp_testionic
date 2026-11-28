@@ -317,13 +317,43 @@ await Linux.exec({ command: 'file --version' });                // ✅ 还在（
 4. 切过去之后跑的是磁盘里的 `/init`（就是 `scripts/vm/init.sh`），`/` 已经是 `/dev/vda`，
    所以 `/usr`、`/lib`、`/etc`、`/root` 全都是持久的。
 
+#### 这些文件到底在哪（绝对路径）
+
+`<appId>` 就是宿主 App 的包名（本仓库的示例 App 是 `com.myapp.testionic`）。
+下表是**运行时**在设备上的真实路径，排错/取文件时直接用：
+
+| 东西 | Android | iOS |
+|---|---|---|
+| App 私有根目录 | `/data/user/0/<appId>/files`（`context.getFilesDir()`；`/data/data/<appId>/files` 是同一个地方的旧软链） | `<App 容器>/Documents`（`NSSearchPathForDirectoriesInDomains(.documentDirectory…)`，iSH 引擎的 rootfs 也在这一层） |
+| 工作目录 | `/data/user/0/<appId>/files/linuxvm` | 暂无（iOS 走 iSH 自己的目录布局） |
+| **持久化磁盘镜像** | `/data/user/0/<appId>/files/linuxvm/disk.img` | 暂无（iOS 引擎不同，见第 7 节） |
+| 内核 / initramfs | `…/files/linuxvm/alpine/kernel`、`…/files/linuxvm/alpine/rootfs.cpio.gz` | — |
+| **磁盘模式的 tar 载荷**（从 APK 的 assets 里解出来的副本） | `…/files/linuxvm/alpine/rootfs.tar` | — |
+| QEMU 可执行文件 | `…/files/linuxvm/alpine/qemu-system-aarch64`（外加 `…/alpine/lib*.so`） | — |
+| 共享目录（`getShareDir().hostPath`） | `/data/user/0/<appId>/files/linuxvm/share` | `<App 容器>/Documents`（目前只是把 Documents 暴露出去，尚未 bind 进客户机） |
+| 客户机里的共享挂载点 | `/mnt/host` | —（未实现） |
+
+`assets/linux/*`（`rootfs.tar`、`rootfs.cpio`、`kernel`、`manifest.json`）**在 Android 上是打进 APK 的**
+（`AssetManager` 里叫 `linux/rootfs.tar`，注意 AAPT 会去掉 `.gz` 后缀，所以文件名不带扩展名），
+运行时才解到上表的 `files/linuxvm/alpine/` 下；源码里的位置是
+`plugins/capacitor-linux/runtime/android/assets/linux/`（构建产物，gitignore）。
+iOS 侧目前没有 `disk.img` / `rootfs.tar`：那边是 iSH-ARM64 用自己的 fakefs 布局，
+把 `rootfs.tar` 解到 iSH 的 root 目录这件事还没做（见第 7 节"还没做"）。
+
 实测（Redmi K30S）：首次启动 **~61s**（含 mkfs + 解包 15.7MB），之后 **~36–48s**；
 `df -h /` → `/dev/vda 1.9G ... /`；重启后 `apk add file` 装的 `file-5.46`、手写的
 `/usr/bin/capinux-test` 都还在。
 
+**关于"占 2GB"**：`diskSizeMb: 2048` 是**镜像容量上限**，文件是 **sparse** 的——
+只有真正写进去的块才占闪存。实测一个装过 `file`+`python3` 的盘 `df -h /` 只用了 **29MB**，
+宿主侧 `ls -l` 看到的 2GB 是表观大小，`du -h` 才是真实占用。想更小就传 `diskSizeMb: 256`
+（64..8192 可调）；`rootfsMode: 'ram'`（默认）则完全不建这个文件。
+
 为什么是"块设备 + ext4"而不是"直接拿宿主目录当根"：客户机要的是一个**真实文件系统**，
 QEMU 通过 virtio-blk 提供；宿主目录那条路是 9p（见 [`getShareDir()`](#46-getsharedir)），
 可以做共享但作为根会很慢、也不支持完整的 POSIX 语义（设备节点、权限、hardlink 等）。
+至于**为什么不 chroot**（无 root 的 App 根本做不到），见
+[第 12 节 FAQ](#12-faq为什么不直接-chroot--为什么启动要二三十秒)。
 
 `persistent: true` 是旧写法，等价于 `rootfsMode: 'disk'`（早期版本只把 `/root`、`/home`、
 `/opt`、`/usr/local` bind 到数据盘上，包不持久；现在被整盘模式取代）。
@@ -382,6 +412,9 @@ plugins/capacitor-linux/
 
 ### 升级 Alpine（例如到 3.24.x）
 
+锁文件就在插件根目录：**`plugins/capacitor-linux/runtime.lock.json`**（相对仓库根；
+旁边是 `scripts/fetch-linux-runtime.py`）。
+
 1. 改 `runtime.lock.json` 的 `alpine.kernel`（`version`/`url`/`sha256`/`bytes`/`release`）、
    `alpine.version`、`releaseBase`、minirootfs 的 `sha256`/`bytes`，以及 `persist.packages` 里
    e2fsprogs 那一组版本号；
@@ -389,6 +422,10 @@ plugins/capacitor-linux/
 3. 看脚本输出的 `cpio-lint` 结果和模块列表（`modules` 的路径要跟着内核版本走）；
 4. `npm run build:plugins && npx cap sync android && npm run android:deploy`；
 5. 真机跑一次 `autotest`，确认 `uname -r`、`apk`、`/mnt/host`、持久盘都正常。
+
+构建产物落在 `plugins/capacitor-linux/runtime/`（gitignore，不入库）：
+`runtime/android/assets/linux/`（`kernel`、`rootfs.cpio`、`rootfs.tar`、`manifest.json`）
+和 `runtime/android/jniLibs/arm64-v8a/`（QEMU + 依赖库）。
 
 > **内核与模块必须来自同一个包**：模块带 vermagic，跨内核版本 `insmod` 会失败，
 > 表现是客户机**没有网卡**（`ip addr` 只有 `lo`）、`/mnt/host` 空、或持久盘挂不上。
@@ -413,10 +450,16 @@ Debian/Ubuntu 的 rootfs 会从 4MB 涨到 60~120MB，APK 相应变大，其余�
 
 ### 可能想加的东西（按性价比）
 
-1. **整机持久化（root 也落盘）**：现在是 initramfs 根 + 持久盘只绑 `/root`、`/home`、`/opt`、
-   `/usr/local`，所以 `apk add` 的包重启要重装。做法：持久盘上放一份完整 root，
-   `/init` 里 `mount -t overlay overlay -o lowerdir=/,upperdir=<disk>/upper,workdir=<disk>/work`
-   再 `switch_root`（或者干脆 `root=/dev/vda1` 直接启动）。`ext4`/`jbd2` 模块已经在包里了；
+0. **（已做）整机持久化**：`start({ rootfsMode: 'disk' })` 让**整个 root 都在磁盘上**
+   （`/dev/vda` 上的 ext4，`switch_root` 进去），所以 `apk add` 的包、改过的 `/etc`、
+   自己编的程序**重启后都还在**——这一条以前写着"还没做"，现在已完成（见
+   [4.7](#47-rootfs-落盘--持久化start-rootfsmode-disk)）。仍然是易失的只有
+   `/tmp`、`/run`、`/dev`（tmpfs，按设计如此）和 9p 共享目录（它本来就是宿主目录）。
+   下面第 1 条是旧的 overlay 方案，留着当"另一条路"的参考：
+1. **整机持久化的另一种做法（overlay）**：`mount -t overlay overlay -o
+   lowerdir=/,upperdir=<disk>/upper,workdir=<disk>/work` 再 `switch_root`。
+   好处是首次不用解包、可以"重置"回出厂 rootfs（删掉 upper 即可）；坏处是每次读文件都要过 overlay。
+   `ext4`/`jbd2` 模块已经在包里了；
 2. **多控制台**：再开 `-chardev socket` + `-serial`，每个 socket 一个会话（现在的代码已经是按
    "socket = 一路流"写的，加一路就是多一个文件 + 一个 pump）；
 3. **端口转发**：`-netdev user,hostfwd=tcp:127.0.0.1:8080-:8080`，让宿主直接访问客户机起的
@@ -558,3 +601,62 @@ autotest 的 iOS 分支会把这段结果记进 `linuxIos`，不会让 CI 变红
 | 客户机没网（`ip addr` 只有 `lo`） | 内核模块没加载（内核版本不匹配） | 见[升级 Alpine](#升级-alpine例如到-324x) |
 | `apk add` 报 `DNS: transient error` | 客户机 DNS 不通 | `/init` 里已固定公共 DNS；检查宿主是否真的能出网 |
 | 卡在 `starting` 很久 | 首次启动要解压 15MB，或 TCG 慢 | 看 `getStatus().uptimeMs` 与 `engineLog` |
+
+---
+
+## 12. FAQ：为什么不直接 chroot / 为什么启动要二三十秒
+
+### 12.1 为什么不能把 rootfs 解到 App 目录里直接 `chroot`？
+
+在**已经 root 的手机**上，这条路完全成立（你以前的做法）：`root` 有 `CAP_SYS_CHROOT`/`CAP_SYS_ADMIN`，
+可以 `chroot`、可以 `mount --bind`、可以 `execve` 任意 ELF。
+
+但本插件跑在**普通（未 root）App**里，三道锁同时挡着：
+
+| 锁 | 具体表现 |
+|---|---|
+| **没有 `CAP_SYS_CHROOT`** | `chroot(2)` 直接返回 `EPERM`。App 的 uid 是 `u0_aNNN`，没有任何 capability |
+| **没有 `CAP_SYS_ADMIN`** | `/proc`、`/dev`、`/sys` 挂不上，`mount --bind` 也不行（Android 10+ 对 app 还额外限制了 mount namespace） |
+| **SELinux 的 `execve` 限制** | Android 10+ 起，`untrusted_app` 域**只允许执行 `apk_data_file`**（即 APK 里的 `nativeLibraryDir`）。自己解压到 `files/`、`cache/` 的 ELF 一律 `EACCES` —— 这正是 Termux 把 `targetSdk` 停在 28 的原因，也是 `proot` 需要 glibc loader 补丁的原因 |
+
+注意一个容易误会的地方：**不是内核不兼容**。Alpine 是 musl + arm64，Android 的内核完全能跑；
+卡住的只有"权限 + SELinux 策略"。所以：
+
+- **已 root 的设备**：可以给插件加一个"native 模式"（检测 `su` → `chroot` + `mount --bind`，
+  毫秒级启动、零虚拟化开销）。这是[可能想加的东西](#可能想加的东西按性价比)里性价比最高的一条，
+  但依赖用户自己 root，所以不能作为默认路径；
+- **未 root 的设备**：只有两条路 —— `proot`（ptrace 假 root，需要 `targetSdk ≤ 28` 或 loader 补丁，
+  快但脆、且要维持旧 targetSdk）和 **QEMU 虚拟机**（本项目选的：零权限、真隔离、
+  客户机里 `chroot`/`mount`/`apk` 全是真的，代价是 CPU 被模拟）。
+
+### 12.2 为什么启动要 ~25s（内存模式）/ ~40s（磁盘模式）？
+
+`chroot` 是"复用正在运行的内核，换一下根目录"，本质上是 **一次系统调用**，所以是毫秒级。
+QEMU 模式则要**从零引导一台机器**：
+
+| 阶段 | 耗时（真机实测） | 说明 |
+|---|---|---|
+| QEMU 进程启动 + 分配 guest RAM（1GB） | ~2–4s | 还要 mmap 内核、initramfs |
+| 客户机内核引导（设备探测、解压 initramfs 15.7MB） | ~4–10s | 这一步**全是模拟执行**：TCG 把每条 guest 指令翻译成宿主指令，实测量级是原生的 1/10~1/20 |
+| 加载内核模块（9~13 个 `insmod`） | ~10–15s | 模块加载要做 ELF 解析+重定位，TCG 下每个大模块（`netfs` 517KB）都要好几秒 |
+| 跑 `/init`（挂 proc/dev、配网卡、起 shell） | ~2–5s | 已经优化成"网络/9p 放后台"，否则还要多 40s |
+| 磁盘模式额外：ext4 挂载（+ 首次 `mkfs` + 解包 15.7MB） | +10–20s（首次 +60s） | `switch_root` 到 `/dev/vda` |
+
+能压的部分（已经做了一部分）：
+- **模块按需加载**：以前 13 个全同步 `insmod`，实测 73s；改成"磁盘栈同步、网络/9p 后台"后回到 **25s**；
+- 再往下还能做：把常用模块编进内核（要自编内核，省 ~10s）、去掉 9p（省 ~8s）、
+  用 `-cpu max` 之外的更省 TCG 选项、磁盘模式预建镜像（跳过首次 mkfs+解包）；
+- **真正的数量级改善只有 chroot/native 模式**（已 root 设备）——那是毫秒级。
+
+### 12.3 为什么安装包/占用看起来很大（~85MB + 2GB 镜像）？
+
+| 项 | 大小 | 能不能砍 |
+|---|---|---|
+| QEMU 可执行文件 + 依赖库 | **68.8MB**（29.5 + 37.8 + 1.5） | 能：自编 `--disable-spice/audio/curl/ssh` 可到 ~15MB；或用更小的模拟器（如 `qemu-system-aarch64` 精简配置） |
+| 内核 | 10.4MB | 能：`strip` + 去掉用不到的驱动 |
+| initramfs rootfs | 6.3MB | 已很小（Alpine minirootfs + 13 模块 + e2fsprogs） |
+| 磁盘模式 tar 载荷 | 6.3MB | 只在 `rootfsMode:'disk'` 时解压，但它得打进 APK |
+| **`disk.img`（仅磁盘模式）** | 表观 2GB / **实占 ~30MB** | sparse 文件，写多少占多少；`diskSizeMb: 256` 也行 |
+| 运行时内存 | 默认 1024MB guest RAM | `start({ memoryMb: 512 })`（客户机里跑 node/python 建议 ≥1GB） |
+
+所以"2GB"是**镜像容量上限**而不是真实占用；真实占用 = APK ~85MB + 磁盘实占（几十 MB）+ 运行时的 guest RAM。
