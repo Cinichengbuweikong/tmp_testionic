@@ -4,6 +4,15 @@
  * 真引擎路径只依赖 `ISHShellExecutor.h`（iSH-ARM64 的 ObjC 门面，提供
  * `+executeCommand:lineCallback:completion:` / `+killProcess:withSignal:`），
  * 不碰 iSH 内部的 C 代码，所以引擎升级不会影响这里。
+ *
+ * 注意：这里**直接引用类**（`[ISHShellExecutor class]`）而不是
+ * `NSClassFromString`。静态库里的 ObjC 类如果没有任何静态引用，链接器会把它当死代码
+ * 丢掉，运行时才会莫名其妙地"类不存在"；直接引用则会让链接器保留它（也就不必给宿主
+ * App 加 `-ObjC`）。
+ *
+ * 头的可见性与库的一致性由构建脚本保证：`scripts/fetch-ish-ios-runtime.sh` 生成
+ * xcframework 时会把 `ISHShellExecutor.h` 复制到 `ios/Sources/CapISHBridge/include/`，
+ * 没生成 framework 就不会有这个头（于是这里编成桩）。
  */
 #import "CapISHBridge.h"
 
@@ -18,12 +27,12 @@
 
 static const char *kNoEngine =
     "iOS 引擎未链接：需要把 iSH-ARM64（everettjf/dsh-ios 的 ish-arm64）构建成 "
-    "xcframework 并链接进宿主 App，然后用 plugins/capacitor-linux/scripts/"
-    "fetch-ish-ios-runtime.sh 生成；详见 README「iOS 路线」";
+    "xcframework 并链接进宿主 App；用 plugins/capacitor-linux/scripts/"
+    "fetch-ish-ios-runtime.sh 生成，详见 README「iOS 路线」";
 
 int capish_available(void) {
 #if CAPISH_HAS_ENGINE
-    return NSClassFromString(@"ISHShellExecutor") != nil ? 1 : 0;
+    return [ISHShellExecutor class] != Nil ? 1 : 0;
 #else
     return 0;
 #endif
@@ -45,13 +54,6 @@ int capish_exec(const char *utf8_command,
     }
 
 #if CAPISH_HAS_ENGINE
-    Class executor = NSClassFromString(@"ISHShellExecutor");
-    if (executor == Nil) {
-        if (on_done) {
-            on_done(-1, 0, 0.0, user);
-        }
-        return -1;
-    }
     NSString *command = [NSString stringWithUTF8String:utf8_command];
     if (command == nil) {
         if (on_done) {
@@ -79,11 +81,11 @@ int capish_exec(const char *utf8_command,
         };
     }
 
-    int pid = [executor executeCommand:command
-                          lineCallback:line_cb
-                            completion:done_cb];
+    int pid = [ISHShellExecutor executeCommand:command
+                                 lineCallback:line_cb
+                                   completion:done_cb];
     if (pid < 0 && on_done) {
-        // 引擎拒绝创建进程：保证 done 回调一定发生。
+        // 引擎拒绝创建进程：保证 done 回调一定发生（调用方靠它释放 box）。
         on_done(pid, 0, 0.0, user);
     }
     return pid;
@@ -101,11 +103,7 @@ int capish_kill(int pid, int signal_number) {
         return 0;
     }
 #if CAPISH_HAS_ENGINE
-    Class executor = NSClassFromString(@"ISHShellExecutor");
-    if (executor == Nil) {
-        return 0;
-    }
-    return [executor killProcess:pid withSignal:signal_number] ? 1 : 0;
+    return [ISHShellExecutor killProcess:pid withSignal:signal_number] ? 1 : 0;
 #else
     (void) signal_number;
     return 0;

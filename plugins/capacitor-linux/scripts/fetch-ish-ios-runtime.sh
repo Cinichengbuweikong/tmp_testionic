@@ -121,6 +121,13 @@ ISH_SRC="$VENDOR/ish-arm64"
 mkdir -p "$HEADERS"
 cp "$ISH_SRC/app/ISHShellExecutor.h" "$HEADERS/" || die "复制 ISHShellExecutor.h 失败"
 
+# 把同样的头放进桥 target 的 include/：CapISHBridge.m 靠
+# `__has_include("ISHShellExecutor.h")` 决定走真引擎还是桩，所以"头存在"必须与
+# "framework 存在"同时成立。这个复制出来的文件是生成物（见 .gitignore）。
+BRIDGE_INCLUDE="$PLUGIN_DIR/ios/Sources/CapISHBridge/include"
+mkdir -p "$BRIDGE_INCLUDE"
+cp "$HEADERS/ISHShellExecutor.h" "$BRIDGE_INCLUDE/" || die "复制头到 CapISHBridge/include 失败"
+
 build_slice() {
   local sdk="$1"
   local triple="$2"

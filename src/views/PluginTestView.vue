@@ -2062,8 +2062,27 @@ export default {
       // ---- Linux VM（QEMU + 离线 Alpine）：启动 + exec + 交互 stdin + 崩溃隔离 ----
       try {
         const caps = await Linux.getCapabilities();
+        const isIosPlatform = Capacitor.getPlatform() === 'ios';
         if (!caps.supported) {
           results.linux = { skipped: true, reason: (caps.reasons || []).join('; ') };
+        } else if (isIosPlatform) {
+          // iOS 走 iSH-ARM64（没有 QEMU、没有独立进程、没有 sendKey/持久化数据盘），
+          // 所以这里只验证"引擎在线 + exec 能跑"。失败不判整体失败，只记录原因
+          // （引擎还没装 rootfs 时 exec 会明确报错，这是已知阶段）。
+          results.linuxIos = await withTimeout(async () => {
+            const out = { caps: { engine: caps.engine, isolation: caps.isolation } };
+            try {
+              out.info = await Linux.getInfo();
+            } catch (err) {
+              out.infoError = String((err && err.message) || err);
+            }
+            try {
+              out.exec = await Linux.exec({ command: 'uname -m; cat /etc/alpine-release 2>/dev/null; echo IOS-$((3+4))', timeoutMs: 60000 });
+            } catch (err) {
+              out.execError = String((err && err.message) || err);
+            }
+            return out;
+          }, 180000);
         } else {
           results.linux = await withTimeout(async () => {
             const info = await Linux.getInfo();

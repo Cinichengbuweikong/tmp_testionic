@@ -13,3 +13,5 @@ ios/ish-vendor/
 ios/ish-build/
 ios/ish-headers/
 ios/CapISH.xcframework/
+# 复制进桥 target 的引擎头（有这个头 + 上面的 xcframework 才走真引擎）
+ios/Sources/CapISHBridge/include/ISHShellExecutor.h

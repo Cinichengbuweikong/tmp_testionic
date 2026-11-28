@@ -38,6 +38,32 @@ jobs:
       - name: Build local plugins
         run: npm run build:plugins
 
+      # iSH-ARM64 引擎（CapISH.xcframework，~2MB）是 macOS 产物、不入库：
+      # 如果 ios-ish 那个 workflow 已经产出过工件，这里就下载并接进插件；
+      # 没有的话走桩路径（getCapabilities().supported == false），CI 照样绿。
+      - name: Fetch CapISH engine artifact (optional)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=CapISH-xcframework" \
+                --jq '.artifacts[0].id // empty' || true)
+          if [ -z "${id}" ]; then
+            echo "没有 CapISH-xcframework 工件 -> 走桩路径（支持 false）"
+            exit 0
+          fi
+          echo "下载 CapISH 工件 id=${id}"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > capish.zip
+          rm -rf capish-artifact && mkdir -p capish-artifact
+          unzip -q -o capish.zip -d capish-artifact
+          ls -R capish-artifact | head -30
+          src=capish-artifact/plugins/capacitor-linux/ios
+          cp -R "$src/CapISH.xcframework" plugins/capacitor-linux/ios/
+          # CapISHBridge.m 用 __has_include("ISHShellExecutor.h") 判断引擎是否可用
+          cp "$src/ish-headers/ISHShellExecutor.h" plugins/capacitor-linux/ios/Sources/CapISHBridge/include/
+          du -sh plugins/capacitor-linux/ios/CapISH.xcframework
+
       # capacitor-python 的运行时（Pyodide 13MB）不入库，构建前必须下载到 public/python-runtime/
       - name: Fetch Python runtime (Pyodide)
         run: node plugins/capacitor-python/scripts/fetch-python-runtime.mjs
@@ -167,6 +193,22 @@ jobs:
           fi
           echo "autotest passed:"
           grep -o 'PLUGIN_AUTOTEST_RESULT .*' sim-console.log | head -n 1
+          # 把 linux 相关结果抛成 annotation：公开 API 就能读到，不用下载工件。
+          python3 - <<'PY' || true
+          import json, re, sys, urllib.parse
+          log = open('sim-console.log', errors='replace').read()
+          m = re.search(r'PLUGIN_AUTOTEST_RESULT (\{.*?\})\s*$', log, re.M)
+          if not m:
+              sys.exit(0)
+          try:
+              data = json.loads(m.group(1))
+          except Exception:
+              sys.exit(0)
+          for key in ('linux', 'linuxIos'):
+              if key in data:
+                  text = json.dumps(data[key], ensure_ascii=False)
+                  print('::notice::' + key + '=' + urllib.parse.quote(text))
+          PY
 
       - name: Upload simulator artifacts
         if: always()
