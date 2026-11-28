@@ -116,19 +116,89 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject(String(cString: capish_unavailable_reason()), "ENGINE_MISSING")
             return
         }
-        engineReady = true
-        state = "running"
-        startedAt = Date()
-        call.resolve([
-            "state": state,
-            "running": true,
-            "memoryMb": 0,
-            "cpus": 0,
-            "consoleTty": "",
-            "stderrTty": "",
-            "persistence": "none",
-            "booted": true
-        ])
+        let bootTimeoutMs = max(5000, call.getInt("bootTimeoutMs", 120000))
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let linuxDir = docs.appendingPathComponent("linuxvm")
+        // iSH 的 fakefs 约定：客户机的 `/` 映射到 `<root>/data`
+        let rootfsRoot = linuxDir.appendingPathComponent("ish-root").path
+        let dataDir = rootfsRoot + "/data"
+        let archive = call.getString("rootfsArchivePath")
+            ?? linuxDir.appendingPathComponent("rootfs.tar").path
+
+        state = "starting"
+        // 解包 + boot 都是阻塞操作（boot 会一直跑到客户机循环），放后台
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            // 1) 首次启动：把离线 rootfs 解到 fakefs 根目录
+            if !FileManager.default.fileExists(atPath: dataDir + "/bin/sh") {
+                guard FileManager.default.fileExists(atPath: archive) else {
+                    DispatchQueue.main.async {
+                        self.state = "stopped"
+                        call.reject("ROOTFS_MISSING: 需要把 rootfs.tar 放到 \(archive)"
+                                    + "（或用 start({ rootfsArchivePath }) 指定）", "ROOTFS_MISSING")
+                    }
+                    return
+                }
+                let rc = capish_rootfs_install(archive, dataDir)
+                if rc != 0 {
+                    let reason = String(cString: capish_rootfs_install_error())
+                    DispatchQueue.main.async {
+                        self.state = "error"
+                        call.reject("ROOTFS_EXTRACT_FAILED: " + reason, "ROOTFS_EXTRACT_FAILED")
+                    }
+                    return
+                }
+            }
+
+            // 2) boot 客户机内核（异步，状态轮询）
+            if capish_start(rootfsRoot) != 0 {
+                let reason = String(cString: capish_start_error())
+                DispatchQueue.main.async {
+                    self.state = "error"
+                    call.reject("BOOT_FAILED: " + reason, "BOOT_FAILED")
+                }
+                return
+            }
+            let deadline = Date().addingTimeInterval(Double(bootTimeoutMs) / 1000.0)
+            while Date() < deadline {
+                let st = capish_start_state()
+                if st == 2 { break }
+                if st == 3 {
+                    let reason = String(cString: capish_start_error())
+                    DispatchQueue.main.async {
+                        self.state = "error"
+                        call.reject("BOOT_FAILED: " + reason, "BOOT_FAILED")
+                    }
+                    return
+                }
+                usleep(100_000)   // 100ms
+            }
+            let booted = capish_start_state() == 2
+            DispatchQueue.main.async {
+                if booted {
+                    self.engineReady = true
+                    self.state = "running"
+                    self.startedAt = Date()
+                    call.resolve([
+                        "state": self.state,
+                        "running": true,
+                        "memoryMb": 0,
+                        "cpus": 0,
+                        "consoleTty": "",
+                        "stderrTty": "",
+                        "persistence": "none",
+                        "rootfsMode": "disk",
+                        "rootfsDir": dataDir,
+                        "booted": true
+                    ])
+                } else {
+                    self.state = "error"
+                    call.reject("BOOT_TIMEOUT: 客户机内核没有在 \(bootTimeoutMs)ms 内就绪",
+                                "BOOT_TIMEOUT")
+                }
+            }
+        }
     }
 
     @objc func stop(_ call: CAPPluginCall) {

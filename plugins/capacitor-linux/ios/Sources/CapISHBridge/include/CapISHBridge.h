@@ -79,6 +79,16 @@ const char *capish_rootfs_error(void);
 /** 当前进程内是否成功解包过。 */
 int capish_rootfs_extracted(void);
 
+/**
+ * 上面那些真引擎符号（`capish_boot*` / `capish_extract_rootfs`）只在链接了
+ * `libcapish.a` 时存在，所以 Swift 侧**必须**走下面这些包装（bridge 里按
+ * `__has_include` 编两路），否则"没引擎"时 App 会链接失败。
+ */
+int capish_start(const char *rootfs_root);
+int capish_start_state(void);          // 0 idle / 1 booting / 2 ready / 3 failed
+const char *capish_start_error(void);
+int capish_rootfs_install(const char *tar_gz_path, const char *dest_dir);
+const char *capish_rootfs_install_error(void);
 /** 引擎缺失时给调用方看的说明（静态字符串，不要释放）。 */
 const char *capish_unavailable_reason(void);
 

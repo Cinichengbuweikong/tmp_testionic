@@ -109,3 +109,51 @@ int capish_kill(int pid, int signal_number) {
     return 0;
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// boot / rootfs 的**包装**：真引擎符号（capish_boot / capish_extract_rootfs）只在
+// 链接了 libcapish.a 时存在，所以 Swift 侧一律走这几个包装，避免"没引擎时链接失败"。
+// ---------------------------------------------------------------------------
+
+int capish_start_state(void) {
+#if CAPISH_HAS_ENGINE
+    return capish_boot_state();
+#else
+    return 0;
+#endif
+}
+
+const char *capish_start_error(void) {
+#if CAPISH_HAS_ENGINE
+    return capish_boot_error();
+#else
+    return kNoEngine;
+#endif
+}
+
+int capish_start(const char *rootfs_root) {
+#if CAPISH_HAS_ENGINE
+    return capish_boot(rootfs_root);
+#else
+    (void) rootfs_root;
+    return -1;
+#endif
+}
+
+int capish_rootfs_install(const char *tar_gz_path, const char *dest_dir) {
+#if CAPISH_HAS_ENGINE
+    return capish_extract_rootfs(tar_gz_path, dest_dir);
+#else
+    (void) tar_gz_path;
+    (void) dest_dir;
+    return -1;
+#endif
+}
+
+const char *capish_rootfs_install_error(void) {
+#if CAPISH_HAS_ENGINE
+    return capish_rootfs_error();
+#else
+    return kNoEngine;
+#endif
+}
