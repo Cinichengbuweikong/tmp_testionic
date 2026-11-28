@@ -211,6 +211,22 @@ xcrun xcodebuild -create-xcframework \
   -output "$OUT" >>"$LOG" 2>&1 || { tail -n 20 "$LOG" >&2; die "xcodebuild -create-xcframework 失败"; }
 
 log "完成：${OUT}（$(du -sh "$OUT" | cut -f1)）"
+
+# 校验产物是不是"真"的（只有 .a 里出现 iSH 的符号才算成功）。结果同时打到日志与
+# annotation（::notice::），不下载 artifact 也能从公开 API 看到。
+verify_archive() {
+  local lib="$1" tag="$2" bytes members cls ishs
+  bytes=$(wc -c < "$lib" | tr -d ' ')
+  members=$(ar t "$lib" 2>/dev/null | wc -l | tr -d ' ')
+  nm -g "$lib" > "$BUILD/syms-$tag.txt" 2>/dev/null || true
+  cls=$(grep -c 'OBJC_CLASS_\$_ISHShellExecutor' "$BUILD/syms-$tag.txt" 2>/dev/null || true)
+  ishs=$(grep -c ' T _do_execve\| T _task_start\| T _become_new_init_child' "$BUILD/syms-$tag.txt" 2>/dev/null || true)
+  log "校验 [$tag]: ${bytes} bytes, ${members} members, ISHShellExecutor 类=${cls}, iSH 内核符号=${ishs}"
+  printf '::notice::[ish] %s: %s bytes / %s members / ISHShellExecutor-class=%s / kernel-syms=%s\n' \
+    "$tag" "$bytes" "$members" "${cls:-0}" "${ishs:-0}"
+}
+verify_archive "$DEVICE_LIB" device
+verify_archive "$SIM_LIB" sim
 printf '\n下一步（一次性，改宿主 App 工程）：\n'
 printf '  1) 把 %s 链接进 App target（SPM: .binaryTarget(name: "CapISH", path: "...")）\n' "$OUT"
 printf '  2) App 的 HEADER_SEARCH_PATHS 加上 %s，__has_include("ISHShellExecutor.h") 才会走真引擎\n' "$HEADERS"
