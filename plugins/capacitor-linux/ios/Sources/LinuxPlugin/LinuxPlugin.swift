@@ -53,20 +53,37 @@ public class LinuxPlugin: CAPPlugin, CAPBridgedPlugin {
     /// 那种情况下 SwiftPM 不会生成 `Bundle.module`（实测报 "type 'Bundle' has no member 'module'"）。
     /// 所以按可能性从高到低找：主 bundle 根目录 → 主 bundle/Resources → 本类所在 bundle。
     static func findBundledRootfs() -> URL? {
-        let names = [
-            Bundle.main.bundleURL.appendingPathComponent("rootfs.tar"),
-            Bundle.main.bundleURL.appendingPathComponent("Resources/rootfs.tar"),
-            Bundle.main.bundleURL.appendingPathComponent("CapacitorLinux_LinuxPlugin.bundle/rootfs.tar"),
-        ]
-        for url in names where FileManager.default.fileExists(atPath: url.path) {
-            return url
+        // Xcode 集成 SPM 时，资源会被打进一个**单独的 .bundle**（名字形如
+        // `<包名>_<target>.bundle`，包名里的 - 会变成 _），不在 App 主 bundle 根目录，
+        // 所以这里直接扫 App 里的所有 .bundle 找 rootfs.tar，比猜名字可靠。
+        let fm = FileManager.default
+        let main = Bundle.main.bundleURL
+
+        // 1) 主 bundle 根目录（少数集成方式会直接拷进去）
+        for name in ["rootfs.tar", "Resources/rootfs.tar"] {
+            let url = main.appendingPathComponent(name)
+            if fm.fileExists(atPath: url.path) { return url }
         }
+
+        // 2) 扫 main bundle 下的每个 *.bundle
+        if let entries = try? fm.contentsOfDirectory(at: main, includingPropertiesForKeys: nil) {
+            for dir in entries where dir.pathExtension == "bundle" {
+                let direct = dir.appendingPathComponent("rootfs.tar")
+                if fm.fileExists(atPath: direct.path) { return direct }
+                if let b = Bundle(url: dir), let u = b.url(forResource: "rootfs", withExtension: "tar") {
+                    return u
+                }
+            }
+        }
+
+        // 3) 本类所在 bundle（静态链接时通常等于 main bundle）
         let classBundle = Bundle(for: LinuxPlugin.self)
-        if let url = classBundle.url(forResource: "rootfs", withExtension: "tar") {
-            return url
+        if let u = classBundle.url(forResource: "rootfs", withExtension: "tar") {
+            return u
         }
         return nil
     }
+
 
     // ------------------------------------------------------------ capabilities
 
