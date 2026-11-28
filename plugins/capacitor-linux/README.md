@@ -442,7 +442,7 @@ fork，源码在 `dsh-ios` 仓库的 `ish-arm64/`）：Asbestos 线程码解释�
 |---|---|
 | 引擎桥 `ios/Sources/CapISHBridge/` | ✅ C 接口（`capish_exec` / `capish_kill` / `capish_available`），用 `__has_include("ISHShellExecutor.h")` **两路编译**：有引擎调 `ISHShellExecutor`，没有就编成桩 → **没引擎也能编译**，iOS CI 不会红 |
 | `LinuxPlugin.swift` | ✅ `getCapabilities`（`engine: ish-arm64`、`isolation: none`）、`start/stop/restart`、`exec`（逐行 streaming + stdout/stderr 分流 + 退出码）、`getShareDir`（暂时返回宿主 Documents） |
-| `scripts/fetch-ish-ios-runtime.sh` | ✅ **只能在 macOS 上跑**：clone 固定 commit → `ish-extract-sources.rb` 从它的 xcodeproj 抽 source list / header 路径 → 逐文件 clang → `libtool` 成 `libish.a`（device + simulator）→ `xcodebuild -create-xcframework` 产出 `ios/CapISH.xcframework` |
+| `scripts/fetch-ish-ios-runtime.sh` | ✅ **只能在 macOS 上跑**：sparse clone 固定 commit → 用 **meson**（iSH 自己的构建方式，`default_library=static`）分别编 iphoneos / iphonesimulator 的 `libish.a`+`libish_emu.a`+`libfakefs.a` → 再单独编 `app/ISHShellExecutor.m` → `libtool` 合并 → `xcodebuild -create-xcframework` 产出 `ios/CapISH.xcframework`。失败会把关键行抛成 `::error::` annotation |
 | `.github/workflows/ios-ish.yml` | ✅ **workflow_dispatch 手动触发**（90 分钟上限）：跑上面的脚本，把 xcframework 当 artifact 传上来 |
 
 ### 还没做 / 下一步（按顺序）

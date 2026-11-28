@@ -1,10 +1,13 @@
 name: build iSH-ARM64 engine (iOS)
 
-# 只在手动触发：这个 job 会 clone 并编译 iSH-ARM64（几十万行 C + ObjC），
+# 只在手动触发：这个 job 会 clone 并编译 iSH-ARM64（几十万行 C，meson + ninja），
 # 要 20~40 分钟，不适合每次 push 都跑。
 #
 # 用途：给 capacitor-linux 的 iOS 侧产出 ios/CapISH.xcframework。
-# 产物会作为 artifact 上传，下载后放进插件目录即可（见脚本末尾的说明）。
+# 产物作为 artifact 上传，下载后放进插件目录即可（见脚本末尾说明）。
+#
+# 失败时不需要 token 拉日志：脚本会把关键行抛成 ::error:: annotation，
+# 公开的 check-runs/<jobId>/annotations 接口就能读到。
 on:
   workflow_dispatch:
     inputs:
@@ -24,16 +27,27 @@ jobs:
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-          ruby -v
-
-      - name: Ensure xcodeproj gem
-        run: gem install xcodeproj --no-document
+          python3 --version
+          meson --version || true
+          ninja --version || true
 
       - name: Build CapISH.xcframework
         env:
           ISH_COMMIT: ${{ inputs.ish_commit }}
           ISH_DEBUG: '1'
-        run: bash plugins/capacitor-linux/scripts/fetch-ish-ios-runtime.sh
+        run: |
+          set +e
+          bash plugins/capacitor-linux/scripts/fetch-ish-ios-runtime.sh 2>&1 | tee build-ish.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "== 失败：把关键行抛成 annotation =="
+            grep -m8 -E ':error:|error:|fatal error|::error::' build-ish.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            echo "== 最后 40 行 =="
+            tail -n 40 build-ish.log
+          fi
+          exit "$rc"
 
       - name: Summarise artifact
         if: always()
@@ -44,7 +58,7 @@ jobs:
             du -sh plugins/capacitor-linux/ios/CapISH.xcframework >> "$GITHUB_STEP_SUMMARY"
             find plugins/capacitor-linux/ios/CapISH.xcframework -maxdepth 2 >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "❌ 没有产物：看上面的编译日志（第一处 error 通常在 Build 阶段）" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ 没有产物（看上面 ::error:: 注解）" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload xcframework
@@ -55,5 +69,6 @@ jobs:
           path: |
             plugins/capacitor-linux/ios/CapISH.xcframework
             plugins/capacitor-linux/ios/ish-headers
+            build-ish.log
           if-no-files-found: warn
           retention-days: 14
