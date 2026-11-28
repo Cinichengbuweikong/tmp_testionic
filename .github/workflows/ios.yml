@@ -283,7 +283,10 @@ jobs:
             tail -n 40 sim-console.log || true
             exit 1
           fi
+          # autotest 失败时把 JSON 前 380 字符抛成 annotation（含 linuxIos.startError/execError）
           if ! grep -q '"ok":true' sim-console.log; then
+            line=$(grep -o 'PLUGIN_AUTOTEST_RESULT .*' sim-console.log | head -n 1 | cut -c1-380 || true)
+            [ -n "$line" ] && echo "::error::AUTOTEST|${line}"
             echo "::error::autotest reported a failure"
             echo "----- sim-console.log (last 60 lines for diagnosis) -----"
             tail -n 60 sim-console.log || true
