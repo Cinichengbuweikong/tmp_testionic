@@ -1,6 +1,76 @@
 # 项目上下文存档（HANDOFF）
 
 
+> ## 🧭 交接点（2026-11-28 13:20）：capacitor-python 0.3.0 已完成并清理
+>
+> **新对话第一句**：读 `HANDOFF.md`（就是这份文件），然后按下面「当前状态」继续。
+>
+> ### 当前状态（可直接开工）
+>
+> - `HEAD = 4433afb`，CI 绿（iOS run 46108794081 success），工作区干净。
+> - 插件 `plugins/capacitor-python/` 已**清理成纯源码**（226KB / 29 文件；无 node_modules、dist、
+>   android/build、生成的 iOS runtime），可直接复制到别的项目。
+> - ⚠️ 因为 dist 被删了，**本仓库下次构建 App 前先跑 `npm run build:plugins`**（会重新 npm ci + tsc）。
+> - 版本 0.3.0；共 19 个插件，`npm run audit:plugins` / `npm run verify:ios` 均通过。
+>
+> ### 插件架构（一句话）
+>
+> `src/index.ts` 是门面：**Android → Chaquopy（原生 CPython 3.11）**、
+> **iOS → Python-Apple-support（原生 CPython 3.11）**、**Web → Pyodide**。
+> `Python.createSession()` 返回会话句柄，自带 `onStdout/onStderr/onState/writeStdin/exec/run/terminate/restart`。
+> 旧的 `Python.exec(sessionId, ...)` / `addListener` 仍兼容。
+>
+> 关键文件：
+> - 门面/类型：`src/index.ts`、`src/definitions.ts`；Web 引擎：`src/engine/runtime.ts`；编辑器：`src/editor/index.ts`
+> - Android：`android/.../{PythonBridge,PythonEngine,PythonSession,PythonPlugin}.java`
+>   + `android/src/main/python/capython/runtime.py`
+> - iOS：`ios/Sources/PythonPlugin/{PythonEngineIOS,PythonPlugin}.swift`、
+>   `ios/Sources/PythonShim/PythonShim.c`、`ios/Sources/PythonPlugin/python/capython/runtime.py`
+> - 脚本：`scripts/fetch-python-ios-runtime.mjs`（下载/裁剪/合并 headers/装 requirements）、
+>   `fetch-python-runtime.mjs`（Pyodide）、`build-editor.mjs`
+>
+> ### 怎么构建与验证
+>
+> ```bash
+> cd plugins/capacitor-python && npm install && npm run build   # 生成 dist
+> cd ../.. && npm run audit:plugins && npm run verify:ios
+> npm run build:plugins                                          # 本仓库构建 App 前必须
+> # Android 真机：scripts/deploy-android.ps1 -Device 32e93a6d -SkipWeb
+> # 测试页 autotest：node scripts/webview-eval.mjs --port 9311 --file <probe 文件>
+> # iOS：git push 后看 GitHub Actions（macOS 模拟器 autotest）
+> ```
+>
+> 设备：真机 `32e93a6d`（Redmi K30S / Android 10 / WebView 87）；模拟器 `emulator-5554`（API 36，需先启动）。
+>
+> ### 验证结论（截至本次会话）
+>
+> - **Android 真机**：原生 CPython 3.11.17；`exec('1+2')=3`、实时 stdout/stderr、多会话隔离、
+>   **阻塞 stdin**、构建期 `requests 2.34.2`、运行时 `six 1.17.0`、编辑器实验台；完整 autotest `ok:true`。
+> - **iOS 模拟器（CI）**：原生 CPython 3.11.18；autotest 强制 native，`import six` 通过。
+> - **并发**：同会话串行（627ms、输出不串台）、跨会话并行（507ms）；死循环中 terminate 16ms 返回。
+>
+> ### 已知限制 / 未做（下一步优先级）
+>
+> 1. **Android 进程级隔离**（`:python` 服务 + AIDL）：段错误仍会带走 App —— 工作量最大的一项。
+> 2. **iOS C 扩展（numpy 等）**：需要宿主 App 的 Run Script（`install_python`）+ 自备 iOS arm64 wheel；
+>    README 已写完整步骤，但**没有实测**（要 macOS + Briefcase 才能产出 wheel）。
+> 3. **Web 真阻塞 stdin**：需要本地 HTTP 服务 + Worker 同步 XHR。
+> 4. **硬中断**：原生只能"丢弃会话"，线程停不下来（它一直占着 GIL，其它会话会被饿死）。
+> 5. 生产建议：Android 用 ABI split（当前 APK 三个 ABI，+19MB）。
+>
+> ### 环境/操作注意（避免踩坑）
+>
+> - **不要用 PowerShell 的 `Get-Content -Raw` + `Set-Content` 改 UTF-8 源码/文档**（会把中文和模板字符串写坏）；
+>   用 `write`/`edit` 工具，或写临时 `.mjs` 用 Node 改。
+> - GitHub Actions 轮询用未认证 API 会限流（60 次/小时）→ 检查间隔 ≥5 分钟；失败时看
+>   `check-runs/<jobId>/annotations`（公开可读），比日志好拿。
+> - `git push` 偶尔连不上 github.com → 用 `git -c http.version=HTTP/1.1 push` + 重试循环；
+>   推送后**务必** `git ls-remote origin main` 确认远端真的更新（有一次循环静默失败过）。
+> - CI 的 autotest 轮询窗口是 300s；iOS workflow 有 "Fetch Python iOS runtime" 步骤。
+> - 根 `.gitignore` 忽略 `/public/python-runtime/`；插件内 `.gitignore` 忽略 iOS 生成的
+>   xcframework/stdlib/headers。
+
+
 > ## 🆕 2026-11-28 第二轮审查 + 清理打包
 >
 > 1. **terminate 一个正在死循环的会话会挂死**：`PythonEngine.terminateSession` 会
@@ -14,6 +84,7 @@
 > 5. README 补：原生 `input()` 最多等 30s，超时按 EOF（EOFError）。
 > 6. 清理规则：删除 node_modules/dist/android build/.gradle/ios 生成的 xcframework+stdlib+headers+json；
 >    保留源码/package-lock/requirements/runtime.py/worker.mjs/scripts/README。
+
 > ## 🆕 2026-11-27（深夜 3）测试视角代码审查：10 个问题 + 修复
 >
 > 用户要求"从测试角度查 bug/隐患并修"。这一轮实际发现并修掉的：
